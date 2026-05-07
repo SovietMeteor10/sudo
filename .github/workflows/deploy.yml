@@ -39,8 +39,8 @@ jobs:
             echo "== restarting service =="
             sudo /usr/bin/systemctl restart sudo.service
 
-            echo "== service status =="
-            sudo /usr/bin/systemctl status sudo.service --no-pager
+            echo "== service is active =="
+            /usr/bin/systemctl is-active --quiet sudo.service
 
             echo "== local health check =="
             curl -fsS http://127.0.0.1:3000 >/dev/null
