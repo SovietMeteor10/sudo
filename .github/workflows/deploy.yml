@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -16,10 +17,35 @@ jobs:
           host: ${{ secrets.DROPLET_HOST }}
           username: ${{ secrets.DROPLET_USER }}
           key: ${{ secrets.DROPLET_SSH_KEY }}
+          script_stop: true
+          command_timeout: 10m
           script: |
+            set -e
+
+            echo "== entering app directory =="
             cd /home/anthony/apps/sudo
-            git pull origin main
+
+            echo "== syncing latest main =="
+            git fetch origin main
+            git checkout main
+            git reset --hard origin/main
+
+            echo "== installing dependencies =="
             npm ci
+
+            echo "== building =="
             npm run build
-            sudo systemctl restart sudo
-            sudo systemctl status sudo --no-pager
+
+            echo "== restarting service =="
+            sudo /usr/bin/systemctl restart sudo.service
+
+            echo "== service status =="
+            sudo /usr/bin/systemctl status sudo.service --no-pager
+
+            echo "== local health check =="
+            curl -fsS http://127.0.0.1:3000 >/dev/null
+
+            echo "== public health check =="
+            curl -fsS https://sudochat.xyz >/dev/null
+
+            echo "== deploy complete =="
