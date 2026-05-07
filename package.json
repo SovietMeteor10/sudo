@@ -1,0 +1,25 @@
+{
+  "name": "sudo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && node dist/server.js",
+    "start": "node dist/server.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev:reset": "npm run build && node dist/cli/devReset.js",
+    "create-user": "npm run build && node dist/cli/createUser.js"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.6",
+    "better-sqlite3": "^11.9.1",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.13.5",
+    "typescript": "^5.7.3"
+  }
+}
