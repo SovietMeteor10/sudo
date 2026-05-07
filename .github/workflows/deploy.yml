@@ -43,6 +43,13 @@ jobs:
             /usr/bin/systemctl is-active --quiet sudo.service
 
             echo "== local health check =="
+            for i in {1..20}; do
+              if curl -fsS http://127.0.0.1:3000 >/dev/null; then
+                break
+              fi
+              echo "waiting for local app... $i"
+              sleep 1
+            done
             curl -fsS http://127.0.0.1:3000 >/dev/null
 
             echo "== public health check =="
