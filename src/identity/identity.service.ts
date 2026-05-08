@@ -1,6 +1,6 @@
 import { sha256Hex, signIdentityDocument } from "../crypto/index.js";
 import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
-import type { IdentityDocument, SignableIdentityDocument, SigningKeyType } from "../protocol/types.js";
+import type { IdentityDocument, RelayCapability, SignableIdentityDocument, SigningKeyType } from "../protocol/types.js";
 import {
   getIdentityByCanonicalId,
   getIdentityFingerprintByCanonicalId,
@@ -18,7 +18,7 @@ export type CreateIdentityDocumentOptions = {
   messagingPublicKey: string;
   feedPublicKey: string;
   devicePublicKey?: string;
-  deliveryRelays?: string[];
+  deliveryRelays?: RelayCapability[];
   feedEndpoints?: string[];
   createdAt?: string;
   sequence?: number;

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { generateIdentityGrid } from "../crypto/index.js";
 import { getIdentityByHandle, normalizeHandle } from "../identity/registry.js";
+import { getNodeCapabilityDocument } from "../node/node.service.js";
 
 export const wellKnownRouter = Router();
 
@@ -27,4 +28,8 @@ wellKnownRouter.get("/.well-known/handles/:handle", (request, response) => {
     visual_fingerprint: generateIdentityGrid(identity.document.keys.identity.public_key),
     signature: identity.document.signature
   });
+});
+
+wellKnownRouter.get("/.well-known/sudo/node.json", (_request, response) => {
+  response.json(getNodeCapabilityDocument());
 });

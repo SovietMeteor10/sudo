@@ -1,5 +1,6 @@
 import type {
   IdentityDocument,
+  RelayCapability,
   MessagingKeyType,
   SignableIdentityDocument,
   SigningKeyType
@@ -18,6 +19,7 @@ export function createIdentityDocumentDraft(options: {
   messagingPublicKey: string;
   feedPublicKey: string;
   devicePublicKey?: string;
+  deliveryRelays?: RelayCapability[];
   createdAt?: string;
   sequence?: number;
   identityKeyType: SigningKeyType;
@@ -56,7 +58,7 @@ export function createIdentityDocumentDraft(options: {
             }
           })
     },
-    delivery_relays: [],
+    delivery_relays: options.deliveryRelays ?? [],
     feed_endpoints: [],
     created_at: createdAt,
     updated_at: createdAt,

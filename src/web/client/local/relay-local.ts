@@ -1,9 +1,10 @@
-import type { RelayEnvelope } from "../../../protocol/types.js";
+import type { IdentityDocument, RelayEnvelope } from "../../../protocol/types.js";
 import { DEFAULT_MESSAGE_TTL_UNKNOWN_HOURS } from "../../../protocol/constants.js";
 import type { BrowserCryptoAccount } from "../crypto/key-storage.js";
 import { decryptPrivateMessage, encryptPrivateMessage, type BrowserEncryptedMessage } from "../crypto/messaging.js";
 import { signRelayEnvelope } from "../crypto/signing.js";
 import { base64Url, base64UrlToBytes } from "./crypto.js";
+import { selectRelayForRecipient } from "../transport/relay-transport.js";
 import {
   appendLocalEvent,
   saveLocalMessage,
@@ -22,6 +23,7 @@ export async function queueAndSubmitLocalMessage(options: {
   senderAccount?: BrowserCryptoAccount | null;
   recipientMessagingPublicKey?: string;
   recipientMessagingKeyType?: "x25519" | "ecdh-p256";
+  recipientIdentityDocument?: Pick<IdentityDocument, "delivery_relays"> | null;
 }): Promise<{ ok: boolean; message_id: string; error?: string }> {
   const now = new Date().toISOString();
   const messageId = crypto.randomUUID();
@@ -110,6 +112,33 @@ export async function queueAndSubmitLocalMessage(options: {
   await savePendingOutbound(outbound);
 
   try {
+    if (options.recipientIdentityDocument !== undefined && options.recipientIdentityDocument !== null) {
+      const relaySelection = selectRelayForRecipient(options.recipientIdentityDocument);
+
+      if (!relaySelection.ok) {
+        await markFailed(message, outbound, "no delivery relay advertised");
+        return { ok: false, message_id: messageId, error: relaySelection.error };
+      }
+
+      const portalOrigin = window.location.origin;
+      const relayOrigin = new URL(relaySelection.relay.url).origin;
+      const portalTransport = new URL(portalOrigin).hostname.endsWith(".onion")
+        ? "onion"
+        : new URL(portalOrigin).protocol === "https:"
+          ? "https"
+          : "local_dev";
+
+      if (relaySelection.relay.transport === "onion" && portalTransport !== "onion") {
+        await markFailed(message, outbound, relaySelection.warning ?? "onion transport unavailable in this browser");
+        return { ok: false, message_id: messageId, error: "onion_transport_unavailable" };
+      }
+
+      if (relaySelection.relay.transport !== "onion" && relayOrigin !== portalOrigin) {
+        await markFailed(message, outbound, relaySelection.warning ?? "relay transport requires same-origin submission");
+        return { ok: false, message_id: messageId, error: "relay_cross_origin_unavailable" };
+      }
+    }
+
     const response = await fetch("/api/relay/envelopes", {
       method: "POST",
       headers: {

@@ -45,6 +45,7 @@ src/identity/        Identity registry, handle normalization, dev identity creat
 src/relay/           Encrypted message relay/blob-store behavior
 src/feeds/           Feed-facing data and future feed protocol work
 src/discovery/       Discovery/search behavior separate from identity trust
+src/node/            Node capability document and transport advertisement
 src/storage/         SQLite setup, schema, and migrations
 src/localState/      Local-dev account/session state
 src/crypto/          Signing, key generation, fingerprints, canonical JSON
@@ -81,6 +82,13 @@ Discovery, feeds, local client/dev state, crypto, and protocol types are kept
 separate because future onion relays, identity registries, discovery nodes, and
 portals should be able to evolve independently.
 
+Transport metadata is advertised separately from the portal itself:
+
+- `/.well-known/sudo/node.json` exposes the node capability document
+- `delivery_relays` in identity documents are ordered relay preferences
+- onion relays are preferred for private message transport when available
+- HTTPS relay fallback is explicit and lower privacy
+
 ## Relationship and subscriptions
 
 The shared relationship model ties together contacts, relay policy, and feed
@@ -107,9 +115,13 @@ deterministically from the public identity key in the form
 handle is only a human alias.
 
 Identity documents include identity, messaging, and feed public keys, relay and
-feed endpoint lists, timestamps, sequence number, and an Ed25519 signature. The
-current local-dev signup flow still writes private keys under `data/keys`; this
-is explicitly DEV-ONLY and must move client-side later.
+feed endpoint lists, timestamps, sequence number, and an Ed25519 signature.
+Relay lists are now first-class `sudo_relay_capability` objects. The current
+local-dev signup flow still writes private keys under `data/keys`; this is
+explicitly DEV-ONLY and must move client-side later.
+
+Because relay capabilities are part of the signed document, relay tampering
+changes the identity signature and is visible during verification.
 
 sudo also generates an 8x8 visual fingerprint from the public identity key. The
 same key always produces the same coloured square grid, and a different key
@@ -215,6 +227,20 @@ npm run dev
 ```
 
 The app listens on `http://localhost:3000` by default.
+
+## Transport configuration
+
+Relevant environment variables:
+
+- `SUDO_PUBLIC_BASE_URL`
+- `SUDO_ONION_BASE_URL`
+- `SUDO_ENABLE_HTTPS_RELAY_FALLBACK`
+- `SUDO_PREFER_ONION_RELAYS`
+- `SUDO_NODE_NAME`
+
+The existing HTTPS portal still works as the user-facing entry point. Onion
+transport is a delivery preference for private relay traffic, not a replacement
+for the portal.
 
 ## Reset local dev state
 

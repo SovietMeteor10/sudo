@@ -7,12 +7,16 @@ import type {
   DiscoveryReaction as ProtocolDiscoveryReaction,
   IdentityFingerprint as ProtocolIdentityFingerprint,
   IdentityDocument as ProtocolIdentityDocument,
+  NodeCapabilityDocument as ProtocolNodeCapabilityDocument,
+  RelayCapability as ProtocolRelayCapability,
   SearchResult as ProtocolSearchResult,
   StreamPost as ProtocolStreamPost
 } from "../../protocol/types.js";
 
 export type IdentityDocument = ProtocolIdentityDocument;
 export type IdentityFingerprint = ProtocolIdentityFingerprint;
+export type NodeCapabilityDocument = ProtocolNodeCapabilityDocument;
+export type RelayCapability = ProtocolRelayCapability;
 export type ConnectionRelationship = ProtocolConnectionRelationship;
 export type FeedSubscription = ProtocolFeedSubscription;
 export type DiscoveryPostIndex = ProtocolDiscoveryPostIndex;
@@ -25,6 +29,14 @@ export type LocalIdentity = {
   privacyMode: string;
   onionState: string;
   fingerprintSnippet: string;
+  portalTransport: string;
+  relayTransport: string;
+  relayWarning?: string;
+  nodeName?: string;
+  nodeBaseUrl?: string;
+  nodeOnionBaseUrl?: string | null;
+  nodeRoles?: string[];
+  nodeRelaySummary?: string;
 };
 
 export type LookupState =

@@ -13,6 +13,7 @@ import {
   listUserFeedPosts,
   lookupHandle,
   normalizeLookupInput,
+  getNodeDocument,
   recoverDevHandle,
   restoreDevSession,
   searchHandles,
@@ -63,6 +64,7 @@ import type {
   DiscoveryState,
   FeedSubscription,
   IdentityDocument,
+  NodeCapabilityDocument,
   LocalIdentity,
   LookupState,
   SearchResult,
@@ -70,6 +72,7 @@ import type {
   SigninState,
   SignupState
 } from "./types.js";
+import { describePortalTransport, selectRelayForRecipient } from "./transport/relay-transport.js";
 
 const shell = getRequiredElement("app-shell");
 const identityRoot = getRequiredElement("identity-pane-body");
@@ -146,6 +149,7 @@ let currentIdentityFingerprint: string | null = null;
 let currentCryptoAccount: BrowserCryptoAccount | null = null;
 let currentLookupRelationship: ConnectionRelationship | null = null;
 let currentLookupSubscription: FeedSubscription | null = null;
+let currentNodeDocument: NodeCapabilityDocument | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -165,6 +169,7 @@ renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendin
 renderPasskeySupport();
 syncActivePane("stream");
 void initializeLocalRuntime();
+void refreshNodeDocument();
 void renderStreamWhenReady();
 void refreshDiscoveryPosts();
 void restoreStoredSession();
@@ -340,6 +345,16 @@ async function initializeLocalRuntime(): Promise<void> {
   } catch (error) {
     localStateStatus.textContent = `local storage: ${error instanceof Error ? error.message : "unavailable"}`;
   }
+}
+
+async function refreshNodeDocument(): Promise<void> {
+  try {
+    currentNodeDocument = await getNodeDocument();
+  } catch {
+    currentNodeDocument = null;
+  }
+
+  refreshIdentityPane();
 }
 
 async function runLookup(rawQuery: string): Promise<void> {
@@ -861,7 +876,13 @@ async function createCryptographicAccountFlow(): Promise<void> {
   localMaintenanceFeedback.textContent = "creating browser cryptographic account...";
 
   try {
-    const draft = await createBrowserCryptoAccount({ handle, passphrase, homeNode });
+    const nodeDocument = currentNodeDocument ?? await ensureNodeDocument().catch(() => null);
+    const draft = await createBrowserCryptoAccount({
+      handle,
+      passphrase,
+      homeNode,
+      deliveryRelays: nodeDocument?.relay_capabilities ?? []
+    });
     const identity = await registerIdentityDocument(draft.identity_document);
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
 
@@ -990,14 +1011,7 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
   currentIdentityDocument = identity;
   currentIdentityFingerprint = fingerprint;
-  currentIdentity = {
-    handle: identity.handle,
-    bio: currentCryptoAccount === null ? "local-dev identity" : "browser cryptographic account",
-    status: currentCryptoAccount === null ? "keys locked" : "keys unlocked",
-    privacyMode: currentCryptoAccount === null ? "ghost mode: off" : "browser-held keys",
-    onionState: "onion: local only",
-    fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
-  };
+  currentIdentity = buildIdentityView(identity, fingerprint);
   renderIdentityPane(identityRoot, currentIdentity);
   void refreshLookupRelationship();
   void refreshFeedPosts();
@@ -1196,7 +1210,7 @@ function setSignedOut(): void {
   currentLookupRelationship = null;
   currentLookupSubscription = null;
   document.body.dataset["authState"] = "signed-out";
-  currentIdentity = localIdentity;
+  currentIdentity = buildAnonymousIdentityView();
   renderIdentityPane(identityRoot, currentIdentity);
   renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   headerHandle.textContent = "";
@@ -1217,6 +1231,69 @@ function setSignedOut(): void {
   if (discoveryState.status === "loaded") {
     renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   }
+}
+
+async function ensureNodeDocument(): Promise<NodeCapabilityDocument> {
+  if (currentNodeDocument !== null) {
+    return currentNodeDocument;
+  }
+
+  currentNodeDocument = await getNodeDocument();
+  refreshIdentityPane();
+  return currentNodeDocument;
+}
+
+function refreshIdentityPane(): void {
+  if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
+    currentIdentity = buildIdentityView(currentIdentityDocument, currentIdentityFingerprint);
+  } else {
+    currentIdentity = buildAnonymousIdentityView();
+  }
+
+  renderIdentityPane(identityRoot, currentIdentity);
+}
+
+function buildIdentityView(identity: IdentityDocument, fingerprint: string): LocalIdentity {
+  const relaySelection = selectRelayForRecipient(identity);
+  return {
+    handle: identity.handle,
+    bio: currentCryptoAccount === null ? "local-dev identity" : "browser cryptographic account",
+    status: currentCryptoAccount === null ? "keys locked" : "keys unlocked",
+    privacyMode: currentCryptoAccount === null ? "ghost mode: off" : "browser-held keys",
+    onionState: `onion: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
+    fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
+    portalTransport: `portal: ${describePortalTransport(window.location.origin)}`,
+    relayTransport: relaySelection.ok ? `relay: ${relaySelection.privacy_level}` : "relay: unavailable",
+    relayWarning: relaySelection.ok ? relaySelection.warning : "relay: no delivery relays advertised",
+    nodeName: currentNodeDocument?.name,
+    nodeBaseUrl: currentNodeDocument?.public_base_url,
+    nodeOnionBaseUrl: currentNodeDocument?.onion_base_url ?? null,
+    nodeRoles: currentNodeDocument?.roles,
+    nodeRelaySummary: currentNodeDocument === null
+      ? "relay capabilities unavailable"
+      : `relay capabilities: ${currentNodeDocument.relay_capabilities.map((relay) => `${relay.transport}:${relay.priority}`).join(", ")}`
+  };
+}
+
+function buildAnonymousIdentityView(): LocalIdentity {
+  return {
+    ...localIdentity,
+    portalTransport: `portal: ${describePortalTransport(window.location.origin)}`,
+    onionState: `onion: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
+    relayTransport: currentNodeDocument === null
+      ? localIdentity.relayTransport
+      : `relay: ${currentNodeDocument.relay_capabilities[0]?.transport ?? "unavailable"}`,
+    relayWarning: currentNodeDocument?.relay_capabilities[0]?.transport === "https"
+      ? "HTTPS relay fallback is in use; private message transport is not onion-routed."
+      : undefined,
+    nodeName: currentNodeDocument?.name ?? localIdentity.nodeName,
+    nodeBaseUrl: currentNodeDocument?.public_base_url ?? localIdentity.nodeBaseUrl,
+    nodeOnionBaseUrl: currentNodeDocument?.onion_base_url ?? localIdentity.nodeOnionBaseUrl,
+    nodeRoles: currentNodeDocument?.roles ?? localIdentity.nodeRoles,
+    nodeRelaySummary: currentNodeDocument === null
+      ? localIdentity.nodeRelaySummary
+      : `relay capabilities: ${currentNodeDocument.relay_capabilities.map((relay) => `${relay.transport}:${relay.priority}`).join(", ")}`
+  };
 }
 
 function logout(): void {

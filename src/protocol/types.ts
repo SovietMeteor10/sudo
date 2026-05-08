@@ -5,6 +5,28 @@ export type Signature = string;
 
 export type SigningKeyType = "ed25519" | "ecdsa-p256";
 export type MessagingKeyType = "x25519" | "ecdh-p256" | "x25519_or_placeholder";
+export type TransportType = "onion" | "https" | "local_dev";
+
+export type RelayCapability = {
+  type: "sudo_relay_capability";
+  protocol_version: string;
+  relay_id: string;
+  transport: TransportType;
+  url: string;
+  priority: number;
+  supports_store_and_forward: boolean;
+  supports_ack: boolean;
+  supports_unknown_sender_queue: boolean;
+  max_message_bytes: number;
+  unknown_sender_policy: {
+    max_pending: number;
+    ttl_hours: number;
+  };
+  known_sender_policy: {
+    max_pending: number;
+    ttl_days: number;
+  };
+};
 
 export type IdentityKey = {
   type: SigningKeyType;
@@ -42,7 +64,7 @@ export type SignableIdentityDocument = {
   handle: Handle;
   home_node: string;
   keys: IdentityKeySet;
-  delivery_relays: string[];
+  delivery_relays: RelayCapability[];
   feed_endpoints: string[];
   created_at: string;
   updated_at: string;
@@ -57,6 +79,22 @@ export type IdentityDocument = SignableIdentityDocument & {
   finger?: string;
   inbox?: string;
   visual_fingerprint?: IdentityFingerprint;
+};
+
+export type NodeCapabilityDocument = {
+  type: "sudo_node";
+  protocol_version: string;
+  node_id: string;
+  name: string;
+  public_base_url: string;
+  onion_base_url: string | null;
+  roles: string[];
+  relay_capabilities: RelayCapability[];
+  created_at: string;
+  software: {
+    name: "sudo";
+    version: string;
+  };
 };
 
 export type RelayEnvelopeStatus =

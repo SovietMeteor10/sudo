@@ -7,6 +7,13 @@ export const localIdentity: LocalIdentity = {
   privacyMode: "ghost mode: off",
   onionState: "onion: connected",
   fingerprintSnippet: "8fa2...",
+  portalTransport: "portal: https",
+  relayTransport: "relay: unknown",
+  nodeName: "sudo",
+  nodeBaseUrl: "https://sudochat.xyz",
+  nodeOnionBaseUrl: null,
+  nodeRoles: ["portal", "identity_registry", "relay", "feed_host", "discovery_index"],
+  nodeRelaySummary: "relay capabilities unavailable",
 };
 
 export const streamPosts: StreamPost[] = [

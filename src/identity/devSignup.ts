@@ -6,6 +6,7 @@ import {
 } from "../crypto/index.js";
 import type { IdentityDocument } from "../protocol/types.js";
 import { accountAccessProvider } from "../localState/accountAccess.js";
+import { getNodeCapabilityDocument } from "../node/node.service.js";
 import { createHandle, getIdentityByHandle, saveIdentity } from "./registry.js";
 import { createSignedIdentityDocument } from "./identity.service.js";
 
@@ -51,13 +52,15 @@ export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
   const identityKeys = createEd25519KeyPairBase64Url();
   const feedKeys = createEd25519KeyPairBase64Url();
   const messagingPublicKey = `placeholder:${identityKeys.publicKey.slice(0, 24)}`;
+  const nodeDocument = getNodeCapabilityDocument();
   const identityDocument = createSignedIdentityDocument({
     handle,
     homeNode: options.host,
     identityPublicKey: identityKeys.publicKey,
     identityPrivateKey: identityKeys.privateKey,
     messagingPublicKey,
-    feedPublicKey: feedKeys.publicKey
+    feedPublicKey: feedKeys.publicKey,
+    deliveryRelays: nodeDocument.relay_capabilities
   });
   const canonicalId = identityDocument.canonical_id;
   const legacyDocument: IdentityDocument = {

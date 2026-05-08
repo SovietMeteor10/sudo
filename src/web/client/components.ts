@@ -30,11 +30,16 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
       line(identity.privacyMode),
       line(identity.onionState, "is-muted"),
       line(`fingerprint: ${identity.fingerprintSnippet}`, "is-muted"),
+      line(identity.portalTransport, "is-muted"),
+      line(identity.relayTransport, "is-muted"),
+      ...(identity.relayWarning === undefined ? [] : [line(identity.relayWarning, "is-muted")]),
+      ...(identity.nodeName === undefined ? [] : [line(`node: ${identity.nodeName}`, "is-muted")]),
+      ...(identity.nodeBaseUrl === undefined ? [] : [line(`public: ${identity.nodeBaseUrl}`, "is-muted")]),
+      ...(identity.nodeOnionBaseUrl === undefined ? [] : [line(`onion: ${identity.nodeOnionBaseUrl ?? "null"}`, "is-muted")]),
+      ...(identity.nodeRoles === undefined ? [] : [line(`roles: ${identity.nodeRoles.join(", ")}`, "is-muted")]),
+      ...(identity.nodeRelaySummary === undefined ? [] : [line(identity.nodeRelaySummary, "is-muted")]),
     ]),
   );
-
-  // TODO: replace placeholder Tor state with a local onion connectivity probe.
-  // TODO: add key continuity warnings once identity history is stored.
 }
 
 export function renderSignupState(root: HTMLElement, state: SignupState): void {

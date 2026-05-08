@@ -1,4 +1,4 @@
-import type { IdentityDocument } from "../../../protocol/types.js";
+import type { IdentityDocument, RelayCapability } from "../../../protocol/types.js";
 import { deriveBackupKey, randomBytes, toBufferSource, base64Url, base64UrlToBytes } from "../local/crypto.js";
 import { getCryptoAccount, saveCryptoAccount } from "../local/local-store.js";
 import type { LocalCryptoAccountRecord } from "../local/local-types.js";
@@ -60,6 +60,7 @@ export async function createBrowserCryptoAccount(options: {
   handle: string;
   passphrase: string;
   homeNode: string;
+  deliveryRelays?: RelayCapability[];
 }): Promise<BrowserCryptoAccountDraft> {
   const handle = `@${normalizeHandle(options.handle)}`;
   const identity = await generateSigningKeyPair();
@@ -74,6 +75,7 @@ export async function createBrowserCryptoAccount(options: {
     messagingPublicKey: messaging.publicKeySpki,
     feedPublicKey: feed.publicKeySpki,
     devicePublicKey: device.publicKeySpki,
+    deliveryRelays: options.deliveryRelays ?? [],
     identityKeyType: identity.type,
     messagingKeyType: messaging.type,
     feedKeyType: feed.type,

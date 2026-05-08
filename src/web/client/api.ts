@@ -6,6 +6,7 @@ import type {
   FeedPost,
   FeedSubscription,
   IdentityDocument,
+  NodeCapabilityDocument,
   SearchResult
 } from "./types.js";
 
@@ -29,6 +30,18 @@ export async function lookupHandle(query: string, signal: AbortSignal): Promise<
   }
 
   return response.json() as Promise<IdentityDocument>;
+}
+
+export async function getNodeDocument(): Promise<NodeCapabilityDocument> {
+  const response = await fetch("/.well-known/sudo/node.json", {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`node metadata failed: ${response.status}`);
+  }
+
+  return response.json() as Promise<NodeCapabilityDocument>;
 }
 
 export async function registerIdentityDocument(identityDocument: IdentityDocument): Promise<IdentityDocument> {

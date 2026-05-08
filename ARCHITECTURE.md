@@ -44,7 +44,8 @@ trust.
 
 Canonical IDs are deterministic and derived from the public identity key:
 `sudo:ed25519:<sha256-public-key>`. Identity documents are signed by the
-identity key and include separate identity, messaging, and feed keys.
+identity key and include separate identity, messaging, feed keys, and ordered
+delivery relay capabilities.
 
 Each identity also has a visual fingerprint generated directly from a
 cryptographic hash of the public identity key. The fingerprint is an 8x8 grid
@@ -80,6 +81,23 @@ the relay tombstones the row and redacts ciphertext from the relay copy.
 The intended future transport is onion-first relay access. HTTPS access to a
 portal is useful for deployment, but it is not the same as private network
 transport.
+
+## Transport Metadata
+
+The portal transport and the private-message relay transport are separate
+concerns. A user may visit sudo over HTTPS while their private relay delivery
+prefers an onion endpoint.
+
+The node capability document at `/.well-known/sudo/node.json` advertises:
+
+- the node's public base URL
+- an optional onion base URL
+- the node roles
+- ordered relay capabilities
+
+If `SUDO_ONION_BASE_URL` is unset, the node advertises `onion_base_url: null`.
+HTTPS relay fallback is explicit and should be treated as lower privacy than
+onion transport. Tor is transport only; it is not identity or storage.
 
 ## Relationship Model
 
