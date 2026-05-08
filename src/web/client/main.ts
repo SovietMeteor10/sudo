@@ -642,17 +642,27 @@ function playIncomingMessageSound(): void {
       if (audioContext.state === "suspended") return;
     }
     const ctx = audioContext;
-    const oscillator = ctx.createOscillator();
-    const gain = ctx.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 880;
-    gain.gain.setValueAtTime(0.0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.012);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.13);
-    oscillator.connect(gain);
-    gain.connect(ctx.destination);
-    oscillator.start();
-    oscillator.stop(ctx.currentTime + 0.14);
+    const start = ctx.currentTime;
+
+    // Two-tone ascending chime (E5 -> A5). Short, pleasant, hard to ignore
+    // without being shrill. Both tones share an envelope shape; second tone
+    // starts as the first one fades.
+    const tone = (frequency: number, startAt: number, duration: number, peak: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(frequency, startAt);
+      gain.gain.setValueAtTime(0.0001, startAt);
+      gain.gain.linearRampToValueAtTime(peak, startAt + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(startAt);
+      osc.stop(startAt + duration + 0.02);
+    };
+
+    tone(659.25, start, 0.11, 0.28);          // E5
+    tone(880.0, start + 0.09, 0.16, 0.28);    // A5
   } catch {
     // never break the app over a sound
   }
