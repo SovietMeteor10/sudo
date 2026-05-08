@@ -104,6 +104,7 @@ const accountButtonHandle = getRequiredElement("account-button-handle");
 const accountMenu = getRequiredElement("account-menu");
 const accountMenuHandle = getRequiredElement("account-menu-handle");
 const accountMenuFingerprint = getRequiredElement("account-menu-fingerprint");
+const accountMenuRelay = getRequiredElement("account-menu-relay");
 const accountMenuBackup = getRequiredButton("account-menu-backup");
 const accountMenuRestore = getRequiredButton("account-menu-restore");
 const accountMenuDevices = getRequiredButton("account-menu-devices");
@@ -114,6 +115,7 @@ const devicesCancel = getRequiredButton("devices-cancel");
 const chatPopup = getRequiredElement("chat-popup");
 const chatPopupHandle = getRequiredElement("chat-popup-handle");
 const chatPopupFingerprint = getRequiredElement("chat-popup-fingerprint");
+const chatPopupRelay = getRequiredElement("chat-popup-relay");
 const chatPopupBody = getRequiredElement("chat-popup-body");
 const chatPopupForm = getRequiredForm("chat-popup-form");
 const chatPopupInput = getRequiredTextArea("chat-popup-input");
@@ -479,7 +481,12 @@ chatsRoot.addEventListener("click", (event) => {
 });
 
 // ----- composer auto-grow + Cmd/Ctrl+Enter submit -----
-feedBodyInput.addEventListener("input", () => autoGrowTextarea(feedBodyInput, 32, 280));
+feedBodyInput.addEventListener("input", () => {
+  autoGrowTextarea(feedBodyInput, 32, 280);
+  if (feedComposerState.textContent && feedComposerState.textContent.length > 0) {
+    feedComposerState.textContent = "";
+  }
+});
 feedBodyInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
     event.preventDefault();
@@ -640,12 +647,12 @@ function playIncomingMessageSound(): void {
     oscillator.type = "sine";
     oscillator.frequency.value = 880;
     gain.gain.setValueAtTime(0.0, ctx.currentTime);
-    gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+    gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.13);
     oscillator.connect(gain);
     gain.connect(ctx.destination);
     oscillator.start();
-    oscillator.stop(ctx.currentTime + 0.13);
+    oscillator.stop(ctx.currentTime + 0.14);
   } catch {
     // never break the app over a sound
   }
@@ -659,6 +666,7 @@ async function refreshNodeDocument(): Promise<void> {
   }
 
   refreshIdentityPane();
+  refreshRelayStatusUi();
 }
 
 async function runLookup(rawQuery: string): Promise<void> {
@@ -1514,7 +1522,9 @@ async function submitFeedPost(): Promise<void> {
     });
     feedBodyInput.value = "";
     autoGrowTextarea(feedBodyInput, 32, 280);
-    feedComposerState.textContent = "posted";
+    // Quiet success: don't leave a "posted" status hanging in the UI; the
+    // new post appearing in the stream is the confirmation.
+    feedComposerState.textContent = "";
     await refreshFeedPosts();
   } catch (error) {
     feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
@@ -1784,6 +1794,7 @@ function setAccountButtonHandle(handle: string | null): void {
     accountButton.removeAttribute("data-handle");
     accountMenuHandle.textContent = "";
     accountMenuFingerprint.textContent = "";
+    accountMenuRelay.textContent = "";
     return;
   }
   accountButtonHandle.textContent = handle;
@@ -1792,6 +1803,35 @@ function setAccountButtonHandle(handle: string | null): void {
   accountMenuFingerprint.textContent = currentIdentityFingerprint
     ? `fingerprint ${currentIdentityFingerprint.slice(0, 12)}...`
     : "";
+  accountMenuRelay.textContent = describeRelayStatus();
+}
+
+// Honest relay status string. We never claim onion routing unless the node
+// actually advertises an onion relay capability with a usable URL.
+function describeRelayStatus(): string {
+  const node = currentNodeDocument;
+  if (node === null) return "relay: unknown";
+  const capabilities = node.relay_capabilities ?? [];
+  const onion = capabilities.find((r) => r.transport === "onion" && typeof r.url === "string" && r.url.length > 0);
+  if (onion !== undefined && node.onion_base_url) {
+    return "relay: onion";
+  }
+  const https = capabilities.find((r) => r.transport === "https");
+  if (https !== undefined) {
+    return "relay: https fallback (encrypted, not onion-routed)";
+  }
+  const localDev = capabilities.find((r) => r.transport === "local_dev");
+  if (localDev !== undefined) {
+    return "relay: local development (encrypted, not onion-routed)";
+  }
+  return "relay: unavailable";
+}
+
+function refreshRelayStatusUi(): void {
+  accountMenuRelay.textContent = currentIdentityDocument === null ? "" : describeRelayStatus();
+  if (chatTarget !== null && !chatPopup.hidden) {
+    chatPopupRelay.textContent = describeRelayStatus();
+  }
 }
 
 function setAccountMenuOpen(open: boolean): void {
@@ -2116,6 +2156,7 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   chatPopupFingerprint.textContent = target.fingerprint
     ? `fingerprint ${target.fingerprint.slice(0, 12)}...`
     : "";
+  chatPopupRelay.textContent = describeRelayStatus();
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
   for (const row of chatsRoot.querySelectorAll<HTMLElement>("[data-chat-canonical]")) {
@@ -2135,7 +2176,7 @@ function closeChatPopup(): void {
   }
 }
 
-async function renderChatPopupBody(canonicalId: string): Promise<void> {
+async function renderChatPopupBody(canonicalId: string, options: { forceScrollToBottom?: boolean } = {}): Promise<void> {
   if (currentIdentityDocument === null) {
     chatPopupBody.replaceChildren(makeChatEmpty("sign in to chat"));
     return;
@@ -2147,6 +2188,11 @@ async function renderChatPopupBody(canonicalId: string): Promise<void> {
   } catch {
     messages = [];
   }
+  // Stick scroll to bottom only if the user was already near the bottom
+  // before this re-render. New messages while reading older history won't
+  // yank the viewport.
+  const distanceFromBottom = chatPopupBody.scrollHeight - chatPopupBody.scrollTop - chatPopupBody.clientHeight;
+  const wasNearBottom = distanceFromBottom < 60 || chatPopupBody.scrollHeight === 0;
   if (messages.length === 0) {
     chatPopupBody.replaceChildren(makeChatEmpty("no messages yet"));
     return;
@@ -2156,7 +2202,9 @@ async function renderChatPopupBody(canonicalId: string): Promise<void> {
     fragment.append(renderChatMessage(message));
   }
   chatPopupBody.replaceChildren(fragment);
-  chatPopupBody.scrollTop = chatPopupBody.scrollHeight;
+  if (options.forceScrollToBottom || wasNearBottom) {
+    chatPopupBody.scrollTop = chatPopupBody.scrollHeight;
+  }
 }
 
 function makeChatEmpty(text: string): HTMLElement {
@@ -2169,16 +2217,35 @@ function makeChatEmpty(text: string): HTMLElement {
 function renderChatMessage(message: { message_id: string; created_at: string; direction: "sent" | "received"; body: string }): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
+  const bubble = document.createElement("div");
+  bubble.className = "chat-message__bubble";
+  bubble.textContent = message.body;
   const meta = document.createElement("div");
   meta.className = "chat-message__meta";
-  const date = new Date(message.created_at);
-  const time = Number.isNaN(date.valueOf()) ? message.created_at : date.toISOString().slice(11, 16);
-  meta.textContent = `${time} ${message.direction === "sent" ? "you" : "them"}`;
-  const body = document.createElement("div");
-  body.className = "chat-message__body";
-  body.textContent = message.body;
-  wrapper.append(meta, body);
+  meta.textContent = formatChatTimestamp(message.created_at);
+  wrapper.append(bubble, meta);
   return wrapper;
+}
+
+function formatChatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (sameDay) return time;
+  return `${time} ${formatShortDate(date)}`;
+}
+
+function formatShortDate(date: Date): string {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${pad2(date.getDate())} ${months[date.getMonth()]} ${String(date.getFullYear()).slice(-2)}`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
 }
 
 function conversationKey(a: string, b: string): string {
@@ -2217,7 +2284,7 @@ async function sendChatPopupMessage(): Promise<void> {
     });
     chatPopupInput.value = "";
     autoGrowTextarea(chatPopupInput, 28, 120);
-    await renderChatPopupBody(target.canonical);
+    await renderChatPopupBody(target.canonical, { forceScrollToBottom: true });
     await refreshLocalChats();
     if (!result.ok) {
       flashFeedback(`send failed: ${result.error ?? "unknown"}`);

@@ -153,6 +153,33 @@ async function relayInboxLength(canonical) {
   if (!recvB.ok) fail("B-receive", `expected message in popup within ${RECEIVE_BUDGET_MS}ms; popup hidden=${recvB.snap.hidden} body='${recvB.snap.body.slice(0, 200)}'`);
   else ok(`B popup received message in ${recvB.elapsed}ms`);
 
+  // 3b. Bubble alignment: B's view of A's message must be a `received` bubble
+  // pinned to the LEFT of the popup body.
+  const incomingShape = await pageB.evaluate(() => {
+    const node = document.querySelector(".chat-message--received");
+    const bodyRect = document.getElementById("chat-popup-body")?.getBoundingClientRect();
+    if (!node || !bodyRect) return { ok: false };
+    const r = node.getBoundingClientRect();
+    return {
+      ok: true,
+      leftOffset: Math.round(r.left - bodyRect.left),
+      bodyWidth: Math.round(bodyRect.width),
+      msgWidth: Math.round(r.width)
+    };
+  });
+  if (!incomingShape.ok) fail("incoming-align", "no received bubble found in B");
+  else if (incomingShape.leftOffset > Math.max(40, incomingShape.bodyWidth * 0.3)) {
+    fail("incoming-align", `received bubble not left-aligned: leftOffset=${incomingShape.leftOffset}, bodyWidth=${incomingShape.bodyWidth}`);
+  } else ok(`3b. received bubble left-aligned (offset=${incomingShape.leftOffset}px)`);
+
+  // 3c. Honest relay status appears on the popup header.
+  const popupRelay = await pageB.evaluate(() => document.getElementById("chat-popup-relay")?.textContent ?? "");
+  if (!/https fallback|encrypted, not onion-routed|onion|unavailable/i.test(popupRelay)) {
+    fail("popup-relay", `popup header missing relay status: '${popupRelay}'`);
+  } else if (/onion-routed/i.test(popupRelay) && !/not onion-routed/i.test(popupRelay)) {
+    fail("popup-relay", `popup claims onion routing without onion transport: '${popupRelay}'`);
+  } else ok(`3c. popup relay status: '${popupRelay}'`);
+
   // 4. B's chat list shows A
   const bChatList = await pageB.evaluate(() => document.getElementById("chat-list")?.innerText ?? "");
   if (!new RegExp(handleA, "i").test(bChatList)) fail("B-chat-list", `chat list does not include sender: '${bChatList}'`);
@@ -179,6 +206,32 @@ async function relayInboxLength(canonical) {
   const recvA = await waitForPopupBody(pageA, messageBtoA);
   if (!recvA.ok) fail("A-receive", `expected reply in popup within ${RECEIVE_BUDGET_MS}ms; popup hidden=${recvA.snap.hidden} body='${recvA.snap.body.slice(0, 200)}'`);
   else ok(`A popup received reply in ${recvA.elapsed}ms`);
+
+  // 7b. A's view: outgoing bubble (sent) must be on the RIGHT, B's reply on the LEFT.
+  const aBubbles = await pageA.evaluate(() => {
+    const bodyEl = document.getElementById("chat-popup-body");
+    if (!bodyEl) return { ok: false };
+    const bodyRect = bodyEl.getBoundingClientRect();
+    const sent = bodyEl.querySelector(".chat-message--sent");
+    const received = bodyEl.querySelector(".chat-message--received");
+    if (!sent || !received) return { ok: false, reason: "missing sent or received bubble" };
+    const sR = sent.getBoundingClientRect();
+    const rR = received.getBoundingClientRect();
+    return {
+      ok: true,
+      sentRightOffset: Math.round(bodyRect.right - sR.right),
+      receivedLeftOffset: Math.round(rR.left - bodyRect.left),
+      bodyWidth: Math.round(bodyRect.width),
+      sentWidth: Math.round(sR.width),
+      receivedWidth: Math.round(rR.width)
+    };
+  });
+  if (!aBubbles.ok) fail("A-align", aBubbles.reason || "could not measure bubbles in A");
+  else if (aBubbles.sentRightOffset > Math.max(40, aBubbles.bodyWidth * 0.3)) {
+    fail("A-align", `sent bubble not right-aligned: rightOffset=${aBubbles.sentRightOffset}`);
+  } else if (aBubbles.receivedLeftOffset > Math.max(40, aBubbles.bodyWidth * 0.3)) {
+    fail("A-align", `received bubble not left-aligned: leftOffset=${aBubbles.receivedLeftOffset}`);
+  } else ok(`7b. A bubbles aligned (sent right=${aBubbles.sentRightOffset}px, received left=${aBubbles.receivedLeftOffset}px)`);
 
   // 8. A's chat list now shows B
   const aChatList = await pageA.evaluate(() => document.getElementById("chat-list")?.innerText ?? "");

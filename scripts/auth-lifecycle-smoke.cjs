@@ -143,6 +143,70 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     const chatsText = await page.evaluate(() => document.getElementById("chat-list")?.innerText.toLowerCase() ?? "");
     if (!/no chats yet/.test(chatsText)) fail("post-signup", `chat list not empty: '${chatsText.slice(0, 200)}'`);
     else ok("3f. fresh chat list shows 'no chats yet'");
+
+    // 3g. directory hint sits directly below the search input.
+    const directoryHint = await page.evaluate(() => {
+      const search = document.getElementById("lookup-form");
+      const hint = document.getElementById("directory-hint");
+      if (!search || !hint) return { ok: false, reason: "missing element" };
+      const sR = search.getBoundingClientRect();
+      const hR = hint.getBoundingClientRect();
+      return { ok: hR.top >= sR.bottom - 1 && /resolve identity|search|handle/i.test(hint.textContent || ""), text: hint.textContent };
+    });
+    if (!directoryHint.ok) fail("directory-hint", `expected hint directly below search input, got '${directoryHint.text ?? "(missing)"}'`);
+    else ok(`3g. directory hint sits below search input: '${directoryHint.text}'`);
+
+    // 3h. account menu surfaces honest relay status (no fake onion claim).
+    const relayCopy = await page.evaluate(() => {
+      document.getElementById("account-button")?.click();
+      const text = document.getElementById("account-menu-relay")?.textContent ?? "";
+      document.getElementById("account-button")?.click();
+      return text.toLowerCase();
+    });
+    if (!/https fallback|encrypted, not onion-routed|onion|unavailable/.test(relayCopy)) {
+      fail("relay-status", `account menu does not surface honest relay status: '${relayCopy}'`);
+    } else if (/onion-routed/.test(relayCopy) && !/not onion-routed/.test(relayCopy)) {
+      fail("relay-status", `relay copy claims onion routing without onion transport: '${relayCopy}'`);
+    } else ok(`3h. relay status: '${relayCopy}'`);
+
+    // 3i. After posting, the composer status text should not linger as 'posted'.
+    const composerProbe = await page.evaluate(async () => {
+      const body = document.getElementById("feed-body");
+      if (!body) return { ok: false, reason: "missing composer" };
+      body.value = "smoke post";
+      body.dispatchEvent(new Event("input", { bubbles: true }));
+      document.getElementById("feed-composer")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      // Wait a moment for the async submit to settle.
+      const waitFor = (ms) => new Promise((r) => setTimeout(r, ms));
+      for (let i = 0; i < 40; i++) {
+        const text = document.getElementById("feed-composer-state")?.textContent ?? "";
+        if (text === "" || /posted|^$/i.test(text)) {
+          await waitFor(200);
+          return { ok: true, text: document.getElementById("feed-composer-state")?.textContent ?? "" };
+        }
+        if (/error|fail/i.test(text)) return { ok: false, reason: text };
+        await waitFor(100);
+      }
+      return { ok: false, reason: "composer state never settled" };
+    });
+    if (!composerProbe.ok) fail("composer-quiet", `composer status never quieted: ${composerProbe.reason}`);
+    else if (/posted/i.test(composerProbe.text)) fail("composer-quiet", `composer still shows 'posted': '${composerProbe.text}'`);
+    else ok(`3i. composer status quiets after post (text='${composerProbe.text}')`);
+
+    // 3j. Post header layout: handle on the left, time on the right (no leading ISO date).
+    const postShape = await page.evaluate(() => {
+      const post = document.querySelector(".stream-post");
+      if (!post) return { ok: false, reason: "no post rendered" };
+      const handle = post.querySelector(".stream-post__handle")?.textContent ?? "";
+      const time = post.querySelector(".stream-post__time")?.textContent ?? "";
+      const meta = post.querySelector(".stream-post__meta")?.textContent ?? "";
+      return { ok: true, handle, time, meta };
+    });
+    if (!postShape.ok) fail("post-header", postShape.reason);
+    else if (/^\d{4}-\d{2}-\d{2}/.test(postShape.meta.trim())) fail("post-header", `meta still leads with ISO date: '${postShape.meta}'`);
+    else if (!/^@/.test(postShape.handle)) fail("post-header", `expected handle starting with @, got '${postShape.handle}'`);
+    else if (!/^\d{2}:\d{2}/.test(postShape.time)) fail("post-header", `expected time HH:MM, got '${postShape.time}'`);
+    else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
   }
 
   // ===== 4. Sign out / sign in same device =====

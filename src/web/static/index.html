@@ -56,6 +56,7 @@
             inputmode="text"
           >
         </form>
+        <div class="column__hint" id="directory-hint">type a handle to resolve identity</div>
         <div class="search-results" id="search-results" aria-live="polite"></div>
         <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
       </div>
@@ -118,6 +119,7 @@
     <div class="account-menu__head">
       <div class="account-menu__handle" id="account-menu-handle"></div>
       <div class="account-menu__fingerprint" id="account-menu-fingerprint"></div>
+      <div class="account-menu__relay" id="account-menu-relay"></div>
     </div>
     <button class="account-menu__item" id="account-menu-backup" type="button" role="menuitem">backup account</button>
     <button class="account-menu__item" id="account-menu-restore" type="button" role="menuitem">restore from backup</button>
@@ -131,6 +133,7 @@
       <div class="chat-popup__identity">
         <span class="chat-popup__handle" id="chat-popup-handle"></span>
         <span class="chat-popup__fingerprint" id="chat-popup-fingerprint"></span>
+        <span class="chat-popup__relay" id="chat-popup-relay"></span>
       </div>
       <div class="chat-popup__controls">
         <button class="chat-popup__icon" id="chat-popup-minimize" type="button" aria-label="minimize">_</button>

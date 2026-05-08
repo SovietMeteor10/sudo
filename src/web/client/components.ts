@@ -177,7 +177,9 @@ export function renderDiscoveryPanel(
 
 export function renderLookupResult(root: HTMLElement, state: LookupState): void {
   if (state.status === "idle") {
-    root.replaceChildren(line("type a handle to resolve identity", "lookup__empty"));
+    // Helper text now lives statically below the search input as
+    // `#directory-hint`; the result panel stays empty until the user types.
+    root.replaceChildren();
     return;
   }
 
@@ -286,7 +288,16 @@ function renderFeedPost(post: FeedPost): HTMLElement {
 
   const meta = document.createElement("div");
   meta.className = "stream-post__meta";
-  meta.textContent = `${formatTimestamp(post.created_at)}  ${post.author_handle ?? shortCanonical(post.author_canonical_id)}  [${post.visibility}]`;
+
+  const author = document.createElement("span");
+  author.className = "stream-post__handle";
+  author.textContent = post.author_handle ?? shortCanonical(post.author_canonical_id);
+
+  const time = document.createElement("span");
+  time.className = "stream-post__time";
+  time.textContent = formatPostTimestamp(post.created_at);
+
+  meta.append(author, time);
 
   const body = document.createElement("div");
   body.className = "stream-post__body";
@@ -474,6 +485,23 @@ function formatTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
   return date.toISOString().replace("T", " ").slice(0, 16);
+}
+
+function formatPostTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return value;
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  if (sameDay) return time;
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${time} ${pad2(date.getDate())} ${months[date.getMonth()]} ${String(date.getFullYear()).slice(-2)}`;
+}
+
+function pad2(n: number): string {
+  return n < 10 ? `0${n}` : `${n}`;
 }
 
 function shortCanonical(value: string): string {
