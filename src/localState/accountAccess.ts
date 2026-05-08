@@ -1,7 +1,7 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
-import { db } from "./db.js";
-import type { IdentityDocument } from "./crypto.js";
-import { getIdentityByCanonicalId, getIdentityByHandle } from "./registry.js";
+import { db } from "../storage/db.js";
+import { getIdentityByCanonicalId, getIdentityByHandle } from "../identity/registry.js";
+import type { IdentityDocument } from "../protocol/types.js";
 
 export type CreatedCredential = {
   backupCode: string;

@@ -1,9 +1,7 @@
 import { Router } from "express";
-import { fingerprintPublicKey } from "../crypto.js";
-import { db } from "../db.js";
-import { AccountAccessError, accountAccessProvider, createDevSession, getIdentityForDevSession } from "../accountAccess.js";
-import { DevSignupError, createDevIdentity } from "../devSignup.js";
-import { getIdentityByHandle, normalizeHandle } from "../registry.js";
+import { searchIdentityHandles } from "../discovery/discovery.service.js";
+import { AccountAccessError, accountAccessProvider, createDevSession, getIdentityForDevSession } from "../localState/accountAccess.js";
+import { DevSignupError, createDevIdentity } from "../identity/devSignup.js";
 
 export const devRouter = Router();
 
@@ -165,53 +163,8 @@ devRouter.get("/dev/session", (request, response) => {
 
 devRouter.get("/dev/search-handles", (request, response) => {
   const query = typeof request.query["q"] === "string" ? request.query["q"] : "";
-  const normalizedQuery = query.trim().replace(/^@/, "").toLowerCase();
-
-  if (normalizedQuery.length === 0) {
-    response.json({ results: [] });
-    return;
-  }
-
-  try {
-    normalizeHandle(normalizedQuery);
-  } catch {
-    if (!/^[a-z0-9_]{1,32}$/.test(normalizedQuery)) {
-      response.json({ results: [] });
-      return;
-    }
-  }
-
-  const rows = db.prepare(`
-    SELECT handle, canonical, public_key
-    FROM identities
-  `).all() as Array<{ handle: string; canonical: string; public_key: string }>;
-
-  const scored = rows
-    .map((row) => {
-      const handleBody = row.handle.replace(/^@/, "").toLowerCase();
-      const score = scoreHandle(handleBody, normalizedQuery);
-      return { row, score };
-    })
-    .filter((item) => item.score !== null)
-    .sort((left, right) => left.score! - right.score! || left.row.handle.localeCompare(right.row.handle))
-    .slice(0, 10)
-    .map(({ row }) => ({
-      handle: row.handle,
-      canonical: row.canonical,
-      bio: "identity document",
-      fingerprint: `${fingerprintPublicKey(row.public_key).slice(0, 12)}...`
-    }));
-
-  response.json({ results: scored });
+  response.json({ results: searchIdentityHandles(query) });
 });
-
-function scoreHandle(handle: string, query: string): number | null {
-  if (handle === query) return 0;
-  if (handle.startsWith(query)) return 1;
-  if (handle.includes(query)) return 2;
-  if (isSubsequence(query, handle)) return 3;
-  return null;
-}
 
 function isStrongPassword(password: string): boolean {
   return (
@@ -221,14 +174,4 @@ function isStrongPassword(password: string): boolean {
     && /[0-9]/.test(password)
     && /[^A-Za-z0-9]/.test(password)
   );
-}
-
-function isSubsequence(needle: string, haystack: string): boolean {
-  let cursor = 0;
-  for (const char of haystack) {
-    if (char === needle[cursor]) cursor++;
-    if (cursor === needle.length) return true;
-  }
-
-  return false;
 }

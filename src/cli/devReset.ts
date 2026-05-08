@@ -13,7 +13,7 @@ if (existsSync(dataPath)) {
 mkdirSync(resolve(dataPath, "keys"), { recursive: true });
 writeFileSync(resolve(dataPath, "keys/.gitkeep"), "");
 
-const { db } = await import("../db.js");
+const { db } = await import("../storage/db.js");
 db.close();
 
 console.log("sudo dev reset complete");

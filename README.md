@@ -4,6 +4,10 @@
 
 It is a local-dev scaffold, not a production-secure system.
 
+The current deployment intentionally keeps a single TypeScript Node/Express
+process, SQLite database, and static browser portal. The code is separated so
+the portal is replaceable and is not treated as the network itself.
+
 ## What it is
 
 - privacy-first
@@ -32,14 +36,104 @@ The current UX is intentionally spare: a three-pane shell for identity, stream, 
 ## Project structure
 
 ```text
-src/server.ts        Express server and static client mounts
-src/routes/          Registry, profile, finger, inbox, and dev routes
-src/client/          Browser TypeScript client
-src/public/          HTML and CSS shell served by Express
+src/app.ts           Express app construction and route mounting
+src/server.ts        Production entrypoint; starts node dist/server.js listener
+src/portal/          Static portal mounting adapter
+src/web/client/      Browser TypeScript portal
+src/web/static/      HTML and CSS shell served by Express
+src/identity/        Identity registry, handle normalization, dev identity creation
+src/relay/           Encrypted message relay/blob-store behavior
+src/feeds/           Feed-facing data and future feed protocol work
+src/discovery/       Discovery/search behavior separate from identity trust
+src/storage/         SQLite setup, schema, and migrations
+src/localState/      Local-dev account/session state
+src/crypto/          Signing, key generation, fingerprints, canonical JSON
+src/protocol/        Shared protocol constants, errors, and TypeScript types
+src/routes/          HTTP compatibility adapters over the domain modules
 docs/                Deployment, security, and roadmap notes
 data/                Local runtime state, ignored by Git
 dist/                TypeScript build output, ignored by Git
 ```
+
+## Architecture direction
+
+sudo is being kept as a protocol-oriented system rather than a single website.
+The current static web UI is one replaceable portal. The identity registry,
+relay/messaging layer, feed layer, discovery layer, crypto utilities, protocol
+types, and SQLite storage are separated so future portals, onion relays,
+identity registries, and discovery nodes can evolve independently.
+
+Current public routes are preserved for compatibility, and module routes are
+also mounted under:
+
+- `/api/identity`
+- `/api/relay`
+- `/api/feeds`
+- `/api/discovery`
+
+The three user-visible concepts today are:
+
+- Portal/client: `src/portal`, `src/web/client`, and `src/web/static`
+- Identity registry: `src/identity`, exposed today through `/.well-known/handles`, `/finger`, and `/u`
+- Relay/messaging layer: `src/relay`, exposed today through `/inbox`
+
+Discovery, feeds, local client/dev state, crypto, and protocol types are kept
+separate because future onion relays, identity registries, discovery nodes, and
+portals should be able to evolve independently.
+
+## Identity documents
+
+New identities use signed `sudo_identity` documents. A canonical ID is derived
+deterministically from the public identity key in the form
+`sudo:ed25519:<sha256-public-key>`, so the key is the stable identity and the
+handle is only a human alias.
+
+Identity documents include identity, messaging, and feed public keys, relay and
+feed endpoint lists, timestamps, sequence number, and an Ed25519 signature. The
+current local-dev signup flow still writes private keys under `data/keys`; this
+is explicitly DEV-ONLY and must move client-side later.
+
+sudo also generates an 8x8 visual fingerprint from the public identity key. The
+same key always produces the same coloured square grid, and a different key
+should produce a visibly different grid. If a known contact's fingerprint
+changes, treat that as an identity change until key continuity is verified.
+
+## Relay envelopes
+
+Private messages move through relays as `sudo_relay_envelope` records. The
+relay stores routing metadata and opaque ciphertext only; it does not understand
+plaintext message content. Current ciphertext uses a `dev-placeholder` scheme
+until client-side encryption is implemented.
+
+Relay policy is bounded store-and-forward:
+
+- blocked sender/recipient pairs are rejected
+- unknown pairs can have up to 3 pending messages
+- known pairs have a higher bounded quota
+- global, per-recipient, per-sender, and per-pair pending caps are enforced
+- every envelope expires
+- ACK and expiry tombstone rows and redact ciphertext
+
+Current relay inbox and ACK routes are DEV-ONLY and do not yet authenticate the
+recipient device. A real recipient should ACK only after durable local save.
+
+## Local storage and backups
+
+The browser portal keeps private working state in IndexedDB database
+`sudo_local_state`, not in server SQLite. This includes contacts, local events,
+private message history, pending outbound messages, identities seen, drafts,
+subscriptions, device metadata, and app settings.
+
+The maintenance panel can export and import encrypted `.sudo-backup.json` files.
+Backups are encrypted locally with Web Crypto PBKDF2 and AES-GCM. The backup
+passphrase stays in the browser and is not sent to the server.
+
+Development caveats:
+
+- local message bodies may be plaintext in IndexedDB until full client-side encryption lands
+- clearing browser data can delete private state
+- relay ACK must happen only after the client has saved the envelope locally
+- multi-device sync is future work
 
 ## Run locally
 

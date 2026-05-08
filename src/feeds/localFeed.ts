@@ -1,15 +1,6 @@
-import type { ChatSummary, LocalIdentity, StreamPost } from "./types.js";
+import type { StreamPost } from "../protocol/types.js";
 
-export const localIdentity: LocalIdentity = {
-  handle: "@SovietMeteor",
-  bio: "building sudo",
-  status: "quiet",
-  privacyMode: "ghost mode: off",
-  onionState: "onion: connected",
-  fingerprintSnippet: "8fa2...",
-};
-
-export const streamPosts: StreamPost[] = [
+export const localStreamPosts: StreamPost[] = [
   {
     id: "p-001",
     handle: "@SovietMeteor",
@@ -39,26 +30,5 @@ export const streamPosts: StreamPost[] = [
     handle: "@SovietMeteor",
     at: "2026-05-06 10:06",
     body: "todo: make key continuity understandable without turning the UI into a crypto dashboard.",
-  },
-];
-
-export const chatSummaries: ChatSummary[] = [
-  {
-    id: "c-001",
-    handle: "@northcatalog",
-    state: "quiet",
-    lastLine: "sealed note received",
-  },
-  {
-    id: "c-002",
-    handle: "@linebreak",
-    state: "draft",
-    lastLine: "draft saved locally",
-  },
-  {
-    id: "c-003",
-    handle: "@SovietMeteor",
-    state: "sealed",
-    lastLine: "loopback test",
   },
 ];
