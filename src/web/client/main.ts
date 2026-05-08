@@ -1,9 +1,11 @@
 import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
+  createDiscoveryReaction,
   deleteConnectionRelationship,
   deleteFeedSubscription,
   createFeedPost,
+  listDiscoveryPosts,
   getConnectionRelationship,
   fingerprintPublicKey,
   listFeedSubscriptions,
@@ -20,6 +22,7 @@ import {
 } from "./api.js";
 import {
   renderChatList,
+  renderDiscoveryPanel,
   renderIdentityPane,
   renderLookupResult,
   renderSearchResults,
@@ -45,6 +48,8 @@ import {
 import type {
   ChatSummary,
   ConnectionRelationship,
+  DiscoveryMode,
+  DiscoveryState,
   FeedSubscription,
   IdentityDocument,
   LocalIdentity,
@@ -67,6 +72,7 @@ const feedComposerState = getRequiredElement("feed-composer-state");
 const lookupRoot = getRequiredElement("lookup-result");
 const searchResultsRoot = getRequiredElement("search-results");
 const chatsRoot = getRequiredElement("chat-list");
+const discoveryRoot = getRequiredElement("discovery-list");
 const searchForm = getRequiredForm("lookup-form");
 const searchInput = getRequiredInput("lookup-input");
 const headerHandle = getRequiredElement("header-handle");
@@ -119,6 +125,7 @@ let lookupState: LookupState = { status: "idle" };
 let signupState: SignupState = { status: "idle" };
 let signinState: SigninState = { status: "idle" };
 let searchState: SearchState = { status: "idle" };
+let discoveryState: DiscoveryState = { status: "idle", mode: "recent" };
 let currentIdentity: LocalIdentity = localIdentity;
 let currentIdentityDocument: IdentityDocument | null = null;
 let currentLookupRelationship: ConnectionRelationship | null = null;
@@ -137,11 +144,13 @@ renderLookupResult(lookupRoot, lookupState);
 renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
 renderChatList(chatsRoot, localChats);
+renderDiscoveryPanel(discoveryRoot, discoveryState, null);
 renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
 syncActivePane("stream");
 void initializeLocalRuntime();
 void renderStreamWhenReady();
+void refreshDiscoveryPosts();
 void restoreStoredSession();
 
 searchForm.addEventListener("submit", (event) => {
@@ -168,6 +177,23 @@ lookupRoot.addEventListener("click", (event) => {
   const action = target.dataset["relationshipAction"];
   if (action === undefined) return;
   void handleLookupRelationshipAction(action);
+});
+
+discoveryRoot.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+
+  const mode = target.dataset["discoveryMode"] as DiscoveryMode | undefined;
+  if (mode !== undefined) {
+    void setDiscoveryMode(mode);
+    return;
+  }
+
+  const reaction = target.dataset["discoveryReaction"];
+  const postId = target.closest("[data-post-id]")?.getAttribute("data-post-id");
+  if (reaction !== undefined && postId !== undefined && postId !== null && isDiscoveryReaction(reaction)) {
+    void handleDiscoveryReaction(postId, reaction);
+  }
 });
 
 feedComposer.addEventListener("submit", (event) => {
@@ -264,7 +290,7 @@ for (const button of tabButtons) {
   if (!(button instanceof HTMLButtonElement)) continue;
   button.addEventListener("click", () => {
     const target = button.dataset["tabTarget"];
-    if (target === "identity" || target === "stream" || target === "chats") {
+    if (target === "identity" || target === "stream" || target === "chats" || target === "discovery") {
       syncActivePane(target);
     }
   });
@@ -538,6 +564,56 @@ async function refreshFeedPosts(): Promise<void> {
   }
 }
 
+async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode): Promise<void> {
+  discoveryState = { status: "loading", mode };
+  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+
+  try {
+    const posts = await listDiscoveryPosts(mode, 20, 0);
+    discoveryState = { status: "loaded", mode, posts };
+  } catch (error) {
+    discoveryState = {
+      status: "error",
+      mode,
+      message: error instanceof Error ? error.message : "discovery load failed"
+    };
+  }
+
+  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+}
+
+async function setDiscoveryMode(mode: DiscoveryMode): Promise<void> {
+  if (discoveryState.mode === mode && discoveryState.status === "loaded") {
+    renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+    return;
+  }
+
+  await refreshDiscoveryPosts(mode);
+}
+
+async function handleDiscoveryReaction(postId: string, reaction: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    localMaintenanceFeedback.textContent = "sign in to react";
+    return;
+  }
+
+  if (!isDiscoveryReaction(reaction)) {
+    return;
+  }
+
+  try {
+    await createDiscoveryReaction({
+      post_id: postId,
+      actor_canonical_id: currentIdentityDocument.canonical_id,
+      actor_handle: currentIdentityDocument.handle,
+      reaction
+    });
+    await refreshDiscoveryPosts(discoveryState.mode);
+  } catch (error) {
+    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "reaction failed";
+  }
+}
+
 async function handleLookupRelationshipAction(action: string): Promise<void> {
   if (currentIdentityDocument === null || lookupState.status !== "resolved") {
     return;
@@ -742,6 +818,7 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   renderIdentityPane(identityRoot, currentIdentity);
   void refreshLookupRelationship();
   void refreshFeedPosts();
+  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
   if (searchState.status === "results") {
     void runSearch(searchState.query);
   }
@@ -936,6 +1013,7 @@ function setSignedOut(): void {
   document.body.dataset["authState"] = "signed-out";
   currentIdentity = localIdentity;
   renderIdentityPane(identityRoot, currentIdentity);
+  renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   headerHandle.textContent = "";
   logoutButton.hidden = true;
   for (const button of headerAuthActionButtons) {
@@ -950,6 +1028,9 @@ function setSignedOut(): void {
   }
   if (searchState.status === "results") {
     void runSearch(searchState.query);
+  }
+  if (discoveryState.status === "loaded") {
+    renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   }
 }
 
@@ -1059,7 +1140,7 @@ function validatePassword(password: string): string | null {
   return null;
 }
 
-function syncActivePane(pane: "identity" | "stream" | "chats"): void {
+function syncActivePane(pane: "identity" | "stream" | "chats" | "discovery"): void {
   shell.dataset["activePane"] = pane;
 
   for (const button of tabButtons) {
@@ -1126,4 +1207,12 @@ function isFeedVisibility(value: string): value is "connections_only" | "close_c
     || value === "unlisted"
     || value === "public"
     || value === "public_metadata_encrypted_body";
+}
+
+function isDiscoveryReaction(value: string): value is "recommend" | "downrank" | "reply" | "repost" | "report" {
+  return value === "recommend"
+    || value === "downrank"
+    || value === "reply"
+    || value === "repost"
+    || value === "report";
 }

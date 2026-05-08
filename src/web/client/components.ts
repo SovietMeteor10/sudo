@@ -3,6 +3,8 @@ import { mountTextSurface, unmountAllTextSurfaces } from "./rendering/textSurfac
 import type {
   ChatSummary,
   ConnectionRelationship,
+  DiscoveryPostIndex,
+  DiscoveryState,
   FeedPost,
   FeedSubscription,
   IdentityFingerprint,
@@ -95,6 +97,45 @@ export function renderStream(root: HTMLElement, feedPosts: FeedPost[] = []): voi
     for (const post of feedPosts) {
       fragment.append(renderFeedPost(post));
     }
+  }
+
+  root.replaceChildren(fragment);
+}
+
+export function renderDiscoveryPanel(
+  root: HTMLElement,
+  state: DiscoveryState,
+  currentIdentityCanonicalId: string | null
+): void {
+  if (state.status === "idle" || state.status === "loading") {
+    root.replaceChildren(
+      discoveryToolbar(state.mode),
+      line("loading discovery...", "lookup__empty")
+    );
+    return;
+  }
+
+  if (state.status === "error") {
+    root.replaceChildren(
+      discoveryToolbar(state.mode),
+      block("lookup-card lookup-card--error", [
+        line(state.message, "is-danger")
+      ]),
+    );
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  fragment.append(discoveryToolbar(state.mode));
+
+  if (state.posts.length === 0) {
+    fragment.append(line("no discoverable posts", "lookup__empty"));
+    root.replaceChildren(fragment);
+    return;
+  }
+
+  for (const post of state.posts) {
+    fragment.append(renderDiscoveryPost(post, currentIdentityCanonicalId));
   }
 
   root.replaceChildren(fragment);
@@ -230,6 +271,32 @@ function renderFeedPost(post: FeedPost): HTMLElement {
   return article;
 }
 
+function renderDiscoveryPost(post: DiscoveryPostIndex, currentIdentityCanonicalId: string | null): HTMLElement {
+  const article = block("discovery-card", [
+    line(`${post.author_handle ?? shortCanonical(post.author_canonical_id)}  [${post.visibility}]`, "discovery-card__handle"),
+    line(post.body_excerpt.length > 0 ? post.body_excerpt : "[no excerpt]", "discovery-card__excerpt"),
+    line(post.explanation, "is-muted"),
+    line(`hot ${post.hot_score.toFixed(3)}  rising ${post.rising_score.toFixed(3)}`, "is-muted"),
+    line(`reactions: +${post.recommend_count} -${post.downrank_count} replies ${post.reply_count} reposts ${post.repost_count} reports ${post.report_count}`, "is-muted"),
+  ]);
+  article.dataset["postId"] = post.post_id;
+
+  if (post.author_fingerprint_grid !== undefined) {
+    article.prepend(renderFingerprintGrid(post.author_fingerprint_grid));
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "lookup-card__actions";
+  actions.append(
+    discoveryButton("recommend", "recommend", currentIdentityCanonicalId),
+    discoveryButton("downrank", "downrank", currentIdentityCanonicalId),
+    discoveryButton("repost", "repost", currentIdentityCanonicalId),
+    discoveryButton("report", "report", currentIdentityCanonicalId),
+  );
+  article.append(actions);
+  return article;
+}
+
 function renderResolvedIdentity(
   identity: IdentityDocument,
   fingerprint: string,
@@ -313,6 +380,42 @@ function button(label: string, action: string): HTMLButtonElement {
   element.dataset["relationshipAction"] = action;
   element.textContent = label;
   return element;
+}
+
+function discoveryButton(label: string, reaction: string, currentIdentityCanonicalId: string | null): HTMLButtonElement {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "lookup-card__button";
+  element.dataset["discoveryReaction"] = reaction;
+  element.textContent = label;
+  element.disabled = currentIdentityCanonicalId === null;
+  if (currentIdentityCanonicalId === null) {
+    element.title = "sign in to react";
+  }
+  return element;
+}
+
+function discoveryToolbar(mode: DiscoveryState["mode"]): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "discovery-toolbar";
+
+  const label = document.createElement("div");
+  label.className = "discovery-toolbar__label";
+  label.textContent = "public discovery index";
+
+  const modes = document.createElement("div");
+  modes.className = "discovery-toolbar__modes";
+  for (const item of ["recent", "rising", "hot"] as const) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = item === mode ? "lookup-card__button is-active" : "lookup-card__button";
+    button.dataset["discoveryMode"] = item;
+    button.textContent = item;
+    modes.append(button);
+  }
+
+  wrapper.append(label, modes);
+  return wrapper;
 }
 
 function rule(): HTMLElement {

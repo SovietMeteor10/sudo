@@ -1,4 +1,13 @@
-import type { ConnectionRelationship, FeedPost, FeedSubscription, IdentityDocument, SearchResult } from "./types.js";
+import type {
+  ConnectionRelationship,
+  DiscoveryMode,
+  DiscoveryPostIndex,
+  DiscoveryReaction,
+  FeedPost,
+  FeedSubscription,
+  IdentityDocument,
+  SearchResult
+} from "./types.js";
 
 export async function lookupHandle(query: string, signal: AbortSignal): Promise<IdentityDocument> {
   const handle = normalizeLookupInput(query);
@@ -296,6 +305,67 @@ export async function listUserFeedPosts(canonicalId: string, viewerCanonicalId?:
 
   const body = await response.json() as { posts?: FeedPost[] };
   return Array.isArray(body.posts) ? body.posts : [];
+}
+
+export async function createDiscoveryReaction(input: {
+  post_id: string;
+  actor_canonical_id: string;
+  actor_handle?: string;
+  reaction: DiscoveryReaction["reaction"];
+}): Promise<{ reaction: DiscoveryReaction; index: DiscoveryPostIndex }> {
+  const response = await fetch("/api/discovery/reactions", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  const body = await response.json() as { reaction?: DiscoveryReaction; index?: DiscoveryPostIndex; message?: string };
+  if (response.ok && body.reaction !== undefined && body.index !== undefined) return { reaction: body.reaction, index: body.index };
+  throw new Error(body.message ?? `discovery reaction failed: ${response.status}`);
+}
+
+export async function getDiscoveryPost(postId: string): Promise<DiscoveryPostIndex> {
+  const response = await fetch(`/api/discovery/posts/${encodeURIComponent(postId)}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`discovery lookup failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { index?: DiscoveryPostIndex };
+  if (body.index === undefined) {
+    throw new Error("discovery lookup failed");
+  }
+
+  return body.index;
+}
+
+export async function listDiscoveryPosts(mode: DiscoveryMode, limit = 20, offset = 0): Promise<DiscoveryPostIndex[]> {
+  const response = await fetch(`/api/discovery/${mode}?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`discovery load failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { posts?: DiscoveryPostIndex[] };
+  return Array.isArray(body.posts) ? body.posts : [];
+}
+
+export async function reindexDiscoveryPosts(): Promise<number> {
+  const response = await fetch("/api/discovery/reindex", {
+    method: "POST",
+    headers: { accept: "application/json" }
+  });
+
+  const body = await response.json() as { count?: number; message?: string };
+  if (response.ok && typeof body.count === "number") return body.count;
+  throw new Error(body.message ?? `discovery reindex failed: ${response.status}`);
 }
 
 export function normalizeLookupInput(query: string): string {

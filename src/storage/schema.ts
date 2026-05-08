@@ -135,6 +135,56 @@ export const schemaSql = `
   CREATE INDEX IF NOT EXISTS feed_posts_deleted_at_idx
     ON feed_posts(deleted_at);
 
+  CREATE TABLE IF NOT EXISTS discovery_reactions (
+    reaction_id TEXT PRIMARY KEY,
+    post_id TEXT NOT NULL,
+    actor_canonical_id TEXT NOT NULL,
+    actor_handle TEXT,
+    reaction TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    signature TEXT,
+    reaction_json TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS discovery_reactions_actor_post_reaction_unique
+    ON discovery_reactions(post_id, actor_canonical_id, reaction);
+
+  CREATE INDEX IF NOT EXISTS discovery_reactions_post_reaction_idx
+    ON discovery_reactions(post_id, reaction);
+
+  CREATE INDEX IF NOT EXISTS discovery_reactions_actor_created_at_idx
+    ON discovery_reactions(actor_canonical_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS discovery_post_index (
+    post_id TEXT PRIMARY KEY,
+    author_canonical_id TEXT NOT NULL,
+    author_handle TEXT,
+    visibility TEXT NOT NULL,
+    public_metadata_json TEXT,
+    body_excerpt TEXT,
+    created_at TEXT NOT NULL,
+    recommend_count INTEGER NOT NULL DEFAULT 0,
+    downrank_count INTEGER NOT NULL DEFAULT 0,
+    reply_count INTEGER NOT NULL DEFAULT 0,
+    repost_count INTEGER NOT NULL DEFAULT 0,
+    report_count INTEGER NOT NULL DEFAULT 0,
+    hot_score REAL NOT NULL DEFAULT 0,
+    rising_score REAL NOT NULL DEFAULT 0,
+    explanation TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS discovery_post_index_hot_score_idx
+    ON discovery_post_index(hot_score);
+
+  CREATE INDEX IF NOT EXISTS discovery_post_index_rising_score_idx
+    ON discovery_post_index(rising_score);
+
+  CREATE INDEX IF NOT EXISTS discovery_post_index_created_at_idx
+    ON discovery_post_index(created_at);
+
+  CREATE INDEX IF NOT EXISTS discovery_post_index_visibility_idx
+    ON discovery_post_index(visibility);
+
   CREATE TABLE IF NOT EXISTS dev_account_access (
     canonical_id TEXT PRIMARY KEY,
     password_salt TEXT,

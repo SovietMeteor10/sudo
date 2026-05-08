@@ -1,4 +1,5 @@
 import { db } from "../storage/db.js";
+import { removeDiscoveryPostIndex, upsertDiscoveryPostIndexFromFeedPost } from "../discovery/discovery.store.js";
 import type { FeedPost, FeedVisibility } from "./feed.types.js";
 import { localStreamPosts } from "./localFeed.js";
 
@@ -53,6 +54,12 @@ export function saveFeedPost(post: FeedPost): void {
       @postJson
     )
   `).run(rowParams(post));
+
+  try {
+    upsertDiscoveryPostIndexFromFeedPost(post);
+  } catch {
+    // Discovery is optional indexing. Feed writes remain the source of truth.
+  }
 }
 
 export function getFeedPost(postId: string): FeedPost | null {
@@ -134,6 +141,12 @@ export function softDeleteFeedPost(postId: string, deletedAt: string): FeedPost 
     deletedAt,
     postJson: JSON.stringify(tombstone)
   });
+
+  try {
+    removeDiscoveryPostIndex(postId);
+  } catch {
+    // Discovery is optional indexing. Feed tombstones remain the source of truth.
+  }
 
   return tombstone;
 }

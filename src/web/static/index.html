@@ -20,6 +20,7 @@
       <button class="topnav__tab" type="button" data-tab-target="identity">identity</button>
       <button class="topnav__tab" type="button" data-tab-target="stream">stream</button>
       <button class="topnav__tab" type="button" data-tab-target="chats">chats</button>
+      <button class="topnav__tab" type="button" data-tab-target="discovery">discovery</button>
     </nav>
     <div class="header-auth" id="header-auth">
       <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
@@ -99,6 +100,11 @@
 
       <div class="chat-list-label">connections</div>
       <div class="chat-list" id="chat-list"></div>
+    </aside>
+
+    <aside class="pane pane--discovery" data-pane="discovery" aria-labelledby="discovery-title">
+      <div class="pane__title" id="discovery-title">discovery</div>
+      <div class="pane__body pane__body--discovery" id="discovery-list"></div>
     </aside>
   </main>
 

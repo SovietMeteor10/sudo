@@ -133,6 +133,24 @@ bodies, deleted posts, and private-message semantics. Future discovery should
 only index public or explicitly discoverable feed metadata; it should not be
 treated as identity trust.
 
+## Discovery Indexes
+
+Discovery nodes are optional indexes, not the source of truth. The source of
+truth remains the signed feed post.
+
+Discovery only indexes public and public-metadata/encrypted-body posts. It does
+not index `connections_only`, `close_connections`, `private_message`, deleted,
+or otherwise restricted posts by default.
+
+Reactions are signed public objects tied to an indexed post. They are stored as
+transparent reaction records, then rolled up into public counts and ranking
+metadata.
+
+Hot and rising scores are explainable, derived fields. The current ranking uses
+reaction counts and age with no opaque recommendation model. Users should be
+able to inspect the counts and explanation string and understand why a post is
+shown.
+
 ## Local-First Private State
 
 Private user state belongs to the client device. The current browser portal uses

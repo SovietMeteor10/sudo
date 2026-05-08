@@ -163,6 +163,31 @@ The RSS endpoint emits public/unlisted plaintext posts only. Restricted
 visibility and encrypted-body modes are still development scaffolding until
 client-side encryption, recipient authorization, and group key management exist.
 
+## Discovery
+
+The discovery layer is an optional public index over discoverable feed posts.
+It is not the source of truth. The feed remains the source of truth.
+
+Discovery routes:
+
+- `POST /api/discovery/reactions`
+- `GET /api/discovery/posts/:postId`
+- `GET /api/discovery/hot`
+- `GET /api/discovery/rising`
+- `GET /api/discovery/recent`
+- `POST /api/discovery/reindex`
+
+Only public and public-metadata/encrypted-body posts are indexed. Restricted
+feed modes are excluded from discovery.
+
+Ranking is transparent:
+
+- `hot_score = (recommend*3 + repost*4 + reply*2 - downrank*2 - report*8) / pow(age_hours + 2, 1.2)`
+- `rising_score = recent_recommend*3 + recent_repost*4 + recent_reply*2 - recent_downrank*2 - recent_report*8`
+
+Reactions are public protocol objects. The current build uses DEV-ONLY
+placeholder signatures until client-held signing is implemented.
+
 ## Local storage and backups
 
 The browser portal keeps private working state in IndexedDB database

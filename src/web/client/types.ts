@@ -3,6 +3,8 @@ import type {
   ConnectionRelationship as ProtocolConnectionRelationship,
   FeedPost as ProtocolFeedPost,
   FeedSubscription as ProtocolFeedSubscription,
+  DiscoveryPostIndex as ProtocolDiscoveryPostIndex,
+  DiscoveryReaction as ProtocolDiscoveryReaction,
   IdentityFingerprint as ProtocolIdentityFingerprint,
   IdentityDocument as ProtocolIdentityDocument,
   SearchResult as ProtocolSearchResult,
@@ -13,6 +15,8 @@ export type IdentityDocument = ProtocolIdentityDocument;
 export type IdentityFingerprint = ProtocolIdentityFingerprint;
 export type ConnectionRelationship = ProtocolConnectionRelationship;
 export type FeedSubscription = ProtocolFeedSubscription;
+export type DiscoveryPostIndex = ProtocolDiscoveryPostIndex;
+export type DiscoveryReaction = ProtocolDiscoveryReaction;
 
 export type LocalIdentity = {
   handle: string;
@@ -58,6 +62,14 @@ export type SearchState =
   | { status: "loading"; query: string }
   | { status: "results"; query: string; results: SearchResult[] }
   | { status: "error"; query: string; message: string };
+
+export type DiscoveryMode = "recent" | "rising" | "hot";
+
+export type DiscoveryState =
+  | { status: "idle"; mode: DiscoveryMode }
+  | { status: "loading"; mode: DiscoveryMode }
+  | { status: "loaded"; mode: DiscoveryMode; posts: DiscoveryPostIndex[] }
+  | { status: "error"; mode: DiscoveryMode; message: string };
 
 export type StreamPost = ProtocolStreamPost;
 export type FeedPost = ProtocolFeedPost;

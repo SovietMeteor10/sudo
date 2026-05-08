@@ -21,6 +21,19 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "feed_subscriptions", "include_close", "INTEGER");
   addColumnIfMissing(db, "feed_subscriptions", "muted", "INTEGER");
 
+  addColumnIfMissing(db, "discovery_reactions", "actor_handle", "TEXT");
+  addColumnIfMissing(db, "discovery_reactions", "signature", "TEXT");
+  addColumnIfMissing(db, "discovery_post_index", "public_metadata_json", "TEXT");
+  addColumnIfMissing(db, "discovery_post_index", "body_excerpt", "TEXT");
+  addColumnIfMissing(db, "discovery_post_index", "recommend_count", "INTEGER");
+  addColumnIfMissing(db, "discovery_post_index", "downrank_count", "INTEGER");
+  addColumnIfMissing(db, "discovery_post_index", "reply_count", "INTEGER");
+  addColumnIfMissing(db, "discovery_post_index", "repost_count", "INTEGER");
+  addColumnIfMissing(db, "discovery_post_index", "report_count", "INTEGER");
+  addColumnIfMissing(db, "discovery_post_index", "hot_score", "REAL");
+  addColumnIfMissing(db, "discovery_post_index", "rising_score", "REAL");
+  addColumnIfMissing(db, "discovery_post_index", "explanation", "TEXT");
+
   const devAccountColumns = db
     .prepare("PRAGMA table_info(dev_account_access)")
     .all() as Array<{ name: string }>;

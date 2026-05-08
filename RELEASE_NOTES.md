@@ -40,3 +40,9 @@
 - Added unified connection tiers for unknown, known, close, and blocked state.
 - Added connection and subscription APIs that sync relay policy and feed visibility.
 - Added server-side viewer-aware filtering for restricted feed posts as DEV-ONLY scaffolding.
+
+### Discovery System
+
+- Added signed discovery reactions for discoverable public feed posts.
+- Added transparent hot, rising, and recent discovery indexes.
+- Excluded restricted feed visibility modes from public discovery indexing.

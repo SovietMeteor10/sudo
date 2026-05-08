@@ -171,10 +171,34 @@ export type StreamPost = {
 };
 
 export type DiscoveryReaction = {
-  subject: CanonicalId | Handle;
-  kind: "follow" | "mention" | "block" | "mute" | "unknown";
+  type: "sudo_discovery_reaction";
+  protocol_version: string;
+  reaction_id: string;
+  post_id: string;
+  actor_canonical_id: CanonicalId;
+  actor_handle?: Handle;
+  reaction: "recommend" | "downrank" | "reply" | "repost" | "report";
   created_at: string;
-  signature?: Signature;
+  signature: Signature;
+};
+
+export type DiscoveryPostIndex = {
+  post_id: string;
+  author_canonical_id: CanonicalId;
+  author_handle?: Handle;
+  visibility: "public" | "unlisted" | "public_metadata_encrypted_body";
+  public_metadata: FeedPublicMetadata;
+  body_excerpt: string;
+  created_at: string;
+  recommend_count: number;
+  downrank_count: number;
+  reply_count: number;
+  repost_count: number;
+  report_count: number;
+  hot_score: number;
+  rising_score: number;
+  explanation: string;
+  author_fingerprint_grid?: IdentityFingerprint;
 };
 
 export type ChatSummary = {
