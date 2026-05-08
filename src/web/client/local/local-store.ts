@@ -117,12 +117,10 @@ export async function listConversations(currentCanonicalId: string): Promise<Con
   return [...byPartner.values()].sort((left, right) => right.lastAt.localeCompare(left.lastAt));
 }
 
-function previewLine(body: string, direction: "sent" | "received"): string {
+function previewLine(body: string, _direction: "sent" | "received"): string {
   const trimmed = (body ?? "").replace(/\s+/g, " ").trim();
-  if (trimmed.length === 0) return direction === "sent" ? "you: (empty)" : "(empty)";
-  const prefix = direction === "sent" ? "you: " : "";
-  const limited = trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
-  return `${prefix}${limited}`;
+  if (trimmed.length === 0) return "(empty)";
+  return trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
 }
 
 export async function savePendingOutbound(outbound: PendingOutbound): Promise<void> {

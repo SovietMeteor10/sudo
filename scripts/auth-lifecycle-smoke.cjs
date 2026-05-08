@@ -205,8 +205,10 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     if (!postShape.ok) fail("post-header", postShape.reason);
     else if (/^\d{4}-\d{2}-\d{2}/.test(postShape.meta.trim())) fail("post-header", `meta still leads with ISO date: '${postShape.meta}'`);
     else if (!/^@/.test(postShape.handle)) fail("post-header", `expected handle starting with @, got '${postShape.handle}'`);
-    else if (!/^\d{2}:\d{2}/.test(postShape.time)) fail("post-header", `expected time HH:MM, got '${postShape.time}'`);
-    else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
+    // Time + date format: "HH:MM DD MMM" (this year) or "HH:MM DD MMM YY" (other year)
+    else if (!/^\d{2}:\d{2} \d{2} [A-Z][a-z]{2}( \d{2})?$/.test(postShape.time.trim())) {
+      fail("post-header", `expected 'HH:MM DD MMM' (with optional YY), got '${postShape.time}'`);
+    } else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
   }
 
   // ===== 4. Sign out / sign in same device =====

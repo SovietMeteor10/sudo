@@ -491,13 +491,14 @@ function formatPostTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
   const now = new Date();
-  const sameDay = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
-  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
-  if (sameDay) return time;
   const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  return `${time} ${pad2(date.getDate())} ${months[date.getMonth()]} ${String(date.getFullYear()).slice(-2)}`;
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const datePart = `${pad2(date.getDate())} ${months[date.getMonth()]}`;
+  // Only show the YY suffix when the post is from a different calendar year.
+  if (date.getFullYear() !== now.getFullYear()) {
+    return `${time} ${datePart} ${String(date.getFullYear()).slice(-2)}`;
+  }
+  return `${time} ${datePart}`;
 }
 
 function pad2(n: number): string {
