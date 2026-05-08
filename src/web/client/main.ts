@@ -85,14 +85,10 @@ import type {
 } from "./types.js";
 import { describePortalTransport, selectRelayForRecipient } from "./transport/relay-transport.js";
 
-const shell = getRequiredElement("app-shell");
 const identityRoot = getRequiredElement("identity-pane-body");
 const streamRoot = getRequiredElement("stream-list");
 const feedComposer = getRequiredForm("feed-composer");
 const feedBodyInput = getRequiredTextArea("feed-body");
-const feedVisibilityInput = getRequiredSelect("feed-visibility");
-const feedTitleInput = getRequiredInput("feed-title");
-const feedTagsInput = getRequiredInput("feed-tags");
 const feedComposerState = getRequiredElement("feed-composer-state");
 const lookupRoot = getRequiredElement("lookup-result");
 const searchResultsRoot = getRequiredElement("search-results");
@@ -100,8 +96,28 @@ const chatsRoot = getRequiredElement("chat-list");
 const discoveryRoot = getRequiredElement("discovery-list");
 const searchForm = getRequiredForm("lookup-form");
 const searchInput = getRequiredInput("lookup-input");
-const headerHandle = getRequiredElement("header-handle");
-const logoutButton = getRequiredButton("logout-button");
+const feedTabButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-feed-tab]")];
+const feedPanes = [...document.querySelectorAll<HTMLElement>("[data-feed-pane]")];
+const accountButton = getRequiredButton("account-button");
+const accountButtonHandle = getRequiredElement("account-button-handle");
+const accountMenu = getRequiredElement("account-menu");
+const accountMenuHandle = getRequiredElement("account-menu-handle");
+const accountMenuFingerprint = getRequiredElement("account-menu-fingerprint");
+const accountMenuBackup = getRequiredButton("account-menu-backup");
+const accountMenuRestore = getRequiredButton("account-menu-restore");
+const accountMenuDevices = getRequiredButton("account-menu-devices");
+const accountMenuLock = getRequiredButton("account-menu-lock");
+const accountMenuLogout = getRequiredButton("account-menu-logout");
+const devicesDialog = getRequiredDialog("devices-dialog");
+const devicesCancel = getRequiredButton("devices-cancel");
+const chatPopup = getRequiredElement("chat-popup");
+const chatPopupHandle = getRequiredElement("chat-popup-handle");
+const chatPopupFingerprint = getRequiredElement("chat-popup-fingerprint");
+const chatPopupBody = getRequiredElement("chat-popup-body");
+const chatPopupForm = getRequiredForm("chat-popup-form");
+const chatPopupInput = getRequiredTextArea("chat-popup-input");
+const chatPopupClose = getRequiredButton("chat-popup-close");
+const chatPopupMinimize = getRequiredButton("chat-popup-minimize");
 const signupCancel = getRequiredButton("signup-cancel");
 const signupDialog = getRequiredDialog("signup-dialog");
 const signupForm = getRequiredForm("signup-form");
@@ -147,15 +163,8 @@ const deviceLinkStart = getRequiredButton("device-link-start");
 const deviceLinkComplete = getRequiredButton("device-link-complete");
 const devicePairingCode = getRequiredInput("device-pairing-code");
 const devicePanelFeedback = getRequiredElement("device-panel-feedback");
-const cryptoAccountUnlock = getRequiredButton("crypto-account-unlock");
-const cryptoAccountLock = getRequiredButton("crypto-account-lock");
-const backupExport = getRequiredButton("backup-export");
-const backupImport = getRequiredButton("backup-import");
-const localStateClear = getRequiredButton("local-state-clear");
 const localMaintenanceFeedback = getRequiredElement("local-maintenance-feedback");
-const tabButtons = [...document.querySelectorAll("[data-tab-target]")];
 const authActionButtons = [...document.querySelectorAll("[data-auth-action]")];
-const headerAuthActionButtons = [...document.querySelectorAll(".header-auth [data-auth-action]")];
 const landingBrand = getRequiredButton("landing-brand");
 
 const passkeyAccessProvider = new BrowserPasskeyAccessProvider();
@@ -183,6 +192,8 @@ let searchDebounce: number | null = null;
 let authSequence = 0;
 let authView: "menu" | "signin" | "signup" | "restore" | "signed-in" = "menu";
 let restoreMode: "recovery" | "file" = "recovery";
+let activeFeedTab: "personal" | "discover" = "personal";
+let chatTarget: { canonical: string; handle: string; fingerprint: string } | null = null;
 let brandFlickerTimeout: number | null = null;
 let brandFlickerTick: number | null = null;
 let brandFlickerActive = false;
@@ -199,7 +210,7 @@ renderDiscoveryPanel(discoveryRoot, discoveryState, null);
 renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
 landingBrand.textContent = brandLabel;
-syncActivePane("stream");
+setFeedTab("personal");
 void initializeLocalRuntime();
 void refreshNodeDocument();
 void renderStreamWhenReady();
@@ -337,32 +348,12 @@ backupCodeCopy.addEventListener("click", () => {
   void copyBackupCode();
 });
 
-backupExport.addEventListener("click", () => {
-  void exportEncryptedBackup();
-});
-
-backupImport.addEventListener("click", () => {
-  openRestoreDialog();
-});
-
 deviceLinkStart.addEventListener("click", () => {
   void startPairingFlow();
 });
 
 deviceLinkComplete.addEventListener("click", () => {
   void completePairingFlow();
-});
-
-cryptoAccountUnlock.addEventListener("click", () => {
-  openSigninDialog();
-});
-
-cryptoAccountLock.addEventListener("click", () => {
-  void lockLocalKeysFlow();
-});
-
-localStateClear.addEventListener("click", () => {
-  void clearLocalStateWithConfirmation();
 });
 
 for (const button of authActionButtons) {
@@ -394,17 +385,106 @@ landingBrand.addEventListener("blur", () => {
   stopBrandFlicker();
 });
 
-logoutButton.addEventListener("click", logout);
+// ----- account dropdown menu -----
+accountButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setAccountMenuOpen(accountMenu.hidden);
+});
 
-for (const button of tabButtons) {
-  if (!(button instanceof HTMLButtonElement)) continue;
+accountMenu.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+document.addEventListener("click", (event) => {
+  if (accountMenu.hidden) return;
+  if (event.target instanceof Node && (accountMenu.contains(event.target) || accountButton.contains(event.target))) return;
+  setAccountMenuOpen(false);
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !accountMenu.hidden) {
+    setAccountMenuOpen(false);
+  }
+});
+
+accountMenuBackup.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  void exportEncryptedBackup();
+});
+
+accountMenuRestore.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  openRestoreDialog();
+});
+
+accountMenuDevices.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  openDevicesDialog();
+});
+
+accountMenuLock.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  void lockLocalKeysFlow();
+});
+
+accountMenuLogout.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  logout();
+});
+
+devicesCancel.addEventListener("click", () => {
+  devicesDialog.close();
+});
+
+// ----- feed tabs -----
+for (const button of feedTabButtons) {
   button.addEventListener("click", () => {
-    const target = button.dataset["tabTarget"];
-    if (target === "identity" || target === "stream" || target === "chats" || target === "discovery") {
-      syncActivePane(target);
-    }
+    const target = button.dataset["feedTab"];
+    if (target === "personal" || target === "discover") setFeedTab(target);
   });
 }
+
+// ----- chat popup -----
+chatPopupClose.addEventListener("click", () => {
+  closeChatPopup();
+});
+
+chatPopupMinimize.addEventListener("click", () => {
+  chatPopup.classList.toggle("is-minimized");
+});
+
+chatPopupForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void sendChatPopupMessage();
+});
+
+chatPopupInput.addEventListener("input", () => autoGrowTextarea(chatPopupInput, 28, 120));
+chatPopupInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    void sendChatPopupMessage();
+  }
+});
+
+chatsRoot.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const row = target.closest<HTMLElement>("[data-chat-canonical]");
+  if (row === null) return;
+  const canonical = row.dataset["chatCanonical"];
+  const handle = row.dataset["chatHandle"] ?? "";
+  const fingerprint = row.dataset["chatFingerprint"] ?? "";
+  if (canonical) void openChatPopup({ canonical, handle, fingerprint });
+});
+
+// ----- composer auto-grow + Cmd/Ctrl+Enter submit -----
+feedBodyInput.addEventListener("input", () => autoGrowTextarea(feedBodyInput, 32, 280));
+feedBodyInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    event.preventDefault();
+    feedComposer.requestSubmit();
+  }
+});
 
 window.addEventListener("keydown", (event) => {
   if (event.key === "/" && event.target === document.body) {
@@ -657,9 +737,8 @@ async function doSignup(handle: string, password: string): Promise<void> {
   setSignupState({ status: "created", identity, fingerprint, backupCode: "" });
   signupDialog.close();
   setSignedIn(identity.handle);
-  localMaintenanceFeedback.textContent = "account created";
-  syncActivePane("identity");
-  showRecoveryPanel("");
+  flashFeedback("account created");
+  setFeedTab("personal");
   // Best-effort device sync; never blocks signup completion.
   void syncCurrentDeviceToServer(trustedDevice).catch((error) => {
     console.warn("[auth] device sync after signup failed", error instanceof Error ? error.message : error);
@@ -730,7 +809,7 @@ async function doSignin(handle: string, password: string): Promise<void> {
     setSigninState({ status: "signed_in", identity });
     signinDialog.close();
     setSignedIn(identity.handle);
-    syncActivePane("identity");
+    // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
     void syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId!)).catch((error) => {
       console.warn("[auth] device sync after signin failed", error instanceof Error ? error.message : error);
     });
@@ -749,7 +828,7 @@ async function doSignin(handle: string, password: string): Promise<void> {
     setSigninState({ status: "signed_in", identity: result.identity });
     signinDialog.close();
     setSignedIn(result.identity.handle);
-    syncActivePane("identity");
+    // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
   } catch (devError) {
     throw new Error(explainSigninFailure(localUnlockError, devError));
   }
@@ -805,7 +884,7 @@ async function runRecover(
     setCurrentIdentity(result.identity, fingerprint);
     setSigninState({ status: "signed_in", identity: result.identity });
     setSignedIn(result.identity.handle);
-    syncActivePane("identity");
+    // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
   } catch (error) {
     setSigninState({
       status: "error",
@@ -831,7 +910,7 @@ async function submitRestoreAccount(): Promise<void> {
     try {
       await importSelectedBackup(file, passphrase);
       restoreDialog.close();
-      localMaintenanceFeedback.textContent = "backup restored";
+      flashFeedback("backup restored");
     } catch (error) {
       setRestoreState({
         status: "error",
@@ -1115,7 +1194,7 @@ async function setDiscoveryMode(mode: DiscoveryMode): Promise<void> {
 
 async function handleDiscoveryReaction(postId: string, reaction: string): Promise<void> {
   if (currentIdentityDocument === null) {
-    localMaintenanceFeedback.textContent = "sign in to react";
+    flashFeedback("sign in to react");
     return;
   }
 
@@ -1155,7 +1234,7 @@ async function handleDiscoveryReaction(postId: string, reaction: string): Promis
     });
     await refreshDiscoveryPosts(discoveryState.mode);
   } catch (error) {
-    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "reaction failed";
+    flashFeedback(error instanceof Error ? error.message : "reaction failed");
   }
 }
 
@@ -1214,7 +1293,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
       await runSearch(searchState.query);
     }
   } catch (error) {
-    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "relationship update failed";
+    flashFeedback(error instanceof Error ? error.message : "relationship update failed");
   }
 }
 
@@ -1243,24 +1322,13 @@ async function submitFeedPost(): Promise<void> {
     return;
   }
 
-  const visibility = feedVisibilityInput.value;
-  if (!isFeedVisibility(visibility)) {
-    feedComposerState.textContent = "invalid visibility";
-    return;
-  }
-
   const body = feedBodyInput.value.trim();
-  const title = feedTitleInput.value.trim();
-  const tags = feedTagsInput.value
-    .split(",")
-    .map((tag) => tag.trim())
-    .filter((tag) => tag.length > 0);
-
-  if (body.length === 0 && title.length === 0) {
-    feedComposerState.textContent = "write a body or title";
+  if (body.length === 0) {
+    feedComposerState.textContent = "write something first";
     return;
   }
 
+  const visibility = "public" as const;
   feedComposerState.textContent = "posting...";
 
   try {
@@ -1273,19 +1341,9 @@ async function submitFeedPost(): Promise<void> {
       author_canonical_id: currentIdentityDocument.canonical_id,
       author_handle: currentIdentityDocument.handle,
       visibility,
-      ...(visibility === "public_metadata_encrypted_body"
-        ? { encrypted_body: `dev-placeholder:${btoa(unescape(encodeURIComponent(body || title)))}` }
-        : { body }),
-      public_metadata: {
-        title: title.length === 0 ? undefined : title,
-        summary: visibility === "public_metadata_encrypted_body" && body.length > 0
-          ? body.slice(0, 160)
-          : undefined,
-        tags
-      },
-      allowed_recipients: visibility === "close_connections"
-        ? [currentIdentityDocument.canonical_id]
-        : [],
+      body,
+      public_metadata: { tags: [] as string[] },
+      allowed_recipients: [],
       created_at: createdAt,
       updated_at: createdAt,
       deleted_at: null,
@@ -1300,22 +1358,8 @@ async function submitFeedPost(): Promise<void> {
       author_canonical_id: currentIdentityDocument.canonical_id,
       author_handle: currentIdentityDocument.handle,
       visibility,
-      body: visibility === "public_metadata_encrypted_body" ? undefined : body,
-      encrypted_body: visibility === "public_metadata_encrypted_body"
-        ? `dev-placeholder:${btoa(unescape(encodeURIComponent(body || title)))}`
-        : undefined,
-      public_metadata: {
-        title: title.length === 0 ? undefined : title,
-        summary: visibility === "public_metadata_encrypted_body" && body.length > 0
-          ? body.slice(0, 160)
-          : undefined,
-        tags
-      },
-      // DEV ONLY: until group keys exist, the composer posts close_connections
-      // to the author's own canonical ID so the backend enforces an explicit list.
-      allowed_recipients: visibility === "close_connections"
-        ? [currentIdentityDocument.canonical_id]
-        : undefined,
+      body,
+      public_metadata: { tags: [] },
       created_at: createdAt,
       updated_at: createdAt,
       deleted_at: null,
@@ -1323,8 +1367,7 @@ async function submitFeedPost(): Promise<void> {
       signature
     });
     feedBodyInput.value = "";
-    feedTitleInput.value = "";
-    feedTagsInput.value = "";
+    autoGrowTextarea(feedBodyInput, 32, 280);
     feedComposerState.textContent = "posted";
     await refreshFeedPosts();
   } catch (error) {
@@ -1335,7 +1378,7 @@ async function submitFeedPost(): Promise<void> {
 async function lockLocalKeysFlow(): Promise<void> {
   lockBrowserCryptoAccount();
   currentCryptoAccount = null;
-  localMaintenanceFeedback.textContent = "account locked";
+  flashFeedback("account locked");
   if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
     setCurrentIdentity(currentIdentityDocument, currentIdentityFingerprint);
   }
@@ -1344,7 +1387,7 @@ async function lockLocalKeysFlow(): Promise<void> {
 async function exportEncryptedBackup(): Promise<void> {
   const passphrase = prompt("Backup passphrase. This never leaves this browser.");
   if (passphrase === null || passphrase.length === 0) {
-    localMaintenanceFeedback.textContent = "backup cancelled";
+    flashFeedback("backup cancelled");
     return;
   }
 
@@ -1357,9 +1400,9 @@ async function exportEncryptedBackup(): Promise<void> {
     link.download = `sudo-backup-${backup.created_at.slice(0, 10)}.sudo-backup.json`;
     link.click();
     URL.revokeObjectURL(url);
-    localMaintenanceFeedback.textContent = "encrypted backup exported";
+    flashFeedback("encrypted backup exported");
   } catch (error) {
-    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "backup export failed";
+    flashFeedback(error instanceof Error ? error.message : "backup export failed");
   }
 }
 
@@ -1370,9 +1413,9 @@ async function importSelectedBackup(file: File, passphrase: string): Promise<voi
     localChats = await readLocalChats();
     renderChatList(chatsRoot, localChats);
     await refreshLocalStorageStatus();
-    localMaintenanceFeedback.textContent = "encrypted backup imported";
+    flashFeedback("encrypted backup imported");
   } catch {
-    localMaintenanceFeedback.textContent = "backup import failed";
+    flashFeedback("backup import failed");
   }
 }
 
@@ -1383,7 +1426,7 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
   renderChatList(chatsRoot, localChats);
   await initializeLocalState();
   await refreshLocalStorageStatus();
-  localMaintenanceFeedback.textContent = "device reset";
+  flashFeedback("device reset");
 }
 
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
@@ -1596,11 +1639,34 @@ function openRestoreDialog(): void {
 function setSignedIn(handle: string): void {
   authSequence++;
   setAuthView("signed-in");
-  headerHandle.textContent = handle;
-  logoutButton.hidden = false;
-  for (const button of headerAuthActionButtons) {
-    if (button instanceof HTMLButtonElement) button.hidden = true;
+  setAccountButtonHandle(handle);
+  closeChatPopup();
+}
+
+function setAccountButtonHandle(handle: string | null): void {
+  if (handle === null || handle.length === 0) {
+    accountButtonHandle.textContent = "";
+    accountButton.removeAttribute("data-handle");
+    accountMenuHandle.textContent = "";
+    accountMenuFingerprint.textContent = "";
+    return;
   }
+  accountButtonHandle.textContent = handle;
+  accountButton.setAttribute("data-handle", handle);
+  accountMenuHandle.textContent = handle;
+  accountMenuFingerprint.textContent = currentIdentityFingerprint
+    ? `fingerprint ${currentIdentityFingerprint.slice(0, 12)}...`
+    : "";
+}
+
+function setAccountMenuOpen(open: boolean): void {
+  accountMenu.hidden = !open;
+  accountButton.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function openDevicesDialog(): void {
+  void refreshDevicePanel();
+  if (!devicesDialog.open) devicesDialog.showModal();
 }
 
 function setSignedOut(): void {
@@ -1615,11 +1681,9 @@ function setSignedOut(): void {
   renderIdentityPane(identityRoot, currentIdentity);
   void refreshDevicePanel();
   renderDiscoveryPanel(discoveryRoot, discoveryState, null);
-  headerHandle.textContent = "";
-  logoutButton.hidden = true;
-  for (const button of headerAuthActionButtons) {
-    if (button instanceof HTMLButtonElement) button.hidden = false;
-  }
+  setAccountButtonHandle(null);
+  setAccountMenuOpen(false);
+  closeChatPopup();
   if (lookupState.status === "resolved") {
     setLookupState({
       ...lookupState,
@@ -1869,14 +1933,158 @@ function validatePassword(password: string): string | null {
   return null;
 }
 
-function syncActivePane(pane: "identity" | "stream" | "chats" | "discovery"): void {
-  shell.dataset["activePane"] = pane;
+type FeedTab = "personal" | "discover";
 
-  for (const button of tabButtons) {
-    if (!(button instanceof HTMLButtonElement)) continue;
-    const isActive = button.dataset["tabTarget"] === pane;
+function setFeedTab(tab: FeedTab): void {
+  activeFeedTab = tab;
+  for (const button of feedTabButtons) {
+    const isActive = button.dataset["feedTab"] === tab;
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-current", isActive ? "page" : "false");
+  }
+  for (const pane of feedPanes) {
+    pane.hidden = pane.dataset["feedPane"] !== tab;
+  }
+  if (tab === "discover") {
+    void refreshDiscoveryPosts().catch(() => null);
+  }
+}
+
+function autoGrowTextarea(element: HTMLTextAreaElement, minHeight: number, maxHeight: number): void {
+  element.style.height = "auto";
+  const next = Math.min(maxHeight, Math.max(minHeight, element.scrollHeight));
+  element.style.height = `${next}px`;
+  element.classList.toggle("is-overflowing", element.scrollHeight > maxHeight);
+}
+
+let feedbackTimer: number | null = null;
+function flashFeedback(message: string): void {
+  localMaintenanceFeedback.textContent = message;
+  if (feedbackTimer !== null) window.clearTimeout(feedbackTimer);
+  if (message.length === 0) return;
+  feedbackTimer = window.setTimeout(() => {
+    if (localMaintenanceFeedback.textContent === message) {
+      localMaintenanceFeedback.textContent = "";
+    }
+  }, 4000);
+}
+
+// ---- floating chat popup ---------------------------------------------------
+type ChatTarget = { canonical: string; handle: string; fingerprint: string };
+
+async function openChatPopup(target: ChatTarget): Promise<void> {
+  chatTarget = target;
+  chatPopupHandle.textContent = target.handle || target.canonical;
+  chatPopupFingerprint.textContent = target.fingerprint
+    ? `fingerprint ${target.fingerprint.slice(0, 12)}...`
+    : "";
+  chatPopup.classList.remove("is-minimized");
+  chatPopup.hidden = false;
+  for (const row of chatsRoot.querySelectorAll<HTMLElement>("[data-chat-canonical]")) {
+    row.classList.toggle("is-selected", row.dataset["chatCanonical"] === target.canonical);
+  }
+  await renderChatPopupBody(target.canonical);
+  chatPopupInput.focus();
+}
+
+function closeChatPopup(): void {
+  chatPopup.hidden = true;
+  chatPopup.classList.remove("is-minimized");
+  chatPopupInput.value = "";
+  chatTarget = null;
+  for (const row of chatsRoot.querySelectorAll<HTMLElement>(".is-selected")) {
+    row.classList.remove("is-selected");
+  }
+}
+
+async function renderChatPopupBody(canonicalId: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    chatPopupBody.replaceChildren(makeChatEmpty("sign in to chat"));
+    return;
+  }
+  const conversationId = conversationKey(currentIdentityDocument.canonical_id, canonicalId);
+  let messages: Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }> = [];
+  try {
+    messages = await listConversationMessages(conversationId);
+  } catch {
+    messages = [];
+  }
+  if (messages.length === 0) {
+    chatPopupBody.replaceChildren(makeChatEmpty("no messages yet"));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const message of messages) {
+    fragment.append(renderChatMessage(message));
+  }
+  chatPopupBody.replaceChildren(fragment);
+  chatPopupBody.scrollTop = chatPopupBody.scrollHeight;
+}
+
+function makeChatEmpty(text: string): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "chat-popup__empty";
+  element.textContent = text;
+  return element;
+}
+
+function renderChatMessage(message: { message_id: string; created_at: string; direction: "sent" | "received"; body: string }): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = `chat-message chat-message--${message.direction}`;
+  const meta = document.createElement("div");
+  meta.className = "chat-message__meta";
+  const date = new Date(message.created_at);
+  const time = Number.isNaN(date.valueOf()) ? message.created_at : date.toISOString().slice(11, 16);
+  meta.textContent = `${time} ${message.direction === "sent" ? "you" : "them"}`;
+  const body = document.createElement("div");
+  body.className = "chat-message__body";
+  body.textContent = message.body;
+  wrapper.append(meta, body);
+  return wrapper;
+}
+
+function conversationKey(a: string, b: string): string {
+  return [a, b].sort().join("|");
+}
+
+async function listConversationMessages(conversationId: string): Promise<Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }>> {
+  const { listLocalMessagesByConversation } = await import("./local/local-store.js");
+  if (typeof listLocalMessagesByConversation !== "function") return [];
+  const records = await listLocalMessagesByConversation(conversationId);
+  return records
+    .map((record) => ({
+      message_id: record.message_id,
+      created_at: record.created_at,
+      direction: record.direction,
+      body: record.body
+    }))
+    .sort((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
+async function sendChatPopupMessage(): Promise<void> {
+  if (chatTarget === null) return;
+  if (currentIdentityDocument === null) {
+    feedComposerState.textContent = "sign in to send messages";
+    return;
+  }
+  const body = chatPopupInput.value.trim();
+  if (body.length === 0) return;
+  try {
+    const { queueAndSubmitLocalMessage } = await import("./local/relay-local.js");
+    await queueAndSubmitLocalMessage({
+      senderCanonicalId: currentIdentityDocument.canonical_id,
+      recipientCanonicalId: chatTarget.canonical,
+      senderHandle: currentIdentityDocument.handle,
+      recipientHandle: chatTarget.handle,
+      body,
+      senderAccount: currentCryptoAccount
+    });
+    chatPopupInput.value = "";
+    autoGrowTextarea(chatPopupInput, 28, 120);
+    await renderChatPopupBody(chatTarget.canonical);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "send failed";
+    chatPopupBody.append(makeChatEmpty(message));
   }
 }
 
@@ -1930,13 +2138,6 @@ function getRequiredDialog(id: string): HTMLDialogElement {
   return element;
 }
 
-function isFeedVisibility(value: string): value is "connections_only" | "close_connections" | "unlisted" | "public" | "public_metadata_encrypted_body" {
-  return value === "connections_only"
-    || value === "close_connections"
-    || value === "unlisted"
-    || value === "public"
-    || value === "public_metadata_encrypted_body";
-}
 
 function isDiscoveryReaction(value: string): value is "recommend" | "downrank" | "reply" | "repost" | "report" {
   return value === "recommend"

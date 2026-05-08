@@ -26,20 +26,8 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
   root.replaceChildren(
     block("identity-card", [
       line(identity.handle, "identity-card__handle"),
-      rule(),
       line(identity.bio),
-      line(`status: ${identity.status}`),
-      line(identity.privacyMode),
-      line(identity.onionState, "is-muted"),
-      line(`fingerprint: ${identity.fingerprintSnippet}`, "is-muted"),
-      line(identity.portalTransport, "is-muted"),
-      line(identity.relayTransport, "is-muted"),
-      ...(identity.relayWarning === undefined ? [] : [line(identity.relayWarning, "is-muted")]),
-      ...(identity.nodeName === undefined ? [] : [line(`node: ${identity.nodeName}`, "is-muted")]),
-      ...(identity.nodeBaseUrl === undefined ? [] : [line(`public: ${identity.nodeBaseUrl}`, "is-muted")]),
-      ...(identity.nodeOnionBaseUrl === undefined ? [] : [line(`onion: ${identity.nodeOnionBaseUrl ?? "null"}`, "is-muted")]),
-      ...(identity.nodeRoles === undefined ? [] : [line(`roles: ${identity.nodeRoles.join(", ")}`, "is-muted")]),
-      ...(identity.nodeRelaySummary === undefined ? [] : [line(identity.nodeRelaySummary, "is-muted")]),
+      line(`fingerprint ${identity.fingerprintSnippet}`, "is-muted"),
     ]),
   );
 }
@@ -386,12 +374,23 @@ function renderResolvedIdentity(
 }
 
 function renderChat(chat: ChatSummary): HTMLElement {
-  const row = block("chat-row", [
-    line(`${chat.handle}  [${chat.state}]`, "chat-row__handle"),
-    line("sealed chat not implemented yet", "is-muted"),
-    line(chat.fingerprint === undefined ? chat.lastLine : chat.fingerprint, "is-muted"),
-  ]);
+  const row = document.createElement("div");
+  row.className = "chat-row";
   row.tabIndex = 0;
+  row.setAttribute("role", "button");
+  row.dataset["chatCanonical"] = chat.canonical;
+  row.dataset["chatHandle"] = chat.handle;
+  if (chat.fingerprint !== undefined) row.dataset["chatFingerprint"] = chat.fingerprint;
+
+  const handle = document.createElement("div");
+  handle.className = "chat-row__handle";
+  handle.textContent = chat.handle;
+
+  const preview = document.createElement("div");
+  preview.className = "chat-row__preview";
+  preview.textContent = chat.lastLine;
+
+  row.append(handle, preview);
   return row;
 }
 

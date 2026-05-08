@@ -16,17 +16,11 @@
 <body data-auth-state="restoring">
   <header class="topbar">
     <div class="brand">sudo</div>
-    <nav class="topnav" aria-label="primary panes">
-      <button class="topnav__tab" type="button" data-tab-target="identity">identity</button>
-      <button class="topnav__tab" type="button" data-tab-target="stream">stream</button>
-      <button class="topnav__tab" type="button" data-tab-target="chats">chats</button>
-      <button class="topnav__tab" type="button" data-tab-target="discovery">discovery</button>
-    </nav>
-    <div class="header-auth" id="header-auth">
-      <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
-      <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
-      <span class="header-auth__handle" id="header-handle"></span>
-      <button class="auth-link" id="logout-button" type="button" hidden>logout</button>
+    <div class="topbar__account" id="topbar-account">
+      <button class="account-button" id="account-button" type="button" aria-haspopup="menu" aria-expanded="false">
+        <span class="account-button__handle" id="account-button-handle"></span>
+        <span class="account-button__caret" aria-hidden="true">▾</span>
+      </button>
     </div>
   </header>
 
@@ -42,52 +36,72 @@
     </div>
   </section>
 
-  <main class="shell" id="app-shell" data-active-pane="stream" aria-label="sudo client">
-    <aside class="pane pane--identity" data-pane="identity" aria-labelledby="identity-title">
-      <div class="pane__title" id="identity-title">identity</div>
-      <div class="pane__body" id="identity-pane-body"></div>
+  <main class="shell" id="app-shell" aria-label="sudo client">
+    <aside class="column column--left" aria-labelledby="directory-title">
+      <div class="column__top">
+        <div class="column__title" id="directory-title">directory</div>
+        <form class="column__search" id="lookup-form" autocomplete="off" data-lpignore="true">
+          <label class="sr-only" for="lookup-input">search users</label>
+          <input
+            id="lookup-input"
+            class="lookup__input"
+            name="sudo-handle-search"
+            type="search"
+            placeholder="search users..."
+            autocomplete="off"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            spellcheck="false"
+            autocapitalize="none"
+            inputmode="text"
+          >
+        </form>
+        <div class="search-results" id="search-results" aria-live="polite"></div>
+        <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
+      </div>
+      <div class="column__bottom">
+        <div class="profile-card" id="identity-pane-body" aria-label="your profile"></div>
+      </div>
     </aside>
 
-    <section class="pane pane--stream" data-pane="stream" aria-labelledby="stream-title">
-      <div class="pane__title" id="stream-title">stream</div>
-      <form class="feed-composer" id="feed-composer" autocomplete="off">
-        <label class="sr-only" for="feed-body">new feed post</label>
+    <section class="column column--center" aria-labelledby="feed-title">
+      <h1 class="sr-only" id="feed-title">feed</h1>
+      <nav class="feed-tabs" aria-label="feed mode">
+        <button class="feed-tab is-active" type="button" data-feed-tab="personal">personal</button>
+        <button class="feed-tab" type="button" data-feed-tab="discover">discover</button>
+      </nav>
+      <form class="composer" id="feed-composer" autocomplete="off">
+        <label class="sr-only" for="feed-body">share a thought</label>
         <textarea
           id="feed-body"
-          class="feed-composer__body"
+          class="composer__input"
           name="feed-body"
-          placeholder="write a text-only post"
+          placeholder="share a thought..."
           maxlength="16384"
+          rows="1"
           spellcheck="true"
         ></textarea>
-        <div class="feed-composer__row">
-          <select class="feed-composer__select" id="feed-visibility" name="feed-visibility" aria-label="visibility">
-            <option value="public">public</option>
-            <option value="unlisted">unlisted</option>
-            <option value="connections_only">connections only</option>
-            <option value="close_connections">close connections</option>
-            <option value="public_metadata_encrypted_body">public metadata, encrypted body</option>
-          </select>
-          <input id="feed-title" class="feed-composer__input" name="feed-title" placeholder="title/meta" maxlength="120">
-          <input id="feed-tags" class="feed-composer__input" name="feed-tags" placeholder="tags: sudo, text" maxlength="180">
-          <button class="text-button text-button--primary" type="submit">post</button>
-        </div>
-        <div class="feed-composer__state" id="feed-composer-state" aria-live="polite"></div>
+        <button class="composer__post" type="submit">post</button>
       </form>
-      <div class="stream-list" id="stream-list" aria-live="polite"></div>
+      <div class="composer__state" id="feed-composer-state" aria-live="polite"></div>
+      <div class="feed-pane" id="feed-pane-personal" data-feed-pane="personal">
+        <div class="stream-list" id="stream-list" aria-live="polite"></div>
+      </div>
+      <div class="feed-pane" id="feed-pane-discover" data-feed-pane="discover" hidden>
+        <div class="stream-list" id="discovery-list" aria-live="polite"></div>
+      </div>
     </section>
 
-    <aside class="pane pane--chats" data-pane="chats" aria-labelledby="chats-title">
-      <div class="pane__title" id="chats-title">chats</div>
-
-      <form class="lookup" id="lookup-form" autocomplete="off" data-lpignore="true">
-        <label class="sr-only" for="lookup-input">resolve handle</label>
+    <aside class="column column--right" aria-labelledby="chats-title">
+      <div class="column__title" id="chats-title">chats</div>
+      <form class="column__search" id="chats-search-form" autocomplete="off" data-lpignore="true">
+        <label class="sr-only" for="chats-search">search chats or users</label>
         <input
-          id="lookup-input"
+          id="chats-search"
           class="lookup__input"
-          name="sudo-handle-search"
+          name="sudo-chats-search"
           type="search"
-          placeholder="@Username"
+          placeholder="search chats or users..."
           autocomplete="off"
           data-lpignore="true"
           data-1p-ignore="true"
@@ -96,19 +110,66 @@
           inputmode="text"
         >
       </form>
-      <div class="search-results" id="search-results" aria-live="polite"></div>
-
-      <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
-
-      <div class="chat-list-label">connections</div>
       <div class="chat-list" id="chat-list"></div>
     </aside>
-
-    <aside class="pane pane--discovery" data-pane="discovery" aria-labelledby="discovery-title">
-      <div class="pane__title" id="discovery-title">discovery</div>
-      <div class="pane__body pane__body--discovery" id="discovery-list"></div>
-    </aside>
   </main>
+
+  <section class="account-menu" id="account-menu" hidden role="menu" aria-label="account">
+    <div class="account-menu__head">
+      <div class="account-menu__handle" id="account-menu-handle"></div>
+      <div class="account-menu__fingerprint" id="account-menu-fingerprint"></div>
+    </div>
+    <button class="account-menu__item" id="account-menu-backup" type="button" role="menuitem">backup account</button>
+    <button class="account-menu__item" id="account-menu-restore" type="button" role="menuitem">restore from backup</button>
+    <button class="account-menu__item" id="account-menu-devices" type="button" role="menuitem">linked devices</button>
+    <button class="account-menu__item" id="account-menu-lock" type="button" role="menuitem">lock account</button>
+    <button class="account-menu__item account-menu__item--danger" id="account-menu-logout" type="button" role="menuitem">logout</button>
+  </section>
+
+  <section class="chat-popup" id="chat-popup" hidden aria-labelledby="chat-popup-handle">
+    <header class="chat-popup__header">
+      <div class="chat-popup__identity">
+        <span class="chat-popup__handle" id="chat-popup-handle"></span>
+        <span class="chat-popup__fingerprint" id="chat-popup-fingerprint"></span>
+      </div>
+      <div class="chat-popup__controls">
+        <button class="chat-popup__icon" id="chat-popup-minimize" type="button" aria-label="minimize">_</button>
+        <button class="chat-popup__icon" id="chat-popup-close" type="button" aria-label="close">×</button>
+      </div>
+    </header>
+    <div class="chat-popup__body" id="chat-popup-body" aria-live="polite"></div>
+    <form class="chat-popup__form" id="chat-popup-form" autocomplete="off">
+      <label class="sr-only" for="chat-popup-input">message</label>
+      <textarea
+        id="chat-popup-input"
+        class="chat-popup__input"
+        rows="1"
+        placeholder="message..."
+        maxlength="8192"
+        spellcheck="true"
+      ></textarea>
+      <button class="chat-popup__send" type="submit" aria-label="send">send</button>
+    </form>
+  </section>
+
+  <dialog class="signup-dialog signup-dialog--devices" id="devices-dialog" aria-labelledby="devices-dialog-title">
+    <form class="signup-dialog__panel" id="devices-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="devices-dialog-title">linked devices</div>
+      <div class="signup-dialog__hint" id="device-current-status">not signed in</div>
+      <div class="signup-dialog__hint" id="local-storage-status">device status: checking</div>
+      <div class="devices-panel__list" id="device-list"></div>
+      <div class="devices-panel__actions">
+        <button class="text-button" id="device-link-start" type="button">create pairing code</button>
+        <input id="device-pairing-code" class="lookup__input" placeholder="enter pairing code">
+        <button class="text-button" id="device-link-complete" type="button">link device</button>
+      </div>
+      <div class="devices-panel__feedback" id="device-panel-feedback" aria-live="polite"></div>
+      <input id="backup-import-file" type="file" accept=".json,.sudo-backup.json,application/json" hidden>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="devices-cancel" type="button">close</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="signup-dialog signup-dialog--signup" id="signup-dialog" aria-labelledby="signup-title">
     <form class="signup-dialog__panel" id="signup-form" method="dialog" autocomplete="off" data-lpignore="true">
@@ -231,7 +292,7 @@
         <label class="signup-dialog__label" for="restore-passphrase">backup passphrase</label>
         <input id="restore-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="none">
       </div>
-      <div class="signup-dialog__hint" id="restore-passkey-support">recovery answer restore is still a development path. use backup file restore for now.</div>
+      <div class="signup-dialog__hint" id="restore-passkey-support">restore by recovery answer is still a development path. use backup file restore.</div>
       <div class="signup-dialog__state" id="restore-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
         <button class="text-button" id="restore-cancel" type="button">back</button>
@@ -249,7 +310,6 @@
       </div>
       <div class="backup-code-feedback" id="backup-code-feedback" aria-live="polite"></div>
       <div class="signup-dialog__warning">your account lives on your devices.</div>
-      <div class="signup-dialog__warning">if you lose your devices and recovery information, your messages cannot be recovered.</div>
       <div class="signup-dialog__warning">save your backup code or create a backup now.</div>
       <label class="recovery-panel__ack">
         <input id="recovery-ack" type="checkbox">
@@ -259,37 +319,7 @@
     </div>
   </section>
 
-  <section class="local-maintenance" id="local-maintenance" aria-labelledby="local-maintenance-title">
-    <div class="local-maintenance__inner">
-      <div class="signup-dialog__title" id="local-maintenance-title">account</div>
-      <div class="signup-dialog__warning">private message history is stored on this device.</div>
-      <div class="signup-dialog__warning">if you lose this device and your backup, your messages cannot be recovered.</div>
-      <div class="signup-dialog__hint">backup your account before clearing this device.</div>
-      <div class="signup-dialog__hint">link another device later to keep your account with you.</div>
-      <div class="local-maintenance__status" id="local-storage-status">device status: checking</div>
-      <div class="local-maintenance__actions">
-        <button class="text-button" id="crypto-account-unlock" type="button">unlock account</button>
-        <button class="text-button" id="crypto-account-lock" type="button">lock account</button>
-        <button class="text-button" id="backup-export" type="button">backup account</button>
-        <button class="text-button" id="backup-import" type="button">restore account</button>
-        <button class="text-button" id="local-state-clear" type="button">reset this device</button>
-        <input id="backup-import-file" type="file" accept=".json,.sudo-backup.json,application/json" hidden>
-      </div>
-      <div class="devices-panel">
-        <div class="devices-panel__title">current device</div>
-        <div class="devices-panel__status" id="device-current-status">not signed in</div>
-        <div class="devices-panel__title">linked devices</div>
-        <div class="devices-panel__list" id="device-list"></div>
-        <div class="devices-panel__actions">
-          <button class="text-button" id="device-link-start" type="button">link new device</button>
-          <input id="device-pairing-code" class="lookup__input" placeholder="enter pairing code">
-          <button class="text-button" id="device-link-complete" type="button">link device</button>
-        </div>
-        <div class="devices-panel__feedback" id="device-panel-feedback" aria-live="polite"></div>
-      </div>
-      <div class="backup-code-feedback" id="local-maintenance-feedback" aria-live="polite"></div>
-    </div>
-  </section>
+  <div class="account-feedback" id="local-maintenance-feedback" role="status" aria-live="polite"></div>
 
   <script type="module" src="/client/main.js"></script>
 </body>

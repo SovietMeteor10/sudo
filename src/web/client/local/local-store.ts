@@ -40,6 +40,17 @@ export async function saveLocalMessage(message: LocalMessage): Promise<void> {
   await putRecord("messages", message);
 }
 
+export async function listLocalMessagesByConversation(conversationId: string): Promise<LocalMessage[]> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("messages", "readonly");
+    const index = transaction.objectStore("messages").index("by_conversation");
+    const request = index.getAll(conversationId);
+    request.onsuccess = () => resolve((request.result as LocalMessage[]) ?? []);
+    request.onerror = () => reject(request.error ?? new Error("failed to read messages"));
+  });
+}
+
 export async function savePendingOutbound(outbound: PendingOutbound): Promise<void> {
   await putRecord("pending_outbound", outbound);
 }

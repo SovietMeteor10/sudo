@@ -131,11 +131,14 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   }
 
   // ===== 4. Sign out / sign in same device =====
-  // Sign out via the logout button; if not visible (early UI), synthesize a fresh tab and reload.
+  // Sign out via the account menu (top-right username -> logout).
   const signedOut = await page.evaluate(() => {
-    const button = document.getElementById("logout-button");
-    if (button) { button.click(); return true; }
-    return false;
+    const trigger = document.getElementById("account-button");
+    const logout = document.getElementById("account-menu-logout");
+    if (!trigger || !logout) return false;
+    trigger.click();
+    logout.click();
+    return true;
   });
   await new Promise((r) => setTimeout(r, 400));
   let authStateAfterSignout = await page.evaluate(() => document.body.dataset.authState);
@@ -191,7 +194,10 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   if (signed2.snap.authState !== "signed-in") {
     fail("wrong-passphrase-setup", `could not create second account: '${signed2.snap.signupState}'`);
   } else {
-    await page.evaluate(() => document.getElementById("logout-button")?.click());
+    await page.evaluate(() => {
+      document.getElementById("account-button")?.click();
+      document.getElementById("account-menu-logout")?.click();
+    });
     await new Promise((r) => setTimeout(r, 400));
     await page.click('.landing [data-auth-action="signin"]');
     await new Promise((r) => setTimeout(r, 200));
@@ -232,7 +238,9 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
         reader.readAsText(blob);
         return origCreate(blob);
       };
-      const button = document.getElementById("backup-export");
+      // Backup lives in the top-right account dropdown; open it then click.
+      document.getElementById("account-button")?.click();
+      const button = document.getElementById("account-menu-backup");
       if (!button) { resolve({ ok: false, reason: "backup button missing" }); return; }
       button.click();
       const start = Date.now();
@@ -327,7 +335,10 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   // ===== 9. Recovery answer / backup code path =====
   // The current restore card has a "recovery" mode. Spec says: must clearly
   // indicate availability or unavailability and never sit on a hang.
-  await page.evaluate(() => document.getElementById("logout-button")?.click());
+  await page.evaluate(() => {
+    document.getElementById("account-button")?.click();
+    document.getElementById("account-menu-logout")?.click();
+  });
   await new Promise((r) => setTimeout(r, 200));
   await page.click('.landing [data-auth-action="signin"]');
   await new Promise((r) => setTimeout(r, 200));
@@ -353,6 +364,12 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   await page.type("#signin-password", password);
   await page.click("#signin-submit");
   await waitForState(page, (s) => s.authState === "signed-in", FLOW_BUDGET_MS);
+  // Devices live behind the account-menu -> linked devices dialog.
+  await page.evaluate(() => {
+    document.getElementById("account-button")?.click();
+    document.getElementById("account-menu-devices")?.click();
+  });
+  await new Promise((r) => setTimeout(r, 250));
   const linkResult = await page.evaluate(async () => {
     const startBtn = document.getElementById("device-link-start");
     if (!startBtn) return { ok: false, reason: "device-link-start button missing" };
