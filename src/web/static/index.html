@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sudo</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "@chenglou/pretext": "/vendor/pretext/layout.js"
+      }
+    }
+  </script>
+</head>
+<body data-auth-state="restoring">
+  <header class="topbar">
+    <div class="brand">sudo</div>
+    <nav class="topnav" aria-label="primary panes">
+      <button class="topnav__tab" type="button" data-tab-target="identity">identity</button>
+      <button class="topnav__tab" type="button" data-tab-target="stream">stream</button>
+      <button class="topnav__tab" type="button" data-tab-target="chats">chats</button>
+    </nav>
+    <div class="header-auth" id="header-auth">
+      <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
+      <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
+      <span class="header-auth__handle" id="header-handle"></span>
+      <button class="auth-link" id="logout-button" type="button" hidden>logout</button>
+    </div>
+  </header>
+
+  <section class="landing" id="landing-screen" aria-label="sudo sign in">
+    <div class="landing__inner">
+      <div class="landing__brand">sudo</div>
+      <div class="landing__actions">
+        <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
+        <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
+      </div>
+    </div>
+  </section>
+
+  <main class="shell" id="app-shell" data-active-pane="stream" aria-label="sudo client">
+    <aside class="pane pane--identity" data-pane="identity" aria-labelledby="identity-title">
+      <div class="pane__title" id="identity-title">identity</div>
+      <div class="pane__body" id="identity-pane-body"></div>
+    </aside>
+
+    <section class="pane pane--stream" data-pane="stream" aria-labelledby="stream-title">
+      <div class="pane__title" id="stream-title">stream</div>
+      <div class="stream-list" id="stream-list" aria-live="polite"></div>
+    </section>
+
+    <aside class="pane pane--chats" data-pane="chats" aria-labelledby="chats-title">
+      <div class="pane__title" id="chats-title">chats</div>
+
+      <form class="lookup" id="lookup-form" autocomplete="off" data-lpignore="true">
+        <label class="sr-only" for="lookup-input">resolve handle</label>
+        <input
+          id="lookup-input"
+          class="lookup__input"
+          name="sudo-handle-search"
+          type="search"
+          placeholder="@Username"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          spellcheck="false"
+          autocapitalize="none"
+          inputmode="text"
+        >
+      </form>
+      <div class="search-results" id="search-results" aria-live="polite"></div>
+
+      <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
+
+      <div class="chat-list-label">connections</div>
+      <div class="chat-list" id="chat-list"></div>
+    </aside>
+  </main>
+
+  <dialog class="signup-dialog signup-dialog--signup" id="signup-dialog" aria-labelledby="signup-title">
+    <form class="signup-dialog__panel" id="signup-form" method="dialog" autocomplete="off" data-lpignore="true">
+      <div class="signup-dialog__title" id="signup-title">local-dev signup</div>
+      <p class="signup-dialog__warning">
+        unsafe/dev-only: this stores plaintext private keys on the server filesystem under data/keys.
+      </p>
+      <label class="signup-dialog__label" for="signup-handle">handle</label>
+      <input
+        id="signup-handle"
+        class="lookup__input"
+        name="sudo-signup-handle"
+        placeholder="@username"
+        maxlength="32"
+        pattern="[A-Za-z0-9_]{3,32}"
+        autocomplete="off"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        spellcheck="false"
+        autocapitalize="none"
+      >
+      <div class="signup-dialog__grid">
+        <div>
+          <label class="signup-dialog__label" for="signup-password">password</label>
+          <input
+            id="signup-password"
+            class="lookup__input"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            spellcheck="false"
+          >
+        </div>
+        <div>
+          <label class="signup-dialog__label" for="signup-password-confirm">confirm password</label>
+          <input
+            id="signup-password-confirm"
+            class="lookup__input"
+            name="password-confirm"
+            type="password"
+            autocomplete="new-password"
+            spellcheck="false"
+          >
+        </div>
+      </div>
+      <div class="signup-dialog__grid">
+        <div>
+          <label class="signup-dialog__label" for="signup-recovery-prompt">recovery question</label>
+          <select class="signup-dialog__select" id="signup-recovery-prompt" name="recoveryPrompt">
+            <option>first computer you loved</option>
+            <option>favourite useless object</option>
+            <option>phrase only you would know</option>
+            <option>name of a place you made up</option>
+            <option>childhood nickname for something</option>
+            <option>first fictional world you obsessed over</option>
+            <option>weirdest object on your desk</option>
+            <option>private sentence you can remember</option>
+          </select>
+        </div>
+        <div>
+          <label class="signup-dialog__label" for="signup-recovery-phrase">recovery answer</label>
+          <input
+            id="signup-recovery-phrase"
+            class="lookup__input"
+            name="sudo-recovery-answer"
+            placeholder="do not reuse a real password"
+            autocomplete="new-password"
+            data-lpignore="true"
+            data-1p-ignore="true"
+            spellcheck="false"
+            autocapitalize="none"
+          >
+        </div>
+      </div>
+      <div class="signup-dialog__hint">3-32 chars: letters, numbers, underscore</div>
+      <div class="signup-dialog__hint">password: 12+ chars with uppercase, lowercase, number, symbol</div>
+      <div class="signup-dialog__hint" id="signup-passkey-support">passkey support: checking</div>
+      <div class="signup-dialog__hint">backup code is shown once after account creation.</div>
+      <div class="signup-dialog__state" id="signup-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="signup-cancel" type="button">cancel</button>
+        <button class="text-button text-button--primary" type="submit">create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog" id="signin-dialog" aria-labelledby="signin-title">
+    <form class="signup-dialog__panel" id="signin-form" method="dialog" autocomplete="off" data-lpignore="true">
+      <div class="signup-dialog__title" id="signin-title">local-dev sign in</div>
+      <p class="signup-dialog__warning">
+        unsafe/dev-only: password auth and localStorage sessions are temporary local-dev scaffolding.
+      </p>
+      <div class="signin-password-fields" id="signin-password-fields">
+      <label class="signup-dialog__label" for="signin-handle">handle</label>
+      <input
+        id="signin-handle"
+        class="lookup__input"
+        name="username"
+        placeholder="@username"
+        autocomplete="username"
+        spellcheck="false"
+        autocapitalize="none"
+      >
+      <label class="signup-dialog__label" for="signin-password">password</label>
+      <input
+        id="signin-password"
+        class="lookup__input"
+        name="password"
+        type="password"
+        autocomplete="current-password"
+        spellcheck="false"
+        autocapitalize="none"
+      >
+      <button class="auth-link signup-dialog__mode" id="signin-recover-mode" type="button">recover account</button>
+      </div>
+      <div class="signin-recovery-fields" id="signin-recovery-fields" hidden>
+        <label class="signup-dialog__label" for="recover-handle">handle</label>
+        <input
+          id="recover-handle"
+          class="lookup__input"
+          name="sudo-recover-handle"
+          placeholder="@username"
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="none"
+        >
+        <label class="signup-dialog__label" for="recover-backup-code">backup code</label>
+        <input
+          id="recover-backup-code"
+          class="lookup__input"
+          name="sudo-backup-code"
+          autocomplete="new-password"
+          spellcheck="false"
+          autocapitalize="none"
+        >
+        <label class="signup-dialog__label" for="recover-question">recovery question</label>
+        <select class="signup-dialog__select" id="recover-question" name="sudo-recovery-question">
+          <option>first computer you loved</option>
+          <option>favourite useless object</option>
+          <option>phrase only you would know</option>
+          <option>name of a place you made up</option>
+          <option>childhood nickname for something</option>
+          <option>first fictional world you obsessed over</option>
+          <option>weirdest object on your desk</option>
+          <option>private sentence you can remember</option>
+        </select>
+        <label class="signup-dialog__label" for="recover-answer">recovery answer</label>
+        <input
+          id="recover-answer"
+          class="lookup__input"
+          name="sudo-recovery-answer"
+          autocomplete="new-password"
+          spellcheck="false"
+          autocapitalize="none"
+        >
+        <button class="auth-link signup-dialog__mode" id="signin-password-mode" type="button">back to password sign in</button>
+      </div>
+      <div class="signup-dialog__hint" id="signin-passkey-support">passkey support: checking</div>
+      <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="signin-cancel" type="button">cancel</button>
+        <button class="text-button text-button--primary" id="signin-submit" type="submit">sign in</button>
+      </div>
+    </form>
+  </dialog>
+
+  <section class="recovery-panel" id="recovery-panel" hidden aria-labelledby="recovery-panel-title">
+    <div class="recovery-panel__inner">
+      <div class="signup-dialog__title" id="recovery-panel-title">sudo backup code</div>
+      <div class="backup-code-row">
+        <div class="signup-result__secret" id="recovery-panel-secret" tabindex="-1"></div>
+        <button class="text-button backup-code-copy" id="backup-code-copy" type="button" aria-label="copy backup code">⧉</button>
+      </div>
+      <div class="backup-code-feedback" id="backup-code-feedback" aria-live="polite"></div>
+      <div class="signup-dialog__warning">save this. shown once. dev-only backup.</div>
+      <label class="recovery-panel__ack">
+        <input id="recovery-ack" type="checkbox">
+        I saved this
+      </label>
+      <button class="text-button text-button--primary" id="recovery-dismiss" type="button" disabled>dismiss</button>
+    </div>
+  </section>
+
+  <section class="local-maintenance" id="local-maintenance" aria-labelledby="local-maintenance-title">
+    <div class="local-maintenance__inner">
+      <div class="signup-dialog__title" id="local-maintenance-title">local state</div>
+      <div class="signup-dialog__warning">Private message history is stored locally on this device.</div>
+      <div class="signup-dialog__hint">Export encrypted backups before clearing browser data.</div>
+      <div class="signup-dialog__hint">This development build may store local message bodies before full encryption is implemented.</div>
+      <div class="local-maintenance__status" id="local-storage-status">local storage: checking</div>
+      <div class="local-maintenance__actions">
+        <button class="text-button" id="backup-export" type="button">export encrypted sudo backup</button>
+        <button class="text-button" id="backup-import" type="button">import encrypted sudo backup</button>
+        <button class="text-button" id="local-state-clear" type="button">clear local state</button>
+        <input id="backup-import-file" type="file" accept=".json,.sudo-backup.json,application/json" hidden>
+      </div>
+      <div class="backup-code-feedback" id="local-maintenance-feedback" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <script type="module" src="/client/main.js"></script>
+</body>
+</html>
