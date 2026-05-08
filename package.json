@@ -9,7 +9,10 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev:reset": "npm run build && node dist/cli/devReset.js",
-    "create-user": "npm run build && node dist/cli/createUser.js"
+    "create-user": "npm run build && node dist/cli/createUser.js",
+    "check:env": "npm run build && node dist/cli/checkEnv.js",
+    "smoke": "bash scripts/smoke.sh",
+    "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",

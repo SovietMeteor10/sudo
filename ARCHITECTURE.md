@@ -205,3 +205,30 @@ Crypto PBKDF2 and AES-GCM; the backup passphrase is never sent to the server.
 
 Future multi-device sync should replicate encrypted local state between
 authorized devices. It should not make the relay a history store.
+
+## Self-hosted nodes
+
+A node is meant to be operable by a non-Anthropic operator with a
+boring stack. The reference deployment is Ubuntu LTS + Node + systemd +
+nginx + Let's Encrypt. There is no Docker, no PM2, no orchestrator on
+purpose: the operator can reason about every moving part.
+
+Configuration is read once at startup by `readNodeRuntimeConfig` in
+`src/node/node.config.ts`. Keys an operator usually sets:
+
+- `SUDO_NODE_NAME`, `SUDO_PUBLIC_BASE_URL`, `SUDO_ONION_BASE_URL`
+- `SUDO_HOST`, `SUDO_PORT` (legacy `HOST`/`PORT` still honored)
+- `SUDO_DATA_DIR`, `SUDO_DB_PATH`
+- `SUDO_ENABLE_HTTPS_RELAY_FALLBACK`, `SUDO_PREFER_ONION_RELAYS`
+- `SUDO_ALLOW_SIGNUPS`, `SUDO_REQUIRE_INVITE`
+- `SUDO_LOG_LEVEL`
+
+`/.well-known/sudo/node.json` advertises the node name, public and
+onion base URLs, roles, and ordered relay capabilities derived from the
+same config. `npm run check:env` prints the resolved config and warns
+on common mistakes; `npm run smoke` probes `/health`, `/api/health`,
+`/.well-known/sudo/node.json`, and `/client/main.js`.
+
+The full operator path is documented under `docs/`: `INSTALL.md`,
+`DEPLOY_UBUNTU.md`, `SYSTEMD.md`, `NGINX.md`, `BACKUPS.md`, and
+`OPERATOR.md`.

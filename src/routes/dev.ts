@@ -2,6 +2,7 @@ import { Router } from "express";
 import { searchIdentityHandles } from "../discovery/discovery.service.js";
 import { AccountAccessError, accountAccessProvider, createDevSession, getIdentityForDevSession } from "../localState/accountAccess.js";
 import { DevSignupError, createDevIdentity } from "../identity/devSignup.js";
+import { readNodeRuntimeConfig, resolveIdentityHost } from "../node/node.config.js";
 
 export const devRouter = Router();
 
@@ -27,6 +28,17 @@ type RecoverBody = {
 devRouter.post("/dev/signup", (request, response) => {
   // DEV ONLY: this endpoint intentionally creates server-side private keys in
   // data/keys for local development. Do not expose it as production signup.
+  const config = readNodeRuntimeConfig();
+  if (!config.allowSignups) {
+    response.status(403).json({ error: "signups_disabled", message: "signups are disabled on this node" });
+    return;
+  }
+
+  if (config.requireInvite) {
+    response.status(403).json({ error: "invite_required", message: "this node requires an invite" });
+    return;
+  }
+
   const body = request.body as SignupBody;
 
   if (typeof body.handle !== "string") {
@@ -50,8 +62,8 @@ devRouter.post("/dev/signup", (request, response) => {
   }
 
   try {
-    const baseUrl = process.env.SUDO_BASE_URL ?? `${request.protocol}://${request.get("host")}`;
-    const host = process.env.SUDO_HOST ?? "autodidact.fun";
+    const baseUrl = process.env.SUDO_BASE_URL?.trim() || config.publicBaseUrl || `${request.protocol}://${request.get("host")}`;
+    const host = resolveIdentityHost(config);
     const result = createDevIdentity({
       rawHandle: body.handle,
       password: body.password,

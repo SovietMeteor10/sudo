@@ -1,4 +1,5 @@
 import { createDevIdentity } from "../identity/devSignup.js";
+import { readNodeRuntimeConfig, resolveIdentityHost } from "../node/node.config.js";
 
 const rawHandle = process.argv[2];
 
@@ -7,8 +8,9 @@ if (!rawHandle) {
   process.exit(1);
 }
 
-const host = process.env.SUDO_HOST ?? "autodidact.fun";
-const baseUrl = process.env.SUDO_BASE_URL ?? "http://localhost:3000";
+const config = readNodeRuntimeConfig();
+const host = resolveIdentityHost(config);
+const baseUrl = process.env.SUDO_BASE_URL?.trim() || config.publicBaseUrl;
 const password = process.env.SUDO_DEV_PASSWORD ?? "DevPassword123!";
 const recoveryQuestion = process.env.SUDO_DEV_RECOVERY_QUESTION ?? "private sentence you can remember";
 const recoveryAnswer = process.env.SUDO_DEV_RECOVERY_ANSWER ?? `dev recovery ${rawHandle}`;

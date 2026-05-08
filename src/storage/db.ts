@@ -1,9 +1,10 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
+import { readNodeRuntimeConfig } from "../node/node.config.js";
 import { runMigrations } from "./migrations.js";
 
-const databasePath = resolve(process.env.SUDO_DB_PATH ?? "./data/sudo.sqlite");
+const databasePath = readNodeRuntimeConfig().dbPath;
 
 mkdirSync(dirname(databasePath), { recursive: true });
 

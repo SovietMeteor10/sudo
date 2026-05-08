@@ -277,6 +277,32 @@ npm run dev:reset
 
 This deletes and recreates the local SQLite registry, dev sessions, dev private keys, and other runtime state under `data/`.
 
+## Self-hosting
+
+A sudo node is one Node process plus a SQLite file behind nginx. No
+Docker, no orchestrator. The operator docs walk through it:
+
+- [docs/INSTALL.md](docs/INSTALL.md) — clone, install, build, run
+- [docs/DEPLOY_UBUNTU.md](docs/DEPLOY_UBUNTU.md) — full Ubuntu setup with Node, systemd, nginx, Certbot, ufw
+- [docs/SYSTEMD.md](docs/SYSTEMD.md) — service unit template
+- [docs/NGINX.md](docs/NGINX.md) — minimal reverse-proxy site config
+- [docs/BACKUPS.md](docs/BACKUPS.md) — SQLite + data dir backups, restore, schedule
+- [docs/OPERATOR.md](docs/OPERATOR.md) — node roles and operator responsibilities
+
+Bootstrap and verify with:
+
+```sh
+cp .env.example .env
+npm ci && npm run build
+npm run check:env
+npm start &
+BASE_URL=http://127.0.0.1:3000 npm run smoke
+npm run backup:sqlite
+```
+
+Each portal that runs sudo is an interchangeable entry point into the
+network — not the network itself.
+
 ## Local Wi-Fi testing
 
 ```sh
