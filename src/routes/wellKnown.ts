@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { getIdentityByHandle, normalizeHandle } from "../registry.js";
+import { generateIdentityGrid } from "../crypto/index.js";
+import { getIdentityByHandle, normalizeHandle } from "../identity/registry.js";
 
 export const wellKnownRouter = Router();
 
@@ -18,5 +19,12 @@ wellKnownRouter.get("/.well-known/handles/:handle", (request, response) => {
     return;
   }
 
-  response.json(identity.document);
+  response.json({
+    ...identity.document,
+    canonical_id: identity.canonicalId,
+    identity_url: `/api/identity/${encodeURIComponent(identity.canonicalId)}`,
+    public_keys: identity.document.keys,
+    visual_fingerprint: generateIdentityGrid(identity.document.keys.identity.public_key),
+    signature: identity.document.signature
+  });
 });

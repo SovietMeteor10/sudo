@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { fingerprintPublicKey, verifyIdentityDocument } from "../crypto.js";
-import { getIdentityByCanonicalId } from "../registry.js";
+import { fingerprintPublicKey, verifyIdentityDocument } from "../crypto/index.js";
+import { getIdentityByCanonicalId } from "../identity/registry.js";
 
 export const profileRouter = Router();
 
@@ -12,7 +12,8 @@ profileRouter.get("/u/:canonicalId", (request, response) => {
     return;
   }
 
-  const fingerprint = fingerprintPublicKey(identity.document.public_key);
+  const identityPublicKey = identity.document.keys.identity.public_key;
+  const fingerprint = fingerprintPublicKey(identityPublicKey);
   const signatureState = verifyIdentityDocument(identity.document) ? "valid" : "invalid";
 
   response.type("html").send(`<!doctype html>
@@ -38,14 +39,15 @@ profileRouter.get("/u/:canonicalId", (request, response) => {
 =============
 
 handle:      ${escapeHtml(identity.document.handle)}
-canonical:   ${escapeHtml(identity.document.canonical)}
+canonical:   ${escapeHtml(identity.document.canonical_id)}
 key:         sha256:${fingerprint}
 signature:   ${signatureState}
 updated:     ${escapeHtml(identity.document.updated_at)}
 
-profile:     ${escapeHtml(identity.document.profile)}
-finger:      ${escapeHtml(identity.document.finger)}
-inbox:       ${escapeHtml(identity.document.inbox)}
+home node:   ${escapeHtml(identity.document.home_node)}
+profile:     ${escapeHtml(identity.document.profile ?? `/u/${identity.document.canonical_id}`)}
+finger:      ${escapeHtml(identity.document.finger ?? `/finger/${identity.document.handle.slice(1)}`)}
+inbox:       ${escapeHtml(identity.document.inbox ?? `/inbox/${identity.document.canonical_id}`)}
 
 Registry entries are discovery hints. Trust this identity only after
 verifying key continuity and signed identity documents over time.

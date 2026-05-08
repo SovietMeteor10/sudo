@@ -1,14 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
-  createCanonicalId,
-  createEd25519KeyPair,
-  type IdentityDocument,
-  type SignableIdentityDocument,
-  signIdentityDocument
-} from "./crypto.js";
-import { accountAccessProvider } from "./accountAccess.js";
+  createEd25519KeyPairBase64Url,
+  generateIdentityGrid
+} from "../crypto/index.js";
+import type { IdentityDocument } from "../protocol/types.js";
+import { accountAccessProvider } from "../localState/accountAccess.js";
 import { createHandle, getIdentityByHandle, saveIdentity } from "./registry.js";
+import { createSignedIdentityDocument } from "./identity.service.js";
 
 export type DevSignupOptions = {
   rawHandle: string;
@@ -49,28 +48,30 @@ export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
     throw new DevSignupError("handle already exists", "duplicate_handle");
   }
 
-  const canonicalId = createCanonicalId();
-  const canonical = `@${canonicalId}:${options.host}`;
-  const keys = createEd25519KeyPair();
-  const updatedAt = new Date().toISOString();
-
-  const signableDocument: SignableIdentityDocument = {
+  const identityKeys = createEd25519KeyPairBase64Url();
+  const feedKeys = createEd25519KeyPairBase64Url();
+  const messagingPublicKey = `placeholder:${identityKeys.publicKey.slice(0, 24)}`;
+  const identityDocument = createSignedIdentityDocument({
     handle,
-    canonical,
-    public_key: keys.publicKey,
-    profile: `${options.baseUrl}/u/${canonicalId}`,
+    homeNode: options.host,
+    identityPublicKey: identityKeys.publicKey,
+    identityPrivateKey: identityKeys.privateKey,
+    messagingPublicKey,
+    feedPublicKey: feedKeys.publicKey
+  });
+  const canonicalId = identityDocument.canonical_id;
+  const legacyDocument: IdentityDocument = {
+    ...identityDocument,
+    canonical: `@${canonicalId}:${options.host}`,
+    public_key: identityDocument.keys.identity.public_key,
+    profile: `${options.baseUrl}/u/${encodeURIComponent(canonicalId)}`,
     finger: `${options.baseUrl}/finger/${handle.slice(1)}`,
-    inbox: `${options.baseUrl}/inbox/${canonicalId}`,
-    updated_at: updatedAt
-  };
-
-  const identityDocument: IdentityDocument = {
-    ...signableDocument,
-    signature: signIdentityDocument(signableDocument, keys.privateKey)
+    inbox: `${options.baseUrl}/inbox/${encodeURIComponent(canonicalId)}`,
+    visual_fingerprint: generateIdentityGrid(identityKeys.publicKey)
   };
 
   try {
-    saveIdentity(canonicalId, identityDocument);
+    saveIdentity(canonicalId, legacyDocument);
   } catch (error) {
     if (isSqliteUniqueError(error)) {
       throw new DevSignupError("handle already exists", "duplicate_handle");
@@ -88,13 +89,25 @@ export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
   // Secure Enclave, or equivalent hardware-backed key storage.
   writeFileSync(
     resolve(keyDir, `${canonicalId}.dev-private-key.pem`),
-    keys.privateKey,
+    identityKeys.privateKey,
+    { mode: 0o600 }
+  );
+
+  writeFileSync(
+    resolve(keyDir, `${canonicalId}.dev-feed-private-key.pem`),
+    feedKeys.privateKey,
     { mode: 0o600 }
   );
 
   writeFileSync(
     resolve(keyDir, `${canonicalId}.identity.json`),
-    `${JSON.stringify(identityDocument, null, 2)}\n`,
+    `${JSON.stringify(legacyDocument, null, 2)}\n`,
+    { mode: 0o600 }
+  );
+
+  writeFileSync(
+    resolve(keyDir, `${canonicalId}.fingerprint.json`),
+    `${JSON.stringify(generateIdentityGrid(identityKeys.publicKey), null, 2)}\n`,
     { mode: 0o600 }
   );
 
@@ -106,7 +119,7 @@ export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
   );
 
   return {
-    identity: identityDocument,
+    identity: legacyDocument,
     backupCode: credential.backupCode,
     canonicalId,
   };

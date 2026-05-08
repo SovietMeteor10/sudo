@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { fingerprintPublicKey, verifyIdentityDocument } from "../crypto.js";
-import { getIdentityByHandle, normalizeHandle } from "../registry.js";
+import { fingerprintPublicKey, verifyIdentityDocument } from "../crypto/index.js";
+import { getIdentityByHandle, normalizeHandle } from "../identity/registry.js";
 
 export const fingerRouter = Router();
 
@@ -19,16 +19,17 @@ fingerRouter.get("/finger/:handle", (request, response) => {
     return;
   }
 
-  const fingerprint = fingerprintPublicKey(identity.document.public_key);
+  const fingerprint = fingerprintPublicKey(identity.document.keys.identity.public_key);
   const signatureState = verifyIdentityDocument(identity.document) ? "valid" : "invalid";
 
   response.type("text/plain").send(`Login: ${identity.document.handle}
-Canonical: ${identity.document.canonical}
+Canonical: ${identity.document.canonical_id}
 Key: sha256:${fingerprint}
 Signature: ${signatureState}
 Updated: ${identity.document.updated_at}
-Profile: ${identity.document.profile}
-Inbox: ${identity.document.inbox}
+Home: ${identity.document.home_node}
+Profile: ${identity.document.profile ?? `/u/${identity.document.canonical_id}`}
+Inbox: ${identity.document.inbox ?? `/inbox/${identity.document.canonical_id}`}
 
 Plan:
   text-first identity, Tor-first transport, encrypted messages only

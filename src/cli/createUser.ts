@@ -1,4 +1,4 @@
-import { createDevIdentity } from "../devSignup.js";
+import { createDevIdentity } from "../identity/devSignup.js";
 
 const rawHandle = process.argv[2];
 
@@ -16,11 +16,12 @@ const result = createDevIdentity({ rawHandle, password, recoveryQuestion, recove
 const identityDocument = result.identity;
 
 console.log(`created ${identityDocument.handle}`);
-console.log(`canonical: ${identityDocument.canonical}`);
+console.log(`canonical: ${identityDocument.canonical_id}`);
 console.log(`profile:   ${identityDocument.profile}`);
 console.log(`finger:    ${identityDocument.finger}`);
 console.log(`inbox:     ${identityDocument.inbox}`);
+console.log(`fingerprint: ${identityDocument.visual_fingerprint?.fingerprint}`);
 console.log("");
-console.log("dev warning: private key stored in data/keys/*.dev-private-key.pem");
+console.log("dev warning: private keys stored in data/keys/*.dev-*-private-key.pem");
 console.log("dev backup code: shown once, store it somewhere local");
 console.log(result.backupCode);
