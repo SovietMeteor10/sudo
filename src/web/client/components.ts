@@ -2,7 +2,9 @@ import { streamPosts } from "./data.js";
 import { mountTextSurface, unmountAllTextSurfaces } from "./rendering/textSurface.js";
 import type {
   ChatSummary,
+  ConnectionRelationship,
   FeedPost,
+  FeedSubscription,
   IdentityFingerprint,
   IdentityDocument,
   LocalIdentity,
@@ -119,7 +121,7 @@ export function renderLookupResult(root: HTMLElement, state: LookupState): void 
     return;
   }
 
-  root.replaceChildren(renderResolvedIdentity(state.identity, state.fingerprint));
+  root.replaceChildren(renderResolvedIdentity(state.identity, state.fingerprint, state.relationship, state.subscription));
 }
 
 export function renderChatList(root: HTMLElement, localChats: ChatSummary[] = []): void {
@@ -174,6 +176,7 @@ export function renderSearchResults(
       line(result.handle, "search-result__handle"),
       line(result.bio, "is-muted"),
       line(`fingerprint: ${result.fingerprint}`, "is-muted"),
+      line(`relationship: ${result.relationship?.tier ?? "unknown"}`, "is-muted"),
     ]);
     if (result.fingerprint_grid !== undefined) {
       row.prepend(renderFingerprintGrid(result.fingerprint_grid));
@@ -227,16 +230,35 @@ function renderFeedPost(post: FeedPost): HTMLElement {
   return article;
 }
 
-function renderResolvedIdentity(identity: IdentityDocument, fingerprint: string): HTMLElement {
+function renderResolvedIdentity(
+  identity: IdentityDocument,
+  fingerprint: string,
+  relationship?: ConnectionRelationship,
+  subscription?: FeedSubscription | null
+): HTMLElement {
   const shortFingerprint = `${fingerprint.slice(0, 12)}...`;
   const card = block("lookup-card", [
     line(identity.handle, "lookup-card__handle"),
     line(`canonical: ${shortCanonical(identity.canonical_id)}`),
     line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? shortFingerprint}`),
+    line(`relationship: ${relationship?.tier ?? "unknown"}${relationship?.subscribed ? " / subscribed" : ""}`, "is-muted"),
+    line(`subscription: ${subscription === null ? "none" : subscription?.muted ? "muted" : "active"}`, "is-muted"),
     line("trust: unverified", "is-muted"),
     line("onion: unknown", "is-muted"),
     line(`updated: ${formatTimestamp(identity.updated_at)}`, "is-muted"),
   ]);
+
+  const actions = document.createElement("div");
+  actions.className = "lookup-card__actions";
+  actions.append(
+    button("known", "set-known"),
+    button("close", "set-close"),
+    button("block", "set-block"),
+    button("unblock", "set-unblock"),
+    button("subscribe", "set-subscribe"),
+    button("unsubscribe", "set-unsubscribe"),
+  );
+  card.append(actions);
 
   if (identity.visual_fingerprint !== undefined) {
     card.prepend(renderFingerprintGrid(identity.visual_fingerprint));
@@ -281,6 +303,15 @@ function line(text: string, className?: string): HTMLElement {
   const element = document.createElement("div");
   element.className = className === undefined ? "line" : `line ${className}`;
   element.textContent = text;
+  return element;
+}
+
+function button(label: string, action: string): HTMLButtonElement {
+  const element = document.createElement("button");
+  element.type = "button";
+  element.className = "lookup-card__button";
+  element.dataset["relationshipAction"] = action;
+  element.textContent = label;
   return element;
 }
 

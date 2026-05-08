@@ -1,6 +1,8 @@
 import type {
   ChatSummary as ProtocolChatSummary,
+  ConnectionRelationship as ProtocolConnectionRelationship,
   FeedPost as ProtocolFeedPost,
+  FeedSubscription as ProtocolFeedSubscription,
   IdentityFingerprint as ProtocolIdentityFingerprint,
   IdentityDocument as ProtocolIdentityDocument,
   SearchResult as ProtocolSearchResult,
@@ -9,6 +11,8 @@ import type {
 
 export type IdentityDocument = ProtocolIdentityDocument;
 export type IdentityFingerprint = ProtocolIdentityFingerprint;
+export type ConnectionRelationship = ProtocolConnectionRelationship;
+export type FeedSubscription = ProtocolFeedSubscription;
 
 export type LocalIdentity = {
   handle: string;
@@ -22,7 +26,14 @@ export type LocalIdentity = {
 export type LookupState =
   | { status: "idle" }
   | { status: "loading"; query: string }
-  | { status: "resolved"; query: string; identity: IdentityDocument; fingerprint: string }
+  | {
+      status: "resolved";
+      query: string;
+      identity: IdentityDocument;
+      fingerprint: string;
+      relationship?: ConnectionRelationship;
+      subscription?: FeedSubscription | null;
+    }
   | { status: "error"; query: string; message: string };
 
 export type SignupState =
@@ -37,7 +48,10 @@ export type SigninState =
   | { status: "signed_in"; identity: IdentityDocument }
   | { status: "error"; message: string };
 
-export type SearchResult = ProtocolSearchResult;
+export type SearchResult = ProtocolSearchResult & {
+  relationship?: ConnectionRelationship;
+  subscription?: FeedSubscription | null;
+};
 
 export type SearchState =
   | { status: "idle" }

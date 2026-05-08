@@ -407,6 +407,23 @@ body[data-auth-state="signed-in"] .landing {
   color: var(--text);
 }
 
+.lookup-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.lookup-card__button {
+  min-height: 26px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: #101211;
+  color: var(--text);
+  cursor: pointer;
+}
+
 .lookup-card--error {
   padding-left: 0;
   color: var(--danger);

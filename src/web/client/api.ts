@@ -1,4 +1,4 @@
-import type { FeedPost, IdentityDocument, SearchResult } from "./types.js";
+import type { ConnectionRelationship, FeedPost, FeedSubscription, IdentityDocument, SearchResult } from "./types.js";
 
 export async function lookupHandle(query: string, signal: AbortSignal): Promise<IdentityDocument> {
   const handle = normalizeLookupInput(query);
@@ -132,6 +132,128 @@ export async function searchHandles(query: string, signal: AbortSignal): Promise
   return Array.isArray(body.results) ? body.results : [];
 }
 
+export async function getConnectionRelationship(
+  ownerCanonicalId: string,
+  subjectCanonicalId: string
+): Promise<ConnectionRelationship> {
+  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`connection lookup failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { relationship?: ConnectionRelationship };
+  if (body.relationship === undefined) {
+    throw new Error("connection lookup failed");
+  }
+
+  return body.relationship;
+}
+
+export async function upsertConnectionRelationship(input: {
+  owner_canonical_id: string;
+  subject_canonical_id: string;
+  subject_handle?: string;
+  tier: "unknown" | "known" | "close" | "blocked";
+  subscribed?: boolean;
+  notes?: string;
+}): Promise<ConnectionRelationship> {
+  const response = await fetch("/api/connections", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  const body = await response.json() as { relationship?: ConnectionRelationship; message?: string };
+  if (response.ok && body.relationship !== undefined) return body.relationship;
+  throw new Error(body.message ?? `connection update failed: ${response.status}`);
+}
+
+export async function deleteConnectionRelationship(
+  ownerCanonicalId: string,
+  subjectCanonicalId: string
+): Promise<boolean> {
+  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
+    method: "DELETE",
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`connection delete failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { removed?: boolean };
+  return body.removed === true;
+}
+
+export async function listConnections(ownerCanonicalId: string): Promise<ConnectionRelationship[]> {
+  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`connection list failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { relationships?: ConnectionRelationship[] };
+  return Array.isArray(body.relationships) ? body.relationships : [];
+}
+
+export async function upsertFeedSubscription(input: {
+  owner_canonical_id: string;
+  author_canonical_id: string;
+  author_handle?: string;
+  include_public?: boolean;
+  include_connections?: boolean;
+  include_close?: boolean;
+  muted?: boolean;
+}): Promise<FeedSubscription> {
+  const response = await fetch("/api/subscriptions", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  const body = await response.json() as { subscription?: FeedSubscription; message?: string };
+  if (response.ok && body.subscription !== undefined) return body.subscription;
+  throw new Error(body.message ?? `subscription update failed: ${response.status}`);
+}
+
+export async function listFeedSubscriptions(ownerCanonicalId: string): Promise<FeedSubscription[]> {
+  const response = await fetch(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`subscription list failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { subscriptions?: FeedSubscription[] };
+  return Array.isArray(body.subscriptions) ? body.subscriptions : [];
+}
+
+export async function deleteFeedSubscription(ownerCanonicalId: string, authorCanonicalId: string): Promise<boolean> {
+  const response = await fetch(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(authorCanonicalId)}`, {
+    method: "DELETE",
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`subscription delete failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { removed?: boolean };
+  return body.removed === true;
+}
+
 export type CreateFeedPostRequest = {
   author_canonical_id: string;
   author_handle?: string;
@@ -161,8 +283,10 @@ export async function createFeedPost(input: CreateFeedPostRequest): Promise<Feed
   throw new Error(body.message ?? `feed post failed: ${response.status}`);
 }
 
-export async function listUserFeedPosts(canonicalId: string): Promise<FeedPost[]> {
-  const response = await fetch(`/api/feeds/users/${encodeURIComponent(canonicalId)}`, {
+export async function listUserFeedPosts(canonicalId: string, viewerCanonicalId?: string): Promise<FeedPost[]> {
+  const url = new URL(`/api/feeds/users/${encodeURIComponent(canonicalId)}`, window.location.origin);
+  if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
+  const response = await fetch(url.toString(), {
     headers: { accept: "application/json" },
   });
 

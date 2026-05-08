@@ -34,3 +34,9 @@
 - Added explicit feed visibility modes for public, unlisted, restricted, close-connection, and public-metadata/encrypted-body posts.
 - Added SQLite feed post persistence, soft-delete tombstones, author feed routes, and RSS-style public/unlisted publishing.
 - Added a minimal portal composer and chronological author feed display.
+
+### Relationship System
+
+- Added unified connection tiers for unknown, known, close, and blocked state.
+- Added connection and subscription APIs that sync relay policy and feed visibility.
+- Added server-side viewer-aware filtering for restricted feed posts as DEV-ONLY scaffolding.

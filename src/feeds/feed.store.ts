@@ -77,20 +77,12 @@ export function listFeedPosts(): FeedPost[] {
   return rows.map(rowToPost);
 }
 
-export function listFeedPostsByAuthor(
-  canonicalId: string,
-  includeRestricted: boolean
-): FeedPost[] {
-  const visibilityClause = includeRestricted
-    ? "visibility != 'private_message'"
-    : "visibility IN ('public', 'unlisted')";
-
+export function listFeedPostsByAuthor(canonicalId: string): FeedPost[] {
   const rows = db
     .prepare(`
       SELECT * FROM feed_posts
       WHERE author_canonical_id = @canonicalId
         AND deleted_at IS NULL
-        AND ${visibilityClause}
       ORDER BY created_at DESC
       LIMIT 100
     `)

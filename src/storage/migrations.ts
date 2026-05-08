@@ -12,6 +12,15 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "identities", "created_at", "TEXT");
   addColumnIfMissing(db, "identities", "sequence", "INTEGER");
 
+  addColumnIfMissing(db, "connections", "subject_handle", "TEXT");
+  addColumnIfMissing(db, "connections", "notes", "TEXT");
+  addColumnIfMissing(db, "connections", "subscribed", "INTEGER");
+  addColumnIfMissing(db, "feed_subscriptions", "author_handle", "TEXT");
+  addColumnIfMissing(db, "feed_subscriptions", "include_public", "INTEGER");
+  addColumnIfMissing(db, "feed_subscriptions", "include_connections", "INTEGER");
+  addColumnIfMissing(db, "feed_subscriptions", "include_close", "INTEGER");
+  addColumnIfMissing(db, "feed_subscriptions", "muted", "INTEGER");
+
   const devAccountColumns = db
     .prepare("PRAGMA table_info(dev_account_access)")
     .all() as Array<{ name: string }>;

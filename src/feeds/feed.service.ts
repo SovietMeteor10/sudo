@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { signFeedPost } from "../crypto/signatures.js";
 import { SUDO_PROTOCOL_VERSION, DEFAULT_MAX_TEXT_FEED_POST_BYTES } from "../protocol/constants.js";
+import { getConnectionRelationship } from "../connections/connections.store.js";
 import { getIdentityByCanonicalId } from "../identity/identity.store.js";
 import type { FeedPost, FeedVisibility, SignableFeedPost } from "./feed.types.js";
 import { FeedError, type CreateFeedPostInput } from "./feed.types.js";
@@ -78,6 +79,13 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
 }
 
 export function getPostForApi(postId: string): { post: FeedPost; warning?: string } {
+  return getPostForApiWithViewer(postId, undefined);
+}
+
+export function getPostForApiWithViewer(
+  postId: string,
+  viewerCanonicalId: string | undefined
+): { post: FeedPost; warning?: string } {
   const post = getFeedPost(postId);
   if (post === null || post.deleted_at !== null) {
     throw new FeedError("post_not_found", "feed post not found", 404);
@@ -87,23 +95,33 @@ export function getPostForApi(postId: string): { post: FeedPost; warning?: strin
     throw new FeedError("not_feed_post", "private_message is not a feed post", 404);
   }
 
-  if (post.visibility === "connections_only" || post.visibility === "close_connections") {
+  if (viewerCanonicalId === undefined && post.visibility !== "public" && post.visibility !== "unlisted") {
     return {
-      post,
+      post: redactRestrictedPost(post),
       warning: "unsafe_dev_only_restricted_feed_fetch_without_auth"
     };
   }
 
-  return { post };
+  const visible = filterPostForViewer(post, viewerCanonicalId);
+  if (visible === null) {
+    throw new FeedError("not_feed_post", "post not visible to this viewer", 404);
+  }
+
+  return { post: visible };
 }
 
 export function listUserPostsForApi(
   canonicalId: string,
-  includeRestricted: boolean
+  viewerCanonicalId: string | undefined
 ): { posts: FeedPost[]; warning?: string } {
+  const posts = listFeedPostsByAuthor(canonicalId);
+  const filtered = posts
+    .map((post) => filterPostForViewer(post, viewerCanonicalId))
+    .filter((post): post is FeedPost => post !== null);
+
   return {
-    posts: listFeedPostsByAuthor(canonicalId, includeRestricted),
-    warning: includeRestricted ? "unsafe_dev_only_includes_restricted_posts" : undefined
+    posts: filtered,
+    warning: viewerCanonicalId === undefined ? undefined : "unsafe_dev_only_viewer_filter_applied"
   };
 }
 
@@ -180,6 +198,62 @@ function validatePostContent(
   if (size > DEFAULT_MAX_TEXT_FEED_POST_BYTES) {
     throw new FeedError("post_too_large", "feed post is too large", 413);
   }
+}
+
+function filterPostForViewer(post: FeedPost, viewerCanonicalId: string | undefined): FeedPost | null {
+  if (post.visibility === "public" || post.visibility === "unlisted") {
+    return post;
+  }
+
+  if (post.visibility === "public_metadata_encrypted_body") {
+    return viewerCanonicalId !== undefined && post.allowed_recipients.includes(viewerCanonicalId)
+      ? post
+      : {
+          ...post,
+          body: undefined,
+          encrypted_body: undefined
+        };
+  }
+
+  if (post.visibility === "connections_only") {
+    return canSeeConnectionsOnly(viewerCanonicalId, post.author_canonical_id) ? post : null;
+  }
+
+  if (post.visibility === "close_connections") {
+    return canSeeCloseConnections(viewerCanonicalId, post.author_canonical_id, post.allowed_recipients) ? post : null;
+  }
+
+  return null;
+}
+
+function redactRestrictedPost(post: FeedPost): FeedPost {
+  return {
+    ...post,
+    body: post.visibility === "public_metadata_encrypted_body" ? undefined : post.body,
+    encrypted_body: undefined
+  };
+}
+
+function canSeeAuthorPosts(viewerCanonicalId: string | undefined, authorCanonicalId: string): boolean {
+  if (viewerCanonicalId === undefined) return false;
+  const relationship = getConnectionRelationship(viewerCanonicalId, authorCanonicalId);
+  if (relationship === null) return false;
+  return relationship.tier === "known" || relationship.tier === "close";
+}
+
+function canSeeConnectionsOnly(viewerCanonicalId: string | undefined, authorCanonicalId: string): boolean {
+  return canSeeAuthorPosts(viewerCanonicalId, authorCanonicalId);
+}
+
+function canSeeCloseConnections(
+  viewerCanonicalId: string | undefined,
+  authorCanonicalId: string,
+  allowedRecipients: string[]
+): boolean {
+  if (viewerCanonicalId === undefined) return false;
+  if (allowedRecipients.includes(viewerCanonicalId)) return true;
+  const relationship = getConnectionRelationship(viewerCanonicalId, authorCanonicalId);
+  return relationship !== null && relationship.tier === "close";
 }
 
 function normalizeOptionalText(value: unknown): string | undefined {

@@ -135,6 +135,33 @@ export type FeedPost = SignableFeedPost & {
   signature: Signature;
 };
 
+export type ConnectionTier = "unknown" | "known" | "close" | "blocked";
+
+export type ConnectionRelationship = {
+  type: "sudo_connection_relationship";
+  owner_canonical_id: CanonicalId;
+  subject_canonical_id: CanonicalId;
+  subject_handle?: Handle;
+  tier: ConnectionTier;
+  subscribed: boolean;
+  created_at: string;
+  updated_at: string;
+  notes?: string;
+};
+
+export type FeedSubscription = {
+  type: "sudo_feed_subscription";
+  owner_canonical_id: CanonicalId;
+  author_canonical_id: CanonicalId;
+  author_handle?: Handle;
+  include_public: boolean;
+  include_connections: boolean;
+  include_close: boolean;
+  muted: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type StreamPost = {
   id: string;
   handle: Handle;

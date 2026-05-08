@@ -81,6 +81,24 @@ Discovery, feeds, local client/dev state, crypto, and protocol types are kept
 separate because future onion relays, identity registries, discovery nodes, and
 portals should be able to evolve independently.
 
+## Relationship and subscriptions
+
+The shared relationship model ties together contacts, relay policy, and feed
+visibility:
+
+- `unknown` is the default when no relationship exists
+- `known` is an accepted connection/contact
+- `close` is an explicit close-contact whitelist and also counts as known for relay quotas
+- `blocked` rejects relays and suppresses subscriptions where practical
+
+Feed subscriptions live alongside relationships as local social-graph state.
+They control which authors appear in the current portal stream, including
+whether the viewer wants public, connections, or close-connection content.
+
+The server-side visibility filters for restricted posts are still DEV-ONLY
+scaffolding. They are useful for the current portal, but they are not a
+replacement for future client-side encryption and group-key enforcement.
+
 ## Identity documents
 
 New identities use signed `sudo_identity` documents. A canonical ID is derived

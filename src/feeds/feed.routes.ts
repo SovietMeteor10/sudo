@@ -2,7 +2,7 @@ import { Router } from "express";
 import {
   createFeedPost,
   deleteFeedPost,
-  getPostForApi,
+  getPostForApiWithViewer,
   getUserRssFeed,
   listFeedPosts,
   listUserPostsForApi
@@ -26,7 +26,7 @@ feedRouter.post("/posts", (request, response) => {
 
 feedRouter.get("/posts/:postId", (request, response) => {
   try {
-    const result = getPostForApi(request.params.postId);
+    const result = getPostForApiWithViewer(request.params.postId, getViewer(request));
     response.json(result.warning === undefined
       ? { post: result.post }
       : { warning: result.warning, post: result.post });
@@ -49,12 +49,17 @@ feedRouter.get("/users/:canonicalId/rss", (request, response) => {
 });
 
 feedRouter.get("/users/:canonicalId", (request, response) => {
-  const includeRestricted = request.query["include_restricted"] === "true";
-  const result = listUserPostsForApi(request.params.canonicalId, includeRestricted);
+  const result = listUserPostsForApi(request.params.canonicalId, getViewer(request));
   response.json(result.warning === undefined
     ? { posts: result.posts }
     : { warning: result.warning, posts: result.posts });
 });
+
+function getViewer(request: { query: Record<string, unknown> }): string | undefined {
+  return typeof request.query["viewer"] === "string" && request.query["viewer"].length > 0
+    ? request.query["viewer"]
+    : undefined;
+}
 
 function sendFeedError(
   response: { status: (status: number) => { json: (body: unknown) => void } },

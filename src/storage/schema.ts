@@ -69,6 +69,43 @@ export const schemaSql = `
     PRIMARY KEY (sender_canonical_id, recipient_canonical_id)
   );
 
+  CREATE TABLE IF NOT EXISTS connections (
+    owner_canonical_id TEXT NOT NULL,
+    subject_canonical_id TEXT NOT NULL,
+    subject_handle TEXT,
+    tier TEXT NOT NULL,
+    subscribed INTEGER NOT NULL DEFAULT 0,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_canonical_id, subject_canonical_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS connections_owner_tier_idx
+    ON connections(owner_canonical_id, tier);
+
+  CREATE INDEX IF NOT EXISTS connections_subject_tier_idx
+    ON connections(subject_canonical_id, tier);
+
+  CREATE TABLE IF NOT EXISTS feed_subscriptions (
+    owner_canonical_id TEXT NOT NULL,
+    author_canonical_id TEXT NOT NULL,
+    author_handle TEXT,
+    include_public INTEGER NOT NULL DEFAULT 1,
+    include_connections INTEGER NOT NULL DEFAULT 1,
+    include_close INTEGER NOT NULL DEFAULT 0,
+    muted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_canonical_id, author_canonical_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS feed_subscriptions_owner_muted_idx
+    ON feed_subscriptions(owner_canonical_id, muted);
+
+  CREATE INDEX IF NOT EXISTS feed_subscriptions_author_idx
+    ON feed_subscriptions(author_canonical_id);
+
   CREATE TABLE IF NOT EXISTS feed_posts (
     post_id TEXT PRIMARY KEY,
     author_canonical_id TEXT NOT NULL,

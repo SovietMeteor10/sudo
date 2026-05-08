@@ -1,4 +1,9 @@
 import { db } from "../storage/db.js";
+import {
+  connectionTierToRelayTier,
+  getConnectionEffectiveTier,
+  upsertConnectionRelationship
+} from "../connections/connections.store.js";
 import type { RelayEnvelope, RelayEnvelopeStatus, RelayRelationship, RelayTier } from "./relay.types.js";
 
 const pendingStatus = "stored_by_relay";
@@ -69,6 +74,11 @@ export function getRelayRelationshipTier(
   senderCanonicalId: string,
   recipientCanonicalId: string
 ): RelayTier {
+  const effectiveTier = getConnectionEffectiveTier(recipientCanonicalId, senderCanonicalId);
+  if (effectiveTier !== "unknown") {
+    return connectionTierToRelayTier(effectiveTier);
+  }
+
   const row = db.prepare(`
     SELECT tier
     FROM relay_relationships
@@ -89,34 +99,22 @@ export function upsertRelayRelationship(
   tier: RelayTier,
   now: Date
 ): RelayRelationship {
-  const existing = db.prepare(`
-    SELECT sender_canonical_id, recipient_canonical_id, tier, created_at, updated_at
-    FROM relay_relationships
-    WHERE sender_canonical_id = ?
-      AND recipient_canonical_id = ?
-  `).get(senderCanonicalId, recipientCanonicalId) as RelationshipRow | undefined;
-
-  const createdAt = existing?.created_at ?? now.toISOString();
-  const updatedAt = now.toISOString();
-
-  db.prepare(`
-    INSERT INTO relay_relationships (
-      sender_canonical_id,
-      recipient_canonical_id,
-      tier,
-      created_at,
-      updated_at
-    ) VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(sender_canonical_id, recipient_canonical_id)
-    DO UPDATE SET tier = excluded.tier, updated_at = excluded.updated_at
-  `).run(senderCanonicalId, recipientCanonicalId, tier, createdAt, updatedAt);
+  const relationship = upsertConnectionRelationship(
+    recipientCanonicalId,
+    senderCanonicalId,
+    tier === "blocked" ? "blocked" : tier === "known" ? "known" : "unknown",
+    tier !== "blocked",
+    undefined,
+    undefined,
+    now
+  );
 
   return {
     sender_canonical_id: senderCanonicalId,
     recipient_canonical_id: recipientCanonicalId,
-    tier,
-    created_at: createdAt,
-    updated_at: updatedAt
+    tier: connectionTierToRelayTier(relationship.tier),
+    created_at: relationship.created_at,
+    updated_at: relationship.updated_at
   };
 }
 

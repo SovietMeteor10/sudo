@@ -81,6 +81,33 @@ The intended future transport is onion-first relay access. HTTPS access to a
 portal is useful for deployment, but it is not the same as private network
 transport.
 
+## Relationship Model
+
+sudo uses a shared relationship model to connect contacts, relay policy, and
+feed visibility.
+
+Relationship tiers are:
+
+- `unknown`: implicit default when no row exists
+- `known`: accepted contact or connection
+- `close`: explicit close-connection whitelist and also known for relay policy
+- `blocked`: zero acceptance and hidden where practical
+
+Feed subscriptions are separate local/social graph state. A subscription says
+which authors a user wants to follow and whether the viewer wants public,
+connections, or close-connection content in their local stream view.
+
+Relay policy reads the same relationship model:
+
+- blocked sender/recipient pairs are rejected
+- unknown pairs stay heavily limited
+- known and close pairs share the higher relay quota today
+
+Server-side restricted feed filtering is only scaffolding for now. It helps the
+current portal behave sensibly, but it is not cryptographic access control.
+Future device-held keys and encrypted group delivery still need to land before
+restricted feeds should be treated as private transport.
+
 ## Signed Text Feeds
 
 sudo feed posts are signed text protocol objects. They are separate from private

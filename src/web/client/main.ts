@@ -1,8 +1,12 @@
 import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
+  deleteConnectionRelationship,
+  deleteFeedSubscription,
   createFeedPost,
+  getConnectionRelationship,
   fingerprintPublicKey,
+  listFeedSubscriptions,
   listUserFeedPosts,
   lookupHandle,
   normalizeLookupInput,
@@ -10,7 +14,9 @@ import {
   restoreDevSession,
   searchHandles,
   signinDevHandle,
-  signupDevHandle
+  signupDevHandle,
+  upsertConnectionRelationship,
+  upsertFeedSubscription
 } from "./api.js";
 import {
   renderChatList,
@@ -36,7 +42,18 @@ import {
   saveIdentitySeen,
   upsertContact
 } from "./local/local-store.js";
-import type { ChatSummary, IdentityDocument, LocalIdentity, SearchResult, SearchState, SigninState, LookupState, SignupState } from "./types.js";
+import type {
+  ChatSummary,
+  ConnectionRelationship,
+  FeedSubscription,
+  IdentityDocument,
+  LocalIdentity,
+  LookupState,
+  SearchResult,
+  SearchState,
+  SigninState,
+  SignupState
+} from "./types.js";
 
 const shell = getRequiredElement("app-shell");
 const identityRoot = getRequiredElement("identity-pane-body");
@@ -104,6 +121,8 @@ let signinState: SigninState = { status: "idle" };
 let searchState: SearchState = { status: "idle" };
 let currentIdentity: LocalIdentity = localIdentity;
 let currentIdentityDocument: IdentityDocument | null = null;
+let currentLookupRelationship: ConnectionRelationship | null = null;
+let currentLookupSubscription: FeedSubscription | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -141,6 +160,14 @@ searchInput.addEventListener("input", () => {
   }
 
   scheduleSearch(value);
+});
+
+lookupRoot.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+  const action = target.dataset["relationshipAction"];
+  if (action === undefined) return;
+  void handleLookupRelationshipAction(action);
 });
 
 feedComposer.addEventListener("submit", (event) => {
@@ -276,8 +303,16 @@ async function runLookup(rawQuery: string): Promise<void> {
   try {
     const identity = await lookupHandle(query, controller.signal);
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
+    const [relationship, subscription] = await loadLookupContext(identity.canonical_id);
     if (controller.signal.aborted) return;
-    setLookupState({ status: "resolved", query, identity, fingerprint });
+    setLookupState({
+      status: "resolved",
+      query,
+      identity,
+      fingerprint,
+      relationship: relationship ?? undefined,
+      subscription
+    });
   } catch (error) {
     if (controller.signal.aborted) return;
     setLookupState({
@@ -288,8 +323,28 @@ async function runLookup(rawQuery: string): Promise<void> {
   }
 }
 
+async function loadLookupContext(canonicalId: string): Promise<[ConnectionRelationship | null, FeedSubscription | null]> {
+  if (currentIdentityDocument === null) {
+    return [null, null];
+  }
+
+  const [relationship, subscriptions] = await Promise.all([
+    getConnectionRelationship(currentIdentityDocument.canonical_id, canonicalId).catch(() => null),
+    listFeedSubscriptions(currentIdentityDocument.canonical_id).catch(() => []),
+  ]);
+
+  return [relationship, subscriptions.find((subscription) => subscription.author_canonical_id === canonicalId) ?? null];
+}
+
 function setLookupState(nextState: LookupState): void {
   lookupState = nextState;
+  if (nextState.status === "resolved") {
+    currentLookupRelationship = nextState.relationship ?? null;
+    currentLookupSubscription = nextState.subscription ?? null;
+  } else {
+    currentLookupRelationship = null;
+    currentLookupSubscription = null;
+  }
   renderLookupResult(lookupRoot, lookupState);
 }
 
@@ -476,11 +531,89 @@ async function refreshFeedPosts(): Promise<void> {
   }
 
   try {
-    const posts = await listUserFeedPosts(currentIdentityDocument.canonical_id);
+    const posts = await listUserFeedPosts(currentIdentityDocument.canonical_id, currentIdentityDocument.canonical_id);
     renderStream(streamRoot, posts);
   } catch {
     renderStream(streamRoot);
   }
+}
+
+async function handleLookupRelationshipAction(action: string): Promise<void> {
+  if (currentIdentityDocument === null || lookupState.status !== "resolved") {
+    return;
+  }
+
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  const subjectCanonicalId = lookupState.identity.canonical_id;
+  const handle = lookupState.identity.handle;
+
+  try {
+    if (action === "set-known") {
+      await upsertConnectionRelationship({
+        owner_canonical_id: ownerCanonicalId,
+        subject_canonical_id: subjectCanonicalId,
+        subject_handle: handle,
+        tier: "known",
+        subscribed: true
+      });
+    } else if (action === "set-close") {
+      await upsertConnectionRelationship({
+        owner_canonical_id: ownerCanonicalId,
+        subject_canonical_id: subjectCanonicalId,
+        subject_handle: handle,
+        tier: "close",
+        subscribed: true
+      });
+    } else if (action === "set-block") {
+      await upsertConnectionRelationship({
+        owner_canonical_id: ownerCanonicalId,
+        subject_canonical_id: subjectCanonicalId,
+        subject_handle: handle,
+        tier: "blocked",
+        subscribed: false
+      });
+    } else if (action === "set-unblock" || action === "set-unknown") {
+      await deleteConnectionRelationship(ownerCanonicalId, subjectCanonicalId);
+    } else if (action === "set-subscribe") {
+      await upsertFeedSubscription({
+        owner_canonical_id: ownerCanonicalId,
+        author_canonical_id: subjectCanonicalId,
+        author_handle: handle,
+        include_public: true,
+        include_connections: true,
+        include_close: currentLookupRelationship?.tier === "close",
+        muted: false
+      });
+    } else if (action === "set-unsubscribe") {
+      await deleteFeedSubscription(ownerCanonicalId, subjectCanonicalId);
+    }
+
+    await refreshLookupRelationship();
+    if (searchState.status === "results") {
+      await runSearch(searchState.query);
+    }
+  } catch (error) {
+    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "relationship update failed";
+  }
+}
+
+async function refreshLookupRelationship(): Promise<void> {
+  if (currentIdentityDocument === null || lookupState.status !== "resolved") {
+    return;
+  }
+
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  const subjectCanonicalId = lookupState.identity.canonical_id;
+  const [relationship, subscriptions] = await Promise.all([
+    getConnectionRelationship(ownerCanonicalId, subjectCanonicalId).catch(() => null),
+    listFeedSubscriptions(ownerCanonicalId).catch(() => [])
+  ]);
+
+  setLookupState({
+    ...lookupState,
+    relationship: relationship ?? undefined,
+    subscription: subscriptions.find((subscription) => subscription.author_canonical_id === subjectCanonicalId) ?? null
+  });
 }
 
 async function submitFeedPost(): Promise<void> {
@@ -607,7 +740,11 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
     fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
   };
   renderIdentityPane(identityRoot, currentIdentity);
+  void refreshLookupRelationship();
   void refreshFeedPosts();
+  if (searchState.status === "results") {
+    void runSearch(searchState.query);
+  }
 }
 
 function getIdentityPublicKey(identity: IdentityDocument): string {
@@ -638,8 +775,9 @@ async function runSearch(rawQuery: string): Promise<void> {
 
   try {
     const results = await searchHandles(query, controller.signal);
+    const enrichedResults = await enrichSearchResults(results);
     if (controller.signal.aborted) return;
-    setSearchState({ status: "results", query, results });
+    setSearchState({ status: "results", query, results: enrichedResults });
   } catch (error) {
     if (controller.signal.aborted) return;
     setSearchState({
@@ -648,6 +786,26 @@ async function runSearch(rawQuery: string): Promise<void> {
       message: error instanceof Error ? error.message : "search failed",
     });
   }
+}
+
+async function enrichSearchResults(results: SearchResult[]): Promise<SearchResult[]> {
+  if (currentIdentityDocument === null || results.length === 0) {
+    return results;
+  }
+
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  const subscriptions = await listFeedSubscriptions(ownerCanonicalId).catch(() => []);
+  const enriched = await Promise.all(results.map(async (result) => {
+    const relationship = await getConnectionRelationship(ownerCanonicalId, result.canonical).catch(() => null);
+
+    return {
+      ...result,
+      relationship: relationship ?? undefined,
+      subscription: subscriptions.find((subscription) => subscription.author_canonical_id === result.canonical) ?? null
+    };
+  }));
+
+  return enriched;
 }
 
 function setSearchState(nextState: SearchState): void {
@@ -662,14 +820,14 @@ function toggleChatTarget(result: SearchResult): void {
   }
 
   if (getAddedCanonicals().has(result.canonical)) {
-    removeChatTarget(result.canonical);
+    void removeChatTarget(result);
     return;
   }
 
-  addChatTarget(result);
+  void addChatTarget(result);
 }
 
-function addChatTarget(result: SearchResult): void {
+async function addChatTarget(result: SearchResult): Promise<void> {
   localChats = [
     {
       id: `local-${result.canonical}`,
@@ -682,11 +840,29 @@ function addChatTarget(result: SearchResult): void {
     ...localChats,
   ];
   pendingAddedCanonicals.add(result.canonical);
-  void persistLocalChats(localChats).then(refreshLocalStorageStatus);
-  void upsertContact({
+  await persistLocalChats(localChats).then(refreshLocalStorageStatus);
+  if (currentIdentityDocument !== null) {
+    await upsertConnectionRelationship({
+      owner_canonical_id: currentIdentityDocument.canonical_id,
+      subject_canonical_id: result.canonical,
+      subject_handle: result.handle,
+      tier: "known",
+      subscribed: true
+    });
+    await upsertFeedSubscription({
+      owner_canonical_id: currentIdentityDocument.canonical_id,
+      author_canonical_id: result.canonical,
+      author_handle: result.handle,
+      include_public: true,
+      include_connections: true,
+      include_close: false,
+      muted: false
+    });
+  }
+  await upsertContact({
     canonical_id: result.canonical,
     handle: result.handle,
-    tier: "unknown",
+    tier: "known",
     added_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     fingerprint: result.fingerprint
@@ -703,13 +879,18 @@ function addChatTarget(result: SearchResult): void {
   }, 2000));
 }
 
-function removeChatTarget(canonical: string): void {
+async function removeChatTarget(result: SearchResult): Promise<void> {
+  const canonical = result.canonical;
   const timer = pendingAddedTimers.get(canonical);
   if (timer !== undefined) window.clearTimeout(timer);
   pendingAddedTimers.delete(canonical);
   pendingAddedCanonicals.delete(canonical);
   localChats = localChats.filter((chat) => getChatCanonical(chat) !== canonical);
-  void persistLocalChats(localChats).then(refreshLocalStorageStatus);
+  await persistLocalChats(localChats).then(refreshLocalStorageStatus);
+  if (currentIdentityDocument !== null) {
+    await deleteConnectionRelationship(currentIdentityDocument.canonical_id, canonical);
+    await deleteFeedSubscription(currentIdentityDocument.canonical_id, canonical);
+  }
   renderChatList(chatsRoot, localChats);
   setSearchState(searchState);
 }
@@ -750,6 +931,8 @@ function setSignedIn(handle: string): void {
 function setSignedOut(): void {
   authSequence++;
   currentIdentityDocument = null;
+  currentLookupRelationship = null;
+  currentLookupSubscription = null;
   document.body.dataset["authState"] = "signed-out";
   currentIdentity = localIdentity;
   renderIdentityPane(identityRoot, currentIdentity);
@@ -757,6 +940,16 @@ function setSignedOut(): void {
   logoutButton.hidden = true;
   for (const button of headerAuthActionButtons) {
     if (button instanceof HTMLButtonElement) button.hidden = false;
+  }
+  if (lookupState.status === "resolved") {
+    setLookupState({
+      ...lookupState,
+      relationship: undefined,
+      subscription: null
+    });
+  }
+  if (searchState.status === "results") {
+    void runSearch(searchState.query);
   }
 }
 
