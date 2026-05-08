@@ -1,10 +1,7 @@
-import type { ChatSummary } from "./types.js";
 import {
   deleteSetting,
-  getLocalChatsFromContacts,
   getSetting,
-  putSetting,
-  upsertContact
+  putSetting
 } from "./local/local-store.js";
 
 const DEV_SESSION_TOKEN_STORAGE_KEY = "sudo.dev.sessionToken";
@@ -20,19 +17,4 @@ export function writeDevSessionToken(token: string): Promise<void> {
 
 export function clearDevSessionToken(): Promise<void> {
   return deleteSetting(DEV_SESSION_TOKEN_STORAGE_KEY);
-}
-
-export async function readLocalChats(): Promise<ChatSummary[]> {
-  return getLocalChatsFromContacts();
-}
-
-export async function persistLocalChats(chats: ChatSummary[]): Promise<void> {
-  await Promise.all(chats.map((chat) => upsertContact({
-    canonical_id: chat.canonical ?? chat.id,
-    handle: chat.handle,
-    tier: "unknown",
-    added_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    fingerprint: chat.fingerprint
-  })));
 }

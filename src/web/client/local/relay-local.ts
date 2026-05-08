@@ -74,11 +74,16 @@ export async function queueAndSubmitLocalMessage(options: {
     );
   }
 
+  // Stored locally on the sender's device — the sender IS the owner of
+  // this row. Account isolation depends on this owner stamp.
+  const ownerCanonicalId = options.senderCanonicalId;
+
   // DEV ONLY: local plaintext message bodies are stored until real
   // client-side encryption lands. Encrypted backup export protects at-rest
   // backup files; browser storage still depends on this device profile.
   const message: LocalMessage = {
     message_id: messageId,
+    owner_canonical_id: ownerCanonicalId,
     conversation_id: conversationId,
     direction: "sent",
     sender_canonical_id: options.senderCanonicalId,
@@ -95,6 +100,7 @@ export async function queueAndSubmitLocalMessage(options: {
 
   const outbound: PendingOutbound = {
     local_queue_id: crypto.randomUUID(),
+    owner_canonical_id: ownerCanonicalId,
     message_id: messageId,
     recipient_canonical_id: options.recipientCanonicalId,
     status: "queued_local",
@@ -103,22 +109,22 @@ export async function queueAndSubmitLocalMessage(options: {
     updated_at: now
   };
 
-  await saveLocalMessage(message);
-  await appendLocalEvent({
+  await saveLocalMessage(ownerCanonicalId, message);
+  await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: "message.sent.local",
     created_at: now,
     subject_id: messageId,
     data: { status: "queued_local" }
   });
-  await savePendingOutbound(outbound);
+  await savePendingOutbound(ownerCanonicalId, outbound);
 
   try {
     if (options.recipientIdentityDocument !== undefined && options.recipientIdentityDocument !== null) {
       const relaySelection = selectRelayForRecipient(options.recipientIdentityDocument);
 
       if (!relaySelection.ok) {
-        await markFailed(message, outbound, "no delivery relay advertised");
+        await markFailed(ownerCanonicalId, message, outbound, "no delivery relay advertised");
         return { ok: false, message_id: messageId, error: relaySelection.error };
       }
 
@@ -131,12 +137,12 @@ export async function queueAndSubmitLocalMessage(options: {
           : "local_dev";
 
       if (relaySelection.relay.transport === "onion" && portalTransport !== "onion") {
-        await markFailed(message, outbound, relaySelection.warning ?? "onion transport unavailable in this browser");
+        await markFailed(ownerCanonicalId, message, outbound, relaySelection.warning ?? "onion transport unavailable in this browser");
         return { ok: false, message_id: messageId, error: "onion_transport_unavailable" };
       }
 
       if (relaySelection.relay.transport !== "onion" && relayOrigin !== portalOrigin) {
-        await markFailed(message, outbound, relaySelection.warning ?? "relay transport requires same-origin submission");
+        await markFailed(ownerCanonicalId, message, outbound, relaySelection.warning ?? "relay transport requires same-origin submission");
         return { ok: false, message_id: messageId, error: "relay_cross_origin_unavailable" };
       }
     }
@@ -153,12 +159,12 @@ export async function queueAndSubmitLocalMessage(options: {
     const updatedAt = new Date().toISOString();
 
     if (response.ok && result.ok === true) {
-      await saveLocalMessage({
+      await saveLocalMessage(ownerCanonicalId, {
         ...message,
         updated_at: updatedAt,
         status: "stored_by_relay"
       });
-      await savePendingOutbound({
+      await savePendingOutbound(ownerCanonicalId, {
         ...outbound,
         updated_at: updatedAt,
         status: "stored_by_relay",
@@ -171,11 +177,11 @@ export async function queueAndSubmitLocalMessage(options: {
       return { ok: true, message_id: messageId };
     }
 
-    await markFailed(message, outbound, result.error ?? `relay rejected: ${response.status}`);
+    await markFailed(ownerCanonicalId, message, outbound, result.error ?? `relay rejected: ${response.status}`);
     return { ok: false, message_id: messageId, error: result.error ?? "relay_rejected" };
   } catch (error) {
     const messageText = error instanceof Error ? error.message : "relay submit failed";
-    await markFailed(message, outbound, messageText);
+    await markFailed(ownerCanonicalId, message, outbound, messageText);
     return { ok: false, message_id: messageId, error: messageText };
   }
 }
@@ -198,12 +204,16 @@ export async function retrieveRelayInboxAfterLocalSave(
 
   const saved: LocalMessage[] = [];
 
+  // The recipient is the local owner of every received envelope.
+  const ownerCanonicalId = recipientCanonicalId;
+
   for (const envelope of envelopes) {
     const now = new Date().toISOString();
     const messageId = crypto.randomUUID();
     const plaintext = await decodeEnvelopeBody(envelope, options);
     const message: LocalMessage = {
       message_id: messageId,
+      owner_canonical_id: ownerCanonicalId,
       conversation_id: conversationIdFor(envelope.sender_canonical_id, envelope.recipient_canonical_id),
       direction: "received",
       sender_canonical_id: envelope.sender_canonical_id,
@@ -219,13 +229,13 @@ export async function retrieveRelayInboxAfterLocalSave(
     };
 
     try {
-      await saveLocalMessage(message);
+      await saveLocalMessage(ownerCanonicalId, message);
       saved.push(message);
     } catch (error) {
       // Don't ACK if local save failed. The relay will keep the envelope until
       // we successfully persist it on a future poll.
       const reason = error instanceof Error ? error.message : "save failed";
-      await appendLocalEvent({
+      await appendLocalEvent(ownerCanonicalId, {
         event_id: crypto.randomUUID(),
         type: "message.receive.failed.local",
         created_at: now,
@@ -235,7 +245,7 @@ export async function retrieveRelayInboxAfterLocalSave(
       continue;
     }
 
-    await appendLocalEvent({
+    await appendLocalEvent(ownerCanonicalId, {
       event_id: crypto.randomUUID(),
       type: "message.received.local",
       created_at: now,
@@ -249,7 +259,7 @@ export async function retrieveRelayInboxAfterLocalSave(
         headers: { accept: "application/json" }
       });
       if (ackResponse.ok) {
-        await appendLocalEvent({
+        await appendLocalEvent(ownerCanonicalId, {
           event_id: crypto.randomUUID(),
           type: "message.acked.local",
           created_at: new Date().toISOString(),
@@ -345,11 +355,11 @@ async function decodeEnvelopeBody(
   return "";
 }
 
-async function markFailed(message: LocalMessage, outbound: PendingOutbound, error: string): Promise<void> {
+async function markFailed(ownerCanonicalId: string, message: LocalMessage, outbound: PendingOutbound, error: string): Promise<void> {
   const updatedAt = new Date().toISOString();
-  await saveLocalMessage({ ...message, updated_at: updatedAt, status: "failed" });
-  await savePendingOutbound({ ...outbound, updated_at: updatedAt, status: "failed", last_error: error });
-  await appendLocalEvent({
+  await saveLocalMessage(ownerCanonicalId, { ...message, updated_at: updatedAt, status: "failed" });
+  await savePendingOutbound(ownerCanonicalId, { ...outbound, updated_at: updatedAt, status: "failed", last_error: error });
+  await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: "message.failed.local",
     created_at: updatedAt,

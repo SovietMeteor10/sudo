@@ -590,6 +590,8 @@ async function pollInbox(): Promise<void> {
 }
 
 async function onIncomingMessages(messages: import("./local/local-types.js").LocalMessage[]): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
   // Sender handle may be missing on stored row; surface it on the chat row
   // by upserting a contact entry so the chat list shows a real handle.
   for (const message of messages) {
@@ -597,7 +599,7 @@ async function onIncomingMessages(messages: import("./local/local-types.js").Loc
     const handle = message.sender_handle ?? "";
     if (handle.length > 0) {
       try {
-        await upsertContact({
+        await upsertContact(ownerCanonicalId, {
           canonical_id: message.sender_canonical_id,
           handle,
           tier: "unknown",
@@ -1155,7 +1157,9 @@ async function refreshDevicePanel(): Promise<void> {
     currentDeviceId = metadata.device_id;
   }
 
-  const localDevices = await listTrustedDevices().catch(() => []);
+  const localDevices = currentIdentityDocument === null
+    ? []
+    : await listTrustedDevices(currentIdentityDocument.canonical_id).catch(() => []);
   const serverDevices = currentIdentityDocument === null
     ? []
     : await listServerTrustedDevices(currentIdentityDocument.canonical_id).catch(() => []);
@@ -1559,6 +1563,10 @@ async function lockLocalKeysFlow(): Promise<void> {
 }
 
 async function exportEncryptedBackup(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    flashFeedback("sign in to back up your account");
+    return;
+  }
   const passphrase = prompt("Backup passphrase. This never leaves this browser.");
   if (passphrase === null || passphrase.length === 0) {
     flashFeedback("backup cancelled");
@@ -1566,7 +1574,7 @@ async function exportEncryptedBackup(): Promise<void> {
   }
 
   try {
-    const backup = await createEncryptedBackup(passphrase);
+    const backup = await createEncryptedBackup(currentIdentityDocument.canonical_id, passphrase);
     const blob = new Blob([`${JSON.stringify(backup, null, 2)}\n`], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -1698,25 +1706,28 @@ function toggleChatTarget(result: SearchResult): void {
 
 async function addChatTarget(result: SearchResult): Promise<void> {
   pendingAddedCanonicals.add(result.canonical);
-  if (currentIdentityDocument !== null) {
-    await upsertConnectionRelationship({
-      owner_canonical_id: currentIdentityDocument.canonical_id,
-      subject_canonical_id: result.canonical,
-      subject_handle: result.handle,
-      tier: "known",
-      subscribed: true
-    });
-    await upsertFeedSubscription({
-      owner_canonical_id: currentIdentityDocument.canonical_id,
-      author_canonical_id: result.canonical,
-      author_handle: result.handle,
-      include_public: true,
-      include_connections: true,
-      include_close: false,
-      muted: false
-    });
+  if (currentIdentityDocument === null) {
+    setSearchState(searchState);
+    return;
   }
-  await upsertContact({
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  await upsertConnectionRelationship({
+    owner_canonical_id: ownerCanonicalId,
+    subject_canonical_id: result.canonical,
+    subject_handle: result.handle,
+    tier: "known",
+    subscribed: true
+  });
+  await upsertFeedSubscription({
+    owner_canonical_id: ownerCanonicalId,
+    author_canonical_id: result.canonical,
+    author_handle: result.handle,
+    include_public: true,
+    include_connections: true,
+    include_close: false,
+    muted: false
+  });
+  await upsertContact(ownerCanonicalId, {
     canonical_id: result.canonical,
     handle: result.handle,
     tier: "known",
@@ -1801,7 +1812,10 @@ function setSignedIn(handle: string): void {
   setAccountButtonHandle(handle);
   closeChatPopup();
   if (currentIdentityDocument !== null) {
+    // Repaint chat + feed from the new owner's local state only. The previous
+    // owner's in-memory state was already cleared in setSignedOut().
     void refreshLocalChats();
+    void refreshFeedPosts();
     startInboxPolling(currentIdentityDocument.canonical_id);
   }
 }
@@ -1872,8 +1886,17 @@ function setSignedOut(): void {
   setAuthView("menu");
   currentIdentity = buildAnonymousIdentityView();
   renderIdentityPane(identityRoot, currentIdentity);
+  // Drop any in-memory rendered private state from the previous account so
+  // the next user never briefly sees the prior user's UI.
   localChats = [];
   renderChatList(chatsRoot, localChats);
+  renderStream(streamRoot, []);
+  setLookupState({ status: "idle" });
+  setSearchState({ status: "idle" });
+  searchInput.value = "";
+  feedBodyInput.value = "";
+  feedComposerState.textContent = "";
+  closeChatPopup();
   void refreshDevicePanel();
   renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   setAccountButtonHandle(null);
@@ -2266,7 +2289,8 @@ function conversationKey(a: string, b: string): string {
 }
 
 async function listConversationMessages(conversationId: string): Promise<Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }>> {
-  const records = await listLocalMessagesByConversation(conversationId);
+  if (currentIdentityDocument === null) return [];
+  const records = await listLocalMessagesByConversation(currentIdentityDocument.canonical_id, conversationId);
   return records
     .map((record) => ({
       message_id: record.message_id,

@@ -1,5 +1,8 @@
 export const LOCAL_DB_NAME = "sudo_local_state";
-export const LOCAL_DB_VERSION = 3;
+// v4: account isolation — every private store now stamps and indexes
+// owner_canonical_id; contacts moves to a composite key so two accounts on
+// the same browser can each have their own row for the same external id.
+export const LOCAL_DB_VERSION = 4;
 
 export const localStoreNames = [
   "events",
@@ -40,11 +43,16 @@ export function openLocalDb(): Promise<IDBDatabase> {
       settleReject(new Error("local database is in use by another tab"));
     };
 
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
+      const oldVersion = (event as IDBVersionChangeEvent).oldVersion;
+      const upgrade = request.transaction;
 
+      // ---- v1+ stores ----
       if (!db.objectStoreNames.contains("events")) {
-        db.createObjectStore("events", { keyPath: "event_id" });
+        const store = db.createObjectStore("events", { keyPath: "event_id" });
+        store.createIndex("by_owner", "owner_canonical_id");
+        store.createIndex("by_owner_created_at", ["owner_canonical_id", "created_at"]);
       }
 
       if (!db.objectStoreNames.contains("messages")) {
@@ -52,21 +60,32 @@ export function openLocalDb(): Promise<IDBDatabase> {
         store.createIndex("by_conversation", "conversation_id");
         store.createIndex("by_created_at", "created_at");
         store.createIndex("by_status", "status");
+        store.createIndex("by_owner", "owner_canonical_id");
+        store.createIndex("by_owner_conversation", ["owner_canonical_id", "conversation_id"]);
+        store.createIndex("by_owner_created_at", ["owner_canonical_id", "created_at"]);
       }
 
+      // Contacts: composite primary key [owner_canonical_id, canonical_id]
+      // so two accounts can each independently track the same external id.
       if (!db.objectStoreNames.contains("contacts")) {
-        db.createObjectStore("contacts", { keyPath: "canonical_id" });
+        const store = db.createObjectStore("contacts", { keyPath: ["owner_canonical_id", "canonical_id"] });
+        store.createIndex("by_owner", "owner_canonical_id");
       }
 
       if (!db.objectStoreNames.contains("subscriptions")) {
-        db.createObjectStore("subscriptions", { keyPath: "subscription_id" });
+        const store = db.createObjectStore("subscriptions", { keyPath: "subscription_id" });
+        store.createIndex("by_owner", "owner_canonical_id");
       }
 
       if (!db.objectStoreNames.contains("drafts")) {
-        db.createObjectStore("drafts", { keyPath: "draft_id" });
+        const store = db.createObjectStore("drafts", { keyPath: "draft_id" });
+        store.createIndex("by_owner", "owner_canonical_id");
       }
 
       if (!db.objectStoreNames.contains("identities")) {
+        // Public-identity cache, intentionally NOT owner-scoped: this only
+        // holds public, signed identity documents we've already seen on the
+        // wire. No private user state lives here.
         db.createObjectStore("identities", { keyPath: "canonical_id" });
       }
 
@@ -91,6 +110,9 @@ export function openLocalDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore("pending_outbound", { keyPath: "local_queue_id" });
         store.createIndex("by_recipient", "recipient_canonical_id");
         store.createIndex("by_status", "status");
+        store.createIndex("by_owner", "owner_canonical_id");
+        store.createIndex("by_owner_recipient", ["owner_canonical_id", "recipient_canonical_id"]);
+        store.createIndex("by_owner_status", ["owner_canonical_id", "status"]);
       }
 
       if (!db.objectStoreNames.contains("device_sync_events")) {
@@ -98,6 +120,36 @@ export function openLocalDb(): Promise<IDBDatabase> {
         store.createIndex("by_owner", "owner_canonical_id");
         store.createIndex("by_device", "device_id");
         store.createIndex("by_created_at", "created_at");
+      }
+
+      // ---- v4: account isolation ----
+      // Bring older databases up to the v4 shape. Old unscoped records lose
+      // their lookup path because the new indexes/keys require owner stamps;
+      // they remain physically present but invisible to the UI per the
+      // privacy spec ("treat them as legacy and do not render them"). They
+      // are cleaned out below for contacts where the keyPath itself changes.
+      if (oldVersion < 4 && upgrade !== null) {
+        ensureIndex(upgrade, "events", "by_owner", "owner_canonical_id");
+        ensureIndex(upgrade, "events", "by_owner_created_at", ["owner_canonical_id", "created_at"]);
+        ensureIndex(upgrade, "messages", "by_owner", "owner_canonical_id");
+        ensureIndex(upgrade, "messages", "by_owner_conversation", ["owner_canonical_id", "conversation_id"]);
+        ensureIndex(upgrade, "messages", "by_owner_created_at", ["owner_canonical_id", "created_at"]);
+        ensureIndex(upgrade, "subscriptions", "by_owner", "owner_canonical_id");
+        ensureIndex(upgrade, "drafts", "by_owner", "owner_canonical_id");
+        ensureIndex(upgrade, "pending_outbound", "by_owner", "owner_canonical_id");
+        ensureIndex(upgrade, "pending_outbound", "by_owner_recipient", ["owner_canonical_id", "recipient_canonical_id"]);
+        ensureIndex(upgrade, "pending_outbound", "by_owner_status", ["owner_canonical_id", "status"]);
+
+        // Contacts keyPath is composite as of v4; old single-key records
+        // can't be migrated safely (we don't know which account owned them),
+        // so the store is rebuilt empty and old contacts are dropped.
+        if (db.objectStoreNames.contains("contacts")) {
+          db.deleteObjectStore("contacts");
+        }
+        const contactsStore = db.createObjectStore("contacts", {
+          keyPath: ["owner_canonical_id", "canonical_id"]
+        });
+        contactsStore.createIndex("by_owner", "owner_canonical_id");
       }
     };
 
@@ -146,4 +198,17 @@ function clearStore(db: IDBDatabase, storeName: LocalStoreName): Promise<void> {
   const transaction = db.transaction(storeName, "readwrite");
   transaction.objectStore(storeName).clear();
   return txDone(transaction);
+}
+
+function ensureIndex(
+  transaction: IDBTransaction,
+  storeName: LocalStoreName,
+  indexName: string,
+  keyPath: string | string[]
+): void {
+  if (!transaction.db.objectStoreNames.contains(storeName)) return;
+  const store = transaction.objectStore(storeName);
+  if (!store.indexNames.contains(indexName)) {
+    store.createIndex(indexName, keyPath);
+  }
 }

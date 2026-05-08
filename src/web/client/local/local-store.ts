@@ -2,15 +2,25 @@ import { clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName
 import type {
   LocalCryptoAccountRecord,
   LocalContact,
+  LocalDraft,
   LocalEvent,
   LocalIdentityRecord,
   LocalMessage,
   LocalSetting,
   LocalStateSnapshot,
   LocalStorageStatus,
+  LocalSubscription,
   LocalTrustedDevice,
   PendingOutbound
 } from "./local-types.js";
+
+// IMPORTANT — privacy invariant
+// Private local state (messages, contacts, drafts, subscriptions, pending
+// outbound, events about the user, account-scoped trusted devices) MUST be
+// scoped by `owner_canonical_id`. UI code is only allowed to read/write
+// these stores via the owner-aware helpers below. The unscoped helpers at
+// the bottom of this file are renamed `*Unsafe`/`All` and are reserved for
+// migrations, backups across all local accounts, and tests.
 
 export async function initializeLocalState(): Promise<void> {
   const db = await openLocalDb();
@@ -23,36 +33,40 @@ export async function initializeLocalState(): Promise<void> {
     device_name: "This device",
     created_at: now
   });
-  await appendLocalEvent({
-    event_id: crypto.randomUUID(),
-    type: "device.created",
-    created_at: now,
-    subject_id: "device.metadata"
-  });
   void db;
 }
 
-export async function appendLocalEvent(event: LocalEvent): Promise<void> {
-  await putRecord("events", event);
+export async function appendLocalEvent(ownerCanonicalId: string, event: Omit<LocalEvent, "owner_canonical_id">): Promise<void> {
+  await putRecord("events", { ...event, owner_canonical_id: ownerCanonicalId });
 }
 
-export async function saveLocalMessage(message: LocalMessage): Promise<void> {
-  await putRecord("messages", message);
+export async function saveLocalMessage(ownerCanonicalId: string, message: Omit<LocalMessage, "owner_canonical_id">): Promise<void> {
+  await putRecord("messages", { ...message, owner_canonical_id: ownerCanonicalId });
 }
 
-export async function listLocalMessagesByConversation(conversationId: string): Promise<LocalMessage[]> {
+export async function listLocalMessagesByConversation(
+  ownerCanonicalId: string,
+  conversationId: string
+): Promise<LocalMessage[]> {
   const db = await openLocalDb();
   return new Promise((resolve, reject) => {
     const transaction = db.transaction("messages", "readonly");
-    const index = transaction.objectStore("messages").index("by_conversation");
-    const request = index.getAll(conversationId);
+    const index = transaction.objectStore("messages").index("by_owner_conversation");
+    const request = index.getAll(IDBKeyRange.only([ownerCanonicalId, conversationId]));
     request.onsuccess = () => resolve((request.result as LocalMessage[]) ?? []);
     request.onerror = () => reject(request.error ?? new Error("failed to read messages"));
   });
 }
 
-export async function listLocalMessages(): Promise<LocalMessage[]> {
-  return getAllRecords<LocalMessage>("messages");
+export async function listLocalMessages(ownerCanonicalId: string): Promise<LocalMessage[]> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction("messages", "readonly");
+    const index = transaction.objectStore("messages").index("by_owner");
+    const request = index.getAll(ownerCanonicalId);
+    request.onsuccess = () => resolve((request.result as LocalMessage[]) ?? []);
+    request.onerror = () => reject(request.error ?? new Error("failed to read messages"));
+  });
 }
 
 export type ConversationSummary = {
@@ -63,29 +77,25 @@ export type ConversationSummary = {
   fingerprint?: string;
 };
 
-// Build a chat list keyed by conversation partner. Picks the latest local
-// message per conversation (sent or received). Falls back to contacts that
-// have no messages yet so newly-added handles appear immediately.
-export async function listConversations(currentCanonicalId: string): Promise<ConversationSummary[]> {
-  const messages = await getAllRecords<LocalMessage>("messages");
-  const contacts = await getAllRecords<LocalContact>("contacts");
+// Build a chat list keyed by conversation partner using only the signed-in
+// account's own messages and contacts.
+export async function listConversations(ownerCanonicalId: string): Promise<ConversationSummary[]> {
+  const messages = await listLocalMessages(ownerCanonicalId);
+  const contacts = await listContacts(ownerCanonicalId);
 
   type Acc = { canonical: string; handle: string; lastLine: string; lastAt: string; fingerprint?: string };
   const byPartner = new Map<string, Acc>();
 
   for (const message of messages) {
-    const partner = message.sender_canonical_id === currentCanonicalId
+    const partner = message.sender_canonical_id === ownerCanonicalId
       ? message.recipient_canonical_id
       : message.sender_canonical_id;
-    if (partner === currentCanonicalId || partner.length === 0) continue;
-    const fallbackHandle = message.direction === "sent"
-      ? "(unknown)"
-      : "(unknown)";
+    if (partner === ownerCanonicalId || partner.length === 0) continue;
     const existing = byPartner.get(partner);
     const candidate: Acc = {
       canonical: partner,
-      handle: existing?.handle ?? fallbackHandle,
-      lastLine: previewLine(message.body, message.direction),
+      handle: existing?.handle ?? "(unknown)",
+      lastLine: previewLine(message.body),
       lastAt: message.updated_at || message.created_at
     };
     if (existing === undefined || existing.lastAt < candidate.lastAt) {
@@ -93,12 +103,10 @@ export async function listConversations(currentCanonicalId: string): Promise<Con
     }
   }
 
-  // Hydrate handles + fingerprints from contacts where possible, and surface
-  // contacts that have no messages yet as empty conversation rows.
   for (const contact of contacts) {
     if (contact.tier === "blocked") continue;
     const partner = contact.canonical_id;
-    if (partner === currentCanonicalId) continue;
+    if (partner === ownerCanonicalId) continue;
     const existing = byPartner.get(partner);
     if (existing === undefined) {
       byPartner.set(partner, {
@@ -117,14 +125,21 @@ export async function listConversations(currentCanonicalId: string): Promise<Con
   return [...byPartner.values()].sort((left, right) => right.lastAt.localeCompare(left.lastAt));
 }
 
-function previewLine(body: string, _direction: "sent" | "received"): string {
+function previewLine(body: string): string {
   const trimmed = (body ?? "").replace(/\s+/g, " ").trim();
   if (trimmed.length === 0) return "(empty)";
   return trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
 }
 
-export async function savePendingOutbound(outbound: PendingOutbound): Promise<void> {
-  await putRecord("pending_outbound", outbound);
+export async function savePendingOutbound(
+  ownerCanonicalId: string,
+  outbound: Omit<PendingOutbound, "owner_canonical_id">
+): Promise<void> {
+  await putRecord("pending_outbound", { ...outbound, owner_canonical_id: ownerCanonicalId });
+}
+
+export async function listPendingOutbound(ownerCanonicalId: string): Promise<PendingOutbound[]> {
+  return getAllByIndex<PendingOutbound>("pending_outbound", "by_owner", ownerCanonicalId);
 }
 
 export async function saveIdentitySeen(identity: LocalIdentityRecord): Promise<void> {
@@ -144,11 +159,12 @@ export async function listCryptoAccounts(): Promise<LocalCryptoAccountRecord[]> 
 }
 
 export async function saveTrustedDevice(device: LocalTrustedDevice): Promise<void> {
+  // Trusted devices already carry owner_canonical_id from the protocol type.
   await putRecord("trusted_devices", device);
 }
 
-export async function listTrustedDevices(): Promise<LocalTrustedDevice[]> {
-  return getAllRecords<LocalTrustedDevice>("trusted_devices");
+export async function listTrustedDevices(ownerCanonicalId: string): Promise<LocalTrustedDevice[]> {
+  return getAllByIndex<LocalTrustedDevice>("trusted_devices", "by_owner", ownerCanonicalId);
 }
 
 export async function revokeTrustedDevice(deviceId: string): Promise<void> {
@@ -161,9 +177,12 @@ export async function revokeTrustedDevice(deviceId: string): Promise<void> {
   });
 }
 
-export async function upsertContact(contact: LocalContact): Promise<void> {
-  await putRecord("contacts", contact);
-  await appendLocalEvent({
+export async function upsertContact(
+  ownerCanonicalId: string,
+  contact: Omit<LocalContact, "owner_canonical_id">
+): Promise<void> {
+  await putRecord("contacts", { ...contact, owner_canonical_id: ownerCanonicalId });
+  await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: contact.tier === "blocked" ? "contact.blocked" : "contact.added",
     created_at: new Date().toISOString(),
@@ -172,18 +191,32 @@ export async function upsertContact(contact: LocalContact): Promise<void> {
   });
 }
 
-export async function blockContact(canonicalId: string): Promise<void> {
-  const existing = await getRecord<LocalContact>("contacts", canonicalId);
+export async function listContacts(ownerCanonicalId: string): Promise<LocalContact[]> {
+  return getAllByIndex<LocalContact>("contacts", "by_owner", ownerCanonicalId);
+}
+
+export async function getContact(ownerCanonicalId: string, canonicalId: string): Promise<LocalContact | null> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("contacts", "readonly").objectStore("contacts").get([ownerCanonicalId, canonicalId]);
+    request.onsuccess = () => resolve((request.result as LocalContact | undefined) ?? null);
+    request.onerror = () => reject(request.error ?? new Error("failed to read contact"));
+  });
+}
+
+export async function blockContact(ownerCanonicalId: string, canonicalId: string): Promise<void> {
+  const existing = await getContact(ownerCanonicalId, canonicalId);
   const now = new Date().toISOString();
   await putRecord("contacts", {
+    owner_canonical_id: ownerCanonicalId,
     canonical_id: canonicalId,
     handle: existing?.handle ?? canonicalId,
     tier: "blocked",
     added_at: existing?.added_at ?? now,
     updated_at: now,
     fingerprint: existing?.fingerprint
-  });
-  await appendLocalEvent({
+  } satisfies LocalContact);
+  await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: "contact.blocked",
     created_at: now,
@@ -191,17 +224,29 @@ export async function blockContact(canonicalId: string): Promise<void> {
   });
 }
 
-export async function unblockContact(canonicalId: string): Promise<void> {
-  const existing = await getRecord<LocalContact>("contacts", canonicalId);
+export async function unblockContact(ownerCanonicalId: string, canonicalId: string): Promise<void> {
+  const existing = await getContact(ownerCanonicalId, canonicalId);
   if (existing === null) return;
   const now = new Date().toISOString();
   await putRecord("contacts", { ...existing, tier: "unknown", updated_at: now });
-  await appendLocalEvent({
+  await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: "contact.unblocked",
     created_at: now,
     subject_id: canonicalId
   });
+}
+
+export async function listLocalEvents(ownerCanonicalId: string): Promise<LocalEvent[]> {
+  return getAllByIndex<LocalEvent>("events", "by_owner", ownerCanonicalId);
+}
+
+export async function listLocalSubscriptions(ownerCanonicalId: string): Promise<LocalSubscription[]> {
+  return getAllByIndex<LocalSubscription>("subscriptions", "by_owner", ownerCanonicalId);
+}
+
+export async function listLocalDrafts(ownerCanonicalId: string): Promise<LocalDraft[]> {
+  return getAllByIndex<LocalDraft>("drafts", "by_owner", ownerCanonicalId);
 }
 
 export async function getSetting(key: string): Promise<unknown | null> {
@@ -228,41 +273,35 @@ export async function deleteSetting(key: string): Promise<void> {
   await txDone(transaction);
 }
 
-export async function getLocalChatsFromContacts(): Promise<Array<{ id: string; canonical: string; handle: string; state: "quiet" | "draft" | "sealed"; lastLine: string; fingerprint?: string }>> {
-  const contacts = await getAllRecords<LocalContact>("contacts");
-  return contacts
-    .filter((contact) => contact.tier !== "blocked")
-    .map((contact) => ({
-      id: `local-${contact.canonical_id}`,
-      canonical: contact.canonical_id,
-      handle: contact.handle,
-      state: "draft",
-      lastLine: "chat draft",
-      fingerprint: contact.fingerprint
-    }));
-}
-
 // Future device sync will stream encrypted diffs derived from the append-only
 // local event log rather than mirroring whole stores.
-export async function listLocalSyncEvents(sinceCreatedAt?: string): Promise<LocalEvent[]> {
-  const events = await getAllRecords<LocalEvent>("events");
+export async function listLocalSyncEvents(
+  ownerCanonicalId: string,
+  sinceCreatedAt?: string
+): Promise<LocalEvent[]> {
+  const events = await listLocalEvents(ownerCanonicalId);
   if (sinceCreatedAt === undefined) return events;
   return events.filter((event) => Date.parse(event.created_at) > Date.parse(sinceCreatedAt));
 }
 
-export async function exportLocalSnapshot(): Promise<LocalStateSnapshot> {
+// Owner-scoped backup snapshot. Pulls only records belonging to the signed-in
+// account from each private store. Crypto accounts and the device-metadata
+// setting remain device-global and are filtered to the current account where
+// applicable.
+export async function exportAccountSnapshot(ownerCanonicalId: string): Promise<LocalStateSnapshot> {
+  const cryptoAccount = await getCryptoAccount(ownerCanonicalId);
   return {
-    events: await getAllRecords("events"),
-    messages: await getAllRecords("messages"),
-    contacts: await getAllRecords("contacts"),
-    subscriptions: await getAllRecords("subscriptions"),
-    drafts: await getAllRecords("drafts"),
-    crypto_accounts: await getAllRecords("crypto_accounts"),
-    trusted_devices: await getAllRecords("trusted_devices"),
-    identities: await getAllRecords("identities"),
-    settings: await getAllRecords("settings"),
-    pending_outbound: await getAllRecords("pending_outbound"),
-    device_sync_events: await getAllRecords("device_sync_events")
+    events: await listLocalEvents(ownerCanonicalId),
+    messages: await listLocalMessages(ownerCanonicalId),
+    contacts: await listContacts(ownerCanonicalId),
+    subscriptions: await listLocalSubscriptions(ownerCanonicalId),
+    drafts: await listLocalDrafts(ownerCanonicalId),
+    crypto_accounts: cryptoAccount === null ? [] : [cryptoAccount],
+    trusted_devices: await listTrustedDevices(ownerCanonicalId),
+    identities: [],
+    settings: [],
+    pending_outbound: await listPendingOutbound(ownerCanonicalId),
+    device_sync_events: []
   };
 }
 
@@ -332,6 +371,17 @@ async function getAllRecords<T>(storeName: LocalStoreName): Promise<T[]> {
     const request = db.transaction(storeName, "readonly").objectStore(storeName).getAll();
     request.onsuccess = () => resolve(request.result as T[]);
     request.onerror = () => reject(request.error ?? new Error(`failed to read ${storeName}`));
+  });
+}
+
+async function getAllByIndex<T>(storeName: LocalStoreName, indexName: string, key: IDBValidKey): Promise<T[]> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(storeName, "readonly");
+    const index = transaction.objectStore(storeName).index(indexName);
+    const request = index.getAll(key);
+    request.onsuccess = () => resolve((request.result as T[]) ?? []);
+    request.onerror = () => reject(request.error ?? new Error(`failed to read ${storeName}/${indexName}`));
   });
 }
 

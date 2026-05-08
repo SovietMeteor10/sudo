@@ -1,4 +1,4 @@
-import { exportLocalSnapshot, importLocalSnapshot } from "./local-store.js";
+import { exportAccountSnapshot, importLocalSnapshot } from "./local-store.js";
 import type { LocalStateSnapshot } from "./local-types.js";
 import { base64Url, base64UrlToBytes, deriveBackupKey, randomBytes, toBufferSource } from "./crypto.js";
 
@@ -9,6 +9,10 @@ export type EncryptedSudoBackup = {
   type: "sudo_backup";
   version: 1;
   created_at: string;
+  // The owner whose state this backup contains. Restoring imports records
+  // back under the same owner, so account A's backup never leaks into
+  // account B's local state.
+  owner_canonical_id: string;
   kdf: {
     name: "PBKDF2";
     hash: "SHA-256";
@@ -22,8 +26,8 @@ export type EncryptedSudoBackup = {
   ciphertext: string;
 };
 
-export async function createEncryptedBackup(passphrase: string): Promise<EncryptedSudoBackup> {
-  const snapshot = await exportLocalSnapshot();
+export async function createEncryptedBackup(ownerCanonicalId: string, passphrase: string): Promise<EncryptedSudoBackup> {
+  const snapshot = await exportAccountSnapshot(ownerCanonicalId);
   const plaintext = new TextEncoder().encode(JSON.stringify(snapshot));
   const salt = randomBytes(16);
   const iv = randomBytes(12);
@@ -34,6 +38,7 @@ export async function createEncryptedBackup(passphrase: string): Promise<Encrypt
     type: "sudo_backup",
     version: BACKUP_VERSION,
     created_at: new Date().toISOString(),
+    owner_canonical_id: ownerCanonicalId,
     kdf: {
       name: "PBKDF2",
       hash: "SHA-256",

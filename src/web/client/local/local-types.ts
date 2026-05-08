@@ -16,6 +16,10 @@ export type LocalEventType =
 
 export type LocalEvent = {
   event_id: string;
+  // Stamped with the signed-in account's canonical id at write time so the
+  // event log never bleeds across accounts on the same browser. Optional
+  // only because the legacy device.created event is a pre-signin global.
+  owner_canonical_id?: string;
   type: LocalEventType;
   created_at: string;
   subject_id?: string;
@@ -24,6 +28,11 @@ export type LocalEvent = {
 
 export type LocalMessage = {
   message_id: string;
+  // The signed-in account that owns this local copy of the message. Always
+  // equal to the canonical id of the user whose browser stored the message,
+  // never derived from sender/recipient — so account A never reads account
+  // B's IndexedDB rows even when they ran in the same browser.
+  owner_canonical_id: string;
   conversation_id: string;
   direction: "sent" | "received";
   sender_canonical_id: string;
@@ -39,6 +48,10 @@ export type LocalMessage = {
 };
 
 export type LocalContact = {
+  // Composite primary key elements: contacts live under the account that
+  // added them, so the same external canonical id can appear once per
+  // owner.
+  owner_canonical_id: string;
   canonical_id: string;
   handle: string;
   tier: "known" | "unknown" | "blocked";
@@ -49,12 +62,14 @@ export type LocalContact = {
 
 export type LocalSubscription = {
   subscription_id: string;
+  owner_canonical_id: string;
   source: string;
   created_at: string;
 };
 
 export type LocalDraft = {
   draft_id: string;
+  owner_canonical_id: string;
   conversation_id: string;
   body: string;
   updated_at: string;
@@ -86,6 +101,7 @@ export type LocalSetting = {
 
 export type PendingOutbound = {
   local_queue_id: string;
+  owner_canonical_id: string;
   message_id: string;
   recipient_canonical_id: string;
   status: RelayEnvelopeStatus;
