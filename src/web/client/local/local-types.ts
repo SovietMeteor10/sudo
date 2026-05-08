@@ -57,6 +57,16 @@ export type LocalDraft = {
   updated_at: string;
 };
 
+export type LocalCryptoAccountRecord = {
+  canonical_id: string;
+  handle: string;
+  home_node: string;
+  identity_document_json: string;
+  encrypted_bundle_json: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type LocalIdentityRecord = {
   canonical_id: string;
   document: IdentityDocument;
@@ -86,6 +96,7 @@ export type LocalStateSnapshot = {
   contacts: LocalContact[];
   subscriptions: LocalSubscription[];
   drafts: LocalDraft[];
+  crypto_accounts: LocalCryptoAccountRecord[];
   identities: LocalIdentityRecord[];
   settings: LocalSetting[];
   pending_outbound: PendingOutbound[];
@@ -97,6 +108,7 @@ export type LocalStorageStatus = {
   contacts: number;
   subscriptions: number;
   drafts: number;
+  crypto_accounts: number;
   identities: number;
   settings: number;
   pending_outbound: number;

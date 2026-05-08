@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { signFeedPost } from "../crypto/signatures.js";
+import { signFeedPost, verifyCanonicalSignature } from "../crypto/signatures.js";
 import { SUDO_PROTOCOL_VERSION, DEFAULT_MAX_TEXT_FEED_POST_BYTES } from "../protocol/constants.js";
 import { getConnectionRelationship } from "../connections/connections.store.js";
 import { getIdentityByCanonicalId } from "../identity/identity.store.js";
@@ -52,11 +52,12 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
 
   validatePostContent(input.visibility, body, encryptedBody, metadata, allowedRecipients);
 
-  const now = new Date().toISOString();
+  const createdAt = normalizeTimestamp(input.created_at) ?? new Date().toISOString();
+  const updatedAt = normalizeTimestamp(input.updated_at) ?? createdAt;
   const signable: SignableFeedPost = {
     type: "sudo_feed_post",
     protocol_version: SUDO_PROTOCOL_VERSION,
-    post_id: randomUUID(),
+    post_id: normalizePostId(input.post_id),
     author_canonical_id: input.author_canonical_id,
     author_handle: input.author_handle ?? author.document.handle,
     visibility: input.visibility,
@@ -64,14 +65,15 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
     ...(encryptedBody === undefined ? {} : { encrypted_body: encryptedBody }),
     public_metadata: metadata,
     allowed_recipients: allowedRecipients,
-    created_at: now,
-    updated_at: now,
-    deleted_at: null,
-    sequence: 1
+    created_at: createdAt,
+    updated_at: updatedAt,
+    deleted_at: normalizeNullableTimestamp(input.deleted_at),
+    sequence: normalizeSequence(input.sequence)
   };
+  const signature = resolveFeedPostSignature(author, signable, input.signature);
   const post: FeedPost = {
     ...signable,
-    signature: signWithDevFeedKey(signable) ?? "dev-placeholder:feed-signature-unavailable"
+    signature
   };
 
   saveFeedPost(post);
@@ -262,6 +264,31 @@ function normalizeOptionalText(value: unknown): string | undefined {
   return normalized.length === 0 ? undefined : normalized;
 }
 
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  const parsed = Date.parse(normalized);
+  if (Number.isNaN(parsed)) return undefined;
+  return normalized;
+}
+
+function normalizeNullableTimestamp(value: unknown): string | null {
+  if (value === null) return null;
+  return normalizeTimestamp(value) ?? null;
+}
+
+function normalizeSequence(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : 1;
+}
+
+function normalizePostId(value: unknown): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  return randomUUID();
+}
+
 function normalizeTags(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -274,8 +301,31 @@ function normalizeTags(value: unknown): string[] {
 function normalizeRecipients(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.filter((recipient): recipient is string => (
-    typeof recipient === "string" && recipient.startsWith("sudo:ed25519:")
+    typeof recipient === "string" && recipient.startsWith("sudo:")
   )))].slice(0, 256);
+}
+
+function resolveFeedPostSignature(
+  author: NonNullable<ReturnType<typeof getIdentityByCanonicalId>>,
+  signable: SignableFeedPost,
+  signature: string | undefined
+): string {
+  if (signature !== undefined) {
+    const isValid = verifyCanonicalSignature(
+      signable,
+      signature,
+      author.document.keys.feed.public_key,
+      author.document.keys.feed.type ?? "ed25519"
+    );
+
+    if (!isValid) {
+      throw new FeedError("invalid_signature", "invalid feed post signature");
+    }
+
+    return signature;
+  }
+
+  return signWithDevFeedKey(signable) ?? "dev-placeholder:feed-signature-unavailable";
 }
 
 function signWithDevFeedKey(post: SignableFeedPost): string | null {

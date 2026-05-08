@@ -3,15 +3,22 @@ export type Handle = string;
 export type PublicKey = string;
 export type Signature = string;
 
+export type SigningKeyType = "ed25519" | "ecdsa-p256";
+export type MessagingKeyType = "x25519" | "ecdh-p256" | "x25519_or_placeholder";
+
 export type IdentityKey = {
-  type: string;
+  type: SigningKeyType;
   public_key: PublicKey;
 };
 
 export type IdentityKeySet = {
-  identity: IdentityKey & { type: "ed25519" };
-  messaging: IdentityKey;
-  feed: IdentityKey & { type: "ed25519" };
+  identity: IdentityKey;
+  messaging: {
+    type: MessagingKeyType;
+    public_key: PublicKey;
+  };
+  feed: IdentityKey;
+  device?: IdentityKey;
 };
 
 export type IdentityFingerprintCell = {

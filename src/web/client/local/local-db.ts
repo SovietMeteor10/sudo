@@ -1,5 +1,5 @@
 export const LOCAL_DB_NAME = "sudo_local_state";
-export const LOCAL_DB_VERSION = 1;
+export const LOCAL_DB_VERSION = 2;
 
 export const localStoreNames = [
   "events",
@@ -8,6 +8,7 @@ export const localStoreNames = [
   "subscriptions",
   "drafts",
   "identities",
+  "crypto_accounts",
   "settings",
   "pending_outbound"
 ] as const;
@@ -48,6 +49,12 @@ export function openLocalDb(): Promise<IDBDatabase> {
 
       if (!db.objectStoreNames.contains("identities")) {
         db.createObjectStore("identities", { keyPath: "canonical_id" });
+      }
+
+      if (!db.objectStoreNames.contains("crypto_accounts")) {
+        const store = db.createObjectStore("crypto_accounts", { keyPath: "canonical_id" });
+        store.createIndex("by_handle", "handle");
+        store.createIndex("by_updated_at", "updated_at");
       }
 
       if (!db.objectStoreNames.contains("settings")) {

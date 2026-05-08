@@ -1,5 +1,10 @@
 import { createPublicKey, sign, verify } from "node:crypto";
-import type { IdentityDocument, SignableFeedPost, SignableIdentityDocument } from "../protocol/types.js";
+import type {
+  IdentityDocument,
+  SignableFeedPost,
+  SignableIdentityDocument,
+  SigningKeyType
+} from "../protocol/types.js";
 import { base64Url, base64UrlToBuffer } from "./hash.js";
 
 export function canonicalJson(value: unknown): string {
@@ -22,12 +27,28 @@ export function verifyIdentityDocument(document: IdentityDocument): boolean {
   const publicKey = getIdentityPublicKey(document);
   if (publicKey === null) return false;
 
-  return verify(
-    null,
-    Buffer.from(canonicalJson(signable)),
-    publicKey,
-    decodeSignature(signature)
-  );
+  return verifyCanonicalSignature(signable, signature, publicKey, document.keys.identity.type ?? "ed25519");
+}
+
+export function verifyCanonicalSignature(
+  payload: unknown,
+  signature: string,
+  publicKey: string | ReturnType<typeof createPublicKey>,
+  keyType: SigningKeyType = "ed25519"
+): boolean {
+  const algorithm = keyType === "ecdsa-p256" ? "sha256" : null;
+  const keyObject = typeof publicKey === "string" ? resolvePublicKey(publicKey) : publicKey;
+
+  try {
+    return verify(
+      algorithm,
+      Buffer.from(canonicalJson(payload)),
+      keyObject,
+      decodeSignature(signature)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function getIdentityPublicKey(document: IdentityDocument): string | ReturnType<typeof createPublicKey> | null {
@@ -44,6 +65,18 @@ function getIdentityPublicKey(document: IdentityDocument): string | ReturnType<t
   }
 
   return document.public_key ?? null;
+}
+
+function resolvePublicKey(publicKey: string): ReturnType<typeof createPublicKey> {
+  if (publicKey.startsWith("-----BEGIN")) {
+    return createPublicKey(publicKey);
+  }
+
+  return createPublicKey({
+    key: base64UrlToBuffer(publicKey),
+    format: "der",
+    type: "spki"
+  });
 }
 
 function decodeSignature(value: string): Buffer {

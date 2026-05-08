@@ -24,6 +24,9 @@ discoveryRouter.post("/reactions", (request, response) => {
       actor_canonical_id?: unknown;
       actor_handle?: unknown;
       reaction?: unknown;
+      reaction_id?: unknown;
+      created_at?: unknown;
+      signature?: unknown;
     };
 
     if (
@@ -38,7 +41,10 @@ discoveryRouter.post("/reactions", (request, response) => {
       post_id: body.post_id,
       actor_canonical_id: body.actor_canonical_id,
       actor_handle: typeof body.actor_handle === "string" ? body.actor_handle : undefined,
-      reaction: body.reaction
+      reaction: body.reaction,
+      reaction_id: typeof body.reaction_id === "string" ? body.reaction_id : undefined,
+      created_at: typeof body.created_at === "string" ? body.created_at : undefined,
+      signature: typeof body.signature === "string" ? body.signature : undefined
     });
 
     response.status(201).json({ ok: true, ...result });

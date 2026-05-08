@@ -80,6 +80,7 @@ function validateSnapshot(value: LocalStateSnapshot): void {
     value.contacts,
     value.subscriptions,
     value.drafts,
+    value.crypto_accounts,
     value.identities,
     value.settings,
     value.pending_outbound

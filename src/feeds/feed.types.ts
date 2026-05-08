@@ -11,6 +11,7 @@ export type {
 } from "../protocol/types.js";
 
 export type CreateFeedPostInput = {
+  post_id?: string;
   author_canonical_id: string;
   author_handle?: string;
   visibility: FeedVisibility;
@@ -18,6 +19,11 @@ export type CreateFeedPostInput = {
   encrypted_body?: string;
   public_metadata?: Partial<FeedPublicMetadata>;
   allowed_recipients?: string[];
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+  sequence?: number;
+  signature?: string;
 };
 
 export class FeedError extends Error {
@@ -28,6 +34,7 @@ export class FeedError extends Error {
       | "invalid_visibility"
       | "post_too_large"
       | "close_connections_requires_recipients"
+      | "invalid_signature"
       | "not_feed_post"
       | "post_not_found",
     message: string,

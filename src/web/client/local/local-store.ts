@@ -1,5 +1,6 @@
 import { clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName } from "./local-db.js";
 import type {
+  LocalCryptoAccountRecord,
   LocalContact,
   LocalEvent,
   LocalIdentityRecord,
@@ -43,6 +44,18 @@ export async function savePendingOutbound(outbound: PendingOutbound): Promise<vo
 
 export async function saveIdentitySeen(identity: LocalIdentityRecord): Promise<void> {
   await putRecord("identities", identity);
+}
+
+export async function saveCryptoAccount(record: LocalCryptoAccountRecord): Promise<void> {
+  await putRecord("crypto_accounts", record);
+}
+
+export async function getCryptoAccount(canonicalId: string): Promise<LocalCryptoAccountRecord | null> {
+  return getRecord<LocalCryptoAccountRecord>("crypto_accounts", canonicalId);
+}
+
+export async function listCryptoAccounts(): Promise<LocalCryptoAccountRecord[]> {
+  return getAllRecords<LocalCryptoAccountRecord>("crypto_accounts");
 }
 
 export async function upsertContact(contact: LocalContact): Promise<void> {
@@ -129,6 +142,7 @@ export async function exportLocalSnapshot(): Promise<LocalStateSnapshot> {
     contacts: await getAllRecords("contacts"),
     subscriptions: await getAllRecords("subscriptions"),
     drafts: await getAllRecords("drafts"),
+    crypto_accounts: await getAllRecords("crypto_accounts"),
     identities: await getAllRecords("identities"),
     settings: await getAllRecords("settings"),
     pending_outbound: await getAllRecords("pending_outbound")
@@ -142,6 +156,7 @@ export async function importLocalSnapshot(snapshot: LocalStateSnapshot): Promise
     putMany("contacts", snapshot.contacts),
     putMany("subscriptions", snapshot.subscriptions),
     putMany("drafts", snapshot.drafts),
+    putMany("crypto_accounts", snapshot.crypto_accounts),
     putMany("identities", snapshot.identities),
     putMany("settings", snapshot.settings),
     putMany("pending_outbound", snapshot.pending_outbound)
@@ -155,6 +170,7 @@ export async function getLocalStorageStatus(): Promise<LocalStorageStatus> {
     contacts: await countStore("contacts"),
     subscriptions: await countStore("subscriptions"),
     drafts: await countStore("drafts"),
+    crypto_accounts: await countStore("crypto_accounts"),
     identities: await countStore("identities"),
     settings: await countStore("settings"),
     pending_outbound: await countStore("pending_outbound")

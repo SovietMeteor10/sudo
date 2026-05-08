@@ -1,6 +1,7 @@
 import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
+  registerIdentityDocument,
   createDiscoveryReaction,
   deleteConnectionRelationship,
   deleteFeedSubscription,
@@ -20,6 +21,15 @@ import {
   upsertConnectionRelationship,
   upsertFeedSubscription
 } from "./api.js";
+import {
+  createBrowserCryptoAccount,
+  getUnlockedBrowserCryptoAccount,
+  lockBrowserCryptoAccount,
+  storeBrowserCryptoAccount,
+  unlockBrowserCryptoAccount,
+  type BrowserCryptoAccount
+} from "./crypto/key-storage.js";
+import { signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
   renderChatList,
   renderDiscoveryPanel,
@@ -42,6 +52,7 @@ import {
   clearLocalDb,
   getLocalStorageStatus,
   initializeLocalState,
+  listCryptoAccounts,
   saveIdentitySeen,
   upsertContact
 } from "./local/local-store.js";
@@ -110,6 +121,9 @@ const backupCodeFeedback = getRequiredElement("backup-code-feedback");
 const recoveryAck = getRequiredInput("recovery-ack");
 const recoveryDismiss = getRequiredButton("recovery-dismiss");
 const localStateStatus = getRequiredElement("local-storage-status");
+const cryptoAccountCreate = getRequiredButton("crypto-account-create");
+const cryptoAccountUnlock = getRequiredButton("crypto-account-unlock");
+const cryptoAccountLock = getRequiredButton("crypto-account-lock");
 const backupExport = getRequiredButton("backup-export");
 const backupImport = getRequiredButton("backup-import");
 const backupImportFile = getRequiredInput("backup-import-file");
@@ -128,6 +142,8 @@ let searchState: SearchState = { status: "idle" };
 let discoveryState: DiscoveryState = { status: "idle", mode: "recent" };
 let currentIdentity: LocalIdentity = localIdentity;
 let currentIdentityDocument: IdentityDocument | null = null;
+let currentIdentityFingerprint: string | null = null;
+let currentCryptoAccount: BrowserCryptoAccount | null = null;
 let currentLookupRelationship: ConnectionRelationship | null = null;
 let currentLookupSubscription: FeedSubscription | null = null;
 let localChats: ChatSummary[] = [];
@@ -267,6 +283,18 @@ backupImport.addEventListener("click", () => {
 
 backupImportFile.addEventListener("change", () => {
   void importSelectedBackup();
+});
+
+cryptoAccountCreate.addEventListener("click", () => {
+  void createCryptographicAccountFlow();
+});
+
+cryptoAccountUnlock.addEventListener("click", () => {
+  void unlockLocalKeysFlow();
+});
+
+cryptoAccountLock.addEventListener("click", () => {
+  void lockLocalKeysFlow();
 });
 
 localStateClear.addEventListener("click", () => {
@@ -602,11 +630,34 @@ async function handleDiscoveryReaction(postId: string, reaction: string): Promis
   }
 
   try {
+    const reactionId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const reactionType = reaction as "recommend" | "downrank" | "reply" | "repost" | "report";
+    const signature = currentCryptoAccount === null
+      ? undefined
+      : await signDiscoveryReaction(
+          {
+            type: "sudo_discovery_reaction",
+            protocol_version: "0.1.0",
+            reaction_id: reactionId,
+            post_id: postId,
+            actor_canonical_id: currentIdentityDocument.canonical_id,
+            actor_handle: currentIdentityDocument.handle,
+            reaction: reactionType,
+            created_at: createdAt
+          },
+          currentCryptoAccount.identity_key,
+          currentCryptoAccount.identity_key_type
+        );
+
     await createDiscoveryReaction({
+      reaction_id: reactionId,
       post_id: postId,
       actor_canonical_id: currentIdentityDocument.canonical_id,
       actor_handle: currentIdentityDocument.handle,
-      reaction
+      reaction: reactionType,
+      created_at: createdAt,
+      signature
     });
     await refreshDiscoveryPosts(discoveryState.mode);
   } catch (error) {
@@ -719,7 +770,39 @@ async function submitFeedPost(): Promise<void> {
   feedComposerState.textContent = "posting...";
 
   try {
+    const postId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const signablePost = {
+      type: "sudo_feed_post" as const,
+      protocol_version: "0.1.0",
+      post_id: postId,
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility,
+      ...(visibility === "public_metadata_encrypted_body"
+        ? { encrypted_body: `dev-placeholder:${btoa(unescape(encodeURIComponent(body || title)))}` }
+        : { body }),
+      public_metadata: {
+        title: title.length === 0 ? undefined : title,
+        summary: visibility === "public_metadata_encrypted_body" && body.length > 0
+          ? body.slice(0, 160)
+          : undefined,
+        tags
+      },
+      allowed_recipients: visibility === "close_connections"
+        ? [currentIdentityDocument.canonical_id]
+        : [],
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1
+    };
+    const signature = currentCryptoAccount === null
+      ? undefined
+      : await signFeedPost(signablePost, currentCryptoAccount.feed_key, currentCryptoAccount.identity_key_type);
+
     await createFeedPost({
+      post_id: postId,
       author_canonical_id: currentIdentityDocument.canonical_id,
       author_handle: currentIdentityDocument.handle,
       visibility,
@@ -738,7 +821,12 @@ async function submitFeedPost(): Promise<void> {
       // to the author's own canonical ID so the backend enforces an explicit list.
       allowed_recipients: visibility === "close_connections"
         ? [currentIdentityDocument.canonical_id]
-        : undefined
+        : undefined,
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1,
+      signature
     });
     feedBodyInput.value = "";
     feedTitleInput.value = "";
@@ -747,6 +835,100 @@ async function submitFeedPost(): Promise<void> {
     await refreshFeedPosts();
   } catch (error) {
     feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
+  }
+}
+
+async function createCryptographicAccountFlow(): Promise<void> {
+  const handle = normalizeLookupInput(prompt("Choose a handle for this cryptographic account") ?? "");
+  if (!/^[A-Za-z0-9_]{3,32}$/.test(handle)) {
+    localMaintenanceFeedback.textContent = "invalid handle";
+    return;
+  }
+
+  const passphrase = prompt("Choose a passphrase for local key storage");
+  if (passphrase === null || passphrase.length < 12) {
+    localMaintenanceFeedback.textContent = "passphrase cancelled or too short";
+    return;
+  }
+
+  const confirmPassphrase = prompt("Confirm the passphrase");
+  if (confirmPassphrase !== passphrase) {
+    localMaintenanceFeedback.textContent = "passphrases do not match";
+    return;
+  }
+
+  const homeNode = prompt("Home node URL", window.location.origin) ?? window.location.origin;
+  localMaintenanceFeedback.textContent = "creating browser cryptographic account...";
+
+  try {
+    const draft = await createBrowserCryptoAccount({ handle, passphrase, homeNode });
+    const identity = await registerIdentityDocument(draft.identity_document);
+    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
+
+    await storeBrowserCryptoAccount(draft.record);
+    await saveIdentitySeen({
+      canonical_id: identity.canonical_id,
+      document: identity,
+      seen_at: new Date().toISOString()
+    });
+
+    currentCryptoAccount = draft.account;
+    setCurrentIdentity(identity, fingerprint);
+    setSignedIn(identity.handle);
+    localMaintenanceFeedback.textContent = "browser cryptographic account created";
+    await refreshLocalStorageStatus();
+  } catch (error) {
+    lockBrowserCryptoAccount();
+    currentCryptoAccount = null;
+    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "account creation failed";
+  }
+}
+
+async function unlockLocalKeysFlow(): Promise<void> {
+  const accounts = await listCryptoAccounts();
+  if (accounts.length === 0) {
+    localMaintenanceFeedback.textContent = "no stored cryptographic accounts";
+    return;
+  }
+
+  const locator = normalizeLookupInput(
+    prompt("Enter a handle or canonical ID to unlock") ?? currentIdentityDocument?.canonical_id ?? ""
+  );
+  const selected = accounts.find((account) => account.canonical_id === locator || account.handle === locator || account.handle === `@${locator}`);
+  if (selected === undefined) {
+    localMaintenanceFeedback.textContent = "stored account not found";
+    return;
+  }
+
+  const passphrase = prompt(`Enter the passphrase for ${selected.handle}`);
+  if (passphrase === null || passphrase.length === 0) {
+    localMaintenanceFeedback.textContent = "unlock cancelled";
+    return;
+  }
+
+  try {
+    const account = await unlockBrowserCryptoAccount(selected.canonical_id, passphrase);
+    currentCryptoAccount = account;
+    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(account.identity_document));
+    await saveIdentitySeen({
+      canonical_id: account.identity_document.canonical_id,
+      document: account.identity_document,
+      seen_at: new Date().toISOString()
+    });
+    setCurrentIdentity(account.identity_document, fingerprint);
+    setSignedIn(account.handle);
+    localMaintenanceFeedback.textContent = "local keys unlocked";
+  } catch (error) {
+    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "unlock failed";
+  }
+}
+
+async function lockLocalKeysFlow(): Promise<void> {
+  lockBrowserCryptoAccount();
+  currentCryptoAccount = null;
+  localMaintenanceFeedback.textContent = "local keys locked";
+  if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
+    setCurrentIdentity(currentIdentityDocument, currentIdentityFingerprint);
   }
 }
 
@@ -807,11 +989,12 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
 
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
   currentIdentityDocument = identity;
+  currentIdentityFingerprint = fingerprint;
   currentIdentity = {
     handle: identity.handle,
-    bio: "local-dev identity",
-    status: "quiet",
-    privacyMode: "ghost mode: off",
+    bio: currentCryptoAccount === null ? "local-dev identity" : "browser cryptographic account",
+    status: currentCryptoAccount === null ? "keys locked" : "keys unlocked",
+    privacyMode: currentCryptoAccount === null ? "ghost mode: off" : "browser-held keys",
     onionState: "onion: local only",
     fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
   };
@@ -1008,6 +1191,8 @@ function setSignedIn(handle: string): void {
 function setSignedOut(): void {
   authSequence++;
   currentIdentityDocument = null;
+  currentIdentityFingerprint = null;
+  currentCryptoAccount = null;
   currentLookupRelationship = null;
   currentLookupSubscription = null;
   document.body.dataset["authState"] = "signed-out";
@@ -1035,6 +1220,8 @@ function setSignedOut(): void {
 }
 
 function logout(): void {
+  lockBrowserCryptoAccount();
+  currentCryptoAccount = null;
   void clearDevSessionToken().then(refreshLocalStorageStatus);
   clearSignupForm();
   clearSigninForm();

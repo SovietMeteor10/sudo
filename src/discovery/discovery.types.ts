@@ -4,6 +4,7 @@ export class DiscoveryError extends Error {
   constructor(
     readonly code:
       | "invalid_reaction"
+      | "invalid_signature"
       | "not_discoverable"
       | "reaction_not_found"
       | "duplicate_reaction"

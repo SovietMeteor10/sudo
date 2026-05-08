@@ -1,12 +1,14 @@
 import { sha256Hex, signIdentityDocument } from "../crypto/index.js";
 import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
-import type { IdentityDocument, SignableIdentityDocument } from "../protocol/types.js";
+import type { IdentityDocument, SignableIdentityDocument, SigningKeyType } from "../protocol/types.js";
 import {
   getIdentityByCanonicalId,
   getIdentityFingerprintByCanonicalId,
   getIdentityByHandle,
   normalizeHandle
 } from "./identity.store.js";
+import { saveIdentity } from "./registry.js";
+import { verifyIdentityDocument } from "../crypto/signatures.js";
 
 export type CreateIdentityDocumentOptions = {
   handle: string;
@@ -15,10 +17,12 @@ export type CreateIdentityDocumentOptions = {
   identityPrivateKey: string;
   messagingPublicKey: string;
   feedPublicKey: string;
+  devicePublicKey?: string;
   deliveryRelays?: string[];
   feedEndpoints?: string[];
   createdAt?: string;
   sequence?: number;
+  identityKeyType?: SigningKeyType;
 };
 
 export function resolveIdentityByHandle(handle: string) {
@@ -34,8 +38,8 @@ export function resolveIdentityFingerprintByCanonicalId(canonicalId: string) {
   return getIdentityFingerprintByCanonicalId(canonicalId);
 }
 
-export function deriveCanonicalId(identityPublicKey: string): string {
-  return `sudo:ed25519:${sha256Hex(identityPublicKey)}`;
+export function deriveCanonicalId(identityPublicKey: string, keyType: SigningKeyType = "ed25519"): string {
+  return `sudo:${keyType}:${sha256Hex(identityPublicKey)}`;
 }
 
 export function createSignedIdentityDocument(options: CreateIdentityDocumentOptions): IdentityDocument {
@@ -50,7 +54,7 @@ export function createSignedIdentityDocument(options: CreateIdentityDocumentOpti
     home_node: options.homeNode,
     keys: {
       identity: {
-        type: "ed25519",
+        type: options.identityKeyType ?? "ed25519",
         public_key: options.identityPublicKey
       },
       messaging: {
@@ -58,9 +62,17 @@ export function createSignedIdentityDocument(options: CreateIdentityDocumentOpti
         public_key: options.messagingPublicKey
       },
       feed: {
-        type: "ed25519",
+        type: options.identityKeyType ?? "ed25519",
         public_key: options.feedPublicKey
-      }
+      },
+      ...(options.devicePublicKey === undefined
+        ? {}
+        : {
+            device: {
+              type: options.identityKeyType ?? "ed25519",
+              public_key: options.devicePublicKey
+            }
+          })
     },
     delivery_relays: options.deliveryRelays ?? [],
     feed_endpoints: options.feedEndpoints ?? [],
@@ -73,4 +85,23 @@ export function createSignedIdentityDocument(options: CreateIdentityDocumentOpti
     ...unsignedDocument,
     signature: signIdentityDocument(unsignedDocument, options.identityPrivateKey)
   };
+}
+
+export function registerIdentityDocument(document: IdentityDocument): IdentityDocument {
+  if (!verifyIdentityDocument(document)) {
+    throw new Error("invalid identity signature");
+  }
+
+  const expectedCanonicalId = deriveCanonicalId(
+    document.keys.identity.public_key,
+    document.keys.identity.type ?? "ed25519"
+  );
+
+  if (document.canonical_id !== expectedCanonicalId) {
+    throw new Error("canonical id does not match identity public key");
+  }
+
+  normalizeHandle(document.handle);
+  saveIdentity(document.canonical_id, document);
+  return document;
 }

@@ -23,6 +23,7 @@ import {
   upsertDiscoveryPostIndexFromFeedPost
 } from "./discovery.store.js";
 import { DiscoveryError } from "./discovery.types.js";
+import { verifyCanonicalSignature } from "../crypto/signatures.js";
 
 export function searchIdentityHandles(query: string): SearchResult[] {
   const normalizedQuery = query.trim().replace(/^@/, "").toLowerCase();
@@ -58,6 +59,9 @@ export function createDiscoveryReaction(input: {
   actor_canonical_id: string;
   actor_handle?: string;
   reaction: DiscoveryReaction["reaction"];
+  reaction_id?: string;
+  created_at?: string;
+  signature?: string;
 }): { reaction: DiscoveryReaction; index: DiscoveryPostIndex } {
   const post = getFeedPost(input.post_id);
   if (post === null || post.deleted_at !== null) {
@@ -72,17 +76,26 @@ export function createDiscoveryReaction(input: {
     throw new DiscoveryError("duplicate_reaction", "duplicate reaction for this post", 409);
   }
 
-  const now = new Date().toISOString();
+  const createdAt = normalizeTimestamp(input.created_at) ?? new Date().toISOString();
+  const actor = getIdentityByCanonicalId(input.actor_canonical_id);
+  if (actor === null && input.signature !== undefined) {
+    throw new DiscoveryError("invalid_signature", "actor identity not found", 404);
+  }
+
+  const reactionId = input.reaction_id ?? randomUUID();
   const reaction: DiscoveryReaction = {
     type: "sudo_discovery_reaction",
     protocol_version: "0.1.0",
-    reaction_id: randomUUID(),
+    reaction_id: reactionId,
     post_id: input.post_id,
     actor_canonical_id: input.actor_canonical_id,
     actor_handle: input.actor_handle,
     reaction: input.reaction,
-    created_at: now,
-    signature: "dev-placeholder:discovery-signature-unavailable"
+    created_at: createdAt,
+    signature: resolveDiscoveryReactionSignature({
+      ...input,
+      reaction_id: reactionId
+    }, createdAt, actor)
   };
 
   insertDiscoveryReaction(reaction);
@@ -153,4 +166,88 @@ function parseFingerprint(value: string | null): IdentityFingerprint | null {
   } catch {
     return null;
   }
+}
+
+function resolveDiscoveryReactionSignature(
+  input: {
+    post_id: string;
+    actor_canonical_id: string;
+    actor_handle?: string;
+    reaction: DiscoveryReaction["reaction"];
+    reaction_id: string;
+    signature?: string;
+  },
+  createdAt: string,
+  actor: ReturnType<typeof getIdentityByCanonicalId>
+): string {
+  const signable = {
+    type: "sudo_discovery_reaction",
+    protocol_version: "0.1.0",
+    reaction_id: input.reaction_id,
+    post_id: input.post_id,
+    actor_canonical_id: input.actor_canonical_id,
+    actor_handle: input.actor_handle,
+    reaction: input.reaction,
+    created_at: createdAt
+  };
+
+  if (input.signature !== undefined) {
+    if (actor === null) {
+      throw new DiscoveryError("invalid_signature", "actor identity not found", 404);
+    }
+
+    const signature = input.signature;
+    const publicKey = actor.document.keys.identity.public_key;
+    const keyType = actor.document.keys.identity.type ?? "ed25519";
+    const isValid = [
+      signable,
+      {
+        type: signable.type,
+        protocol_version: signable.protocol_version,
+        reaction_id: signable.reaction_id,
+        post_id: signable.post_id,
+        actor_canonical_id: signable.actor_canonical_id,
+        actor_handle: signable.actor_handle,
+        reaction: signable.reaction
+      },
+      {
+        type: signable.type,
+        protocol_version: signable.protocol_version,
+        post_id: signable.post_id,
+        actor_canonical_id: signable.actor_canonical_id,
+        actor_handle: signable.actor_handle,
+        reaction: signable.reaction
+      },
+      {
+        type: signable.type,
+        protocol_version: signable.protocol_version,
+        post_id: signable.post_id,
+        actor_canonical_id: signable.actor_canonical_id,
+        actor_handle: normalizeHandleVariant(signable.actor_handle),
+        reaction: signable.reaction,
+        created_at: signable.created_at
+      }
+    ].some((candidate) => verifyCanonicalSignature(candidate, signature, publicKey, keyType));
+
+    if (!isValid) {
+      throw new DiscoveryError("invalid_signature", "invalid discovery reaction signature");
+    }
+
+    return input.signature;
+  }
+
+  return "dev-placeholder:discovery-signature-unavailable";
+}
+
+function normalizeTimestamp(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  const parsed = Date.parse(normalized);
+  if (Number.isNaN(parsed)) return undefined;
+  return normalized;
+}
+
+function normalizeHandleVariant(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.trim().replace(/^@/, "");
 }

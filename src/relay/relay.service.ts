@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { verifyCanonicalSignature } from "../crypto/signatures.js";
 import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
+import { getIdentityByCanonicalId } from "../identity/identity.store.js";
 import { evaluateRelayPolicy } from "./relay.policy.js";
 import type {
   LegacyEncryptedMessageEnvelope,
@@ -45,6 +47,24 @@ export function submitRelayEnvelope(input: unknown, now = new Date()): SubmitRel
   const decision = evaluateRelayPolicy(tier, counts, ciphertextBytes);
   if (!decision.ok) {
     return { ok: false, error: decision.error };
+  }
+
+  if (parsed.sender_signature !== "dev-placeholder" && parsed.sender_signature !== "dev-placeholder:relay-signature-unavailable") {
+    const sender = getIdentityByCanonicalId(parsed.sender_canonical_id);
+    if (sender === null) {
+      return { ok: false, error: "invalid_envelope" };
+    }
+
+    const isValid = verifyCanonicalSignature(
+      relaySignableEnvelope(parsed),
+      parsed.sender_signature,
+      sender.document.keys.identity.public_key,
+      sender.document.keys.identity.type ?? "ed25519"
+    );
+
+    if (!isValid) {
+      return { ok: false, error: "invalid_envelope" };
+    }
   }
 
   const createdAt = normalizeCreatedAt(parsed.created_at, now);
@@ -150,6 +170,11 @@ function parseRelayEnvelopeInput(input: unknown): RelayEnvelope | null {
     status: "submitted_to_relay",
     sender_signature: typeof value.sender_signature === "string" ? value.sender_signature : "dev-placeholder"
   };
+}
+
+function relaySignableEnvelope(envelope: RelayEnvelope): Omit<RelayEnvelope, "sender_signature" | "status"> {
+  const { sender_signature: _senderSignature, status: _status, ...signable } = envelope;
+  return signable;
 }
 
 function normalizeCreatedAt(value: string, fallback: Date): Date {

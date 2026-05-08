@@ -31,6 +31,21 @@ export async function lookupHandle(query: string, signal: AbortSignal): Promise<
   return response.json() as Promise<IdentityDocument>;
 }
 
+export async function registerIdentityDocument(identityDocument: IdentityDocument): Promise<IdentityDocument> {
+  const response = await fetch("/api/identity/register", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ identity_document: identityDocument })
+  });
+
+  const body = await response.json() as { identity?: IdentityDocument; message?: string };
+  if (response.ok && body.identity !== undefined) return body.identity;
+  throw new Error(body.message ?? `identity registration failed: ${response.status}`);
+}
+
 export type SignupDevResponse = {
   identity: IdentityDocument;
   backupCode: string;
@@ -264,6 +279,7 @@ export async function deleteFeedSubscription(ownerCanonicalId: string, authorCan
 }
 
 export type CreateFeedPostRequest = {
+  post_id?: string;
   author_canonical_id: string;
   author_handle?: string;
   visibility: FeedPost["visibility"];
@@ -275,6 +291,11 @@ export type CreateFeedPostRequest = {
     tags?: string[];
   };
   allowed_recipients?: string[];
+  created_at?: string;
+  updated_at?: string;
+  deleted_at?: string | null;
+  sequence?: number;
+  signature?: string;
 };
 
 export async function createFeedPost(input: CreateFeedPostRequest): Promise<FeedPost> {
@@ -308,10 +329,13 @@ export async function listUserFeedPosts(canonicalId: string, viewerCanonicalId?:
 }
 
 export async function createDiscoveryReaction(input: {
+  reaction_id?: string;
   post_id: string;
   actor_canonical_id: string;
   actor_handle?: string;
   reaction: DiscoveryReaction["reaction"];
+  created_at?: string;
+  signature?: string;
 }): Promise<{ reaction: DiscoveryReaction; index: DiscoveryPostIndex }> {
   const response = await fetch("/api/discovery/reactions", {
     method: "POST",

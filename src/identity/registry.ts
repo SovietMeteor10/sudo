@@ -44,6 +44,16 @@ export function createHandle(input: string): string {
 }
 
 export function saveIdentity(canonicalId: string, document: IdentityDocument): void {
+  const existingByCanonical = getIdentityByCanonicalId(canonicalId);
+  if (existingByCanonical !== null && existingByCanonical.document.sequence > document.sequence) {
+    throw new Error("stale identity document");
+  }
+
+  const existingByHandle = getIdentityByHandle(document.handle);
+  if (existingByHandle !== null && existingByHandle.canonicalId !== canonicalId) {
+    throw new Error("handle already exists");
+  }
+
   const identityPublicKey = getIdentityPublicKey(document);
   const messagingPublicKey = document.keys?.messaging.public_key ?? "";
   const feedPublicKey = document.keys?.feed.public_key ?? identityPublicKey;
@@ -92,6 +102,22 @@ export function saveIdentity(canonicalId: string, document: IdentityDocument): v
       @sequence,
       @signature
     )
+    ON CONFLICT(canonical_id) DO UPDATE SET
+      handle = excluded.handle,
+      canonical = excluded.canonical,
+      public_key = excluded.public_key,
+      profile_url = excluded.profile_url,
+      finger_url = excluded.finger_url,
+      inbox_url = excluded.inbox_url,
+      home_node = excluded.home_node,
+      identity_public_key = excluded.identity_public_key,
+      messaging_public_key = excluded.messaging_public_key,
+      feed_public_key = excluded.feed_public_key,
+      document_json = excluded.document_json,
+      fingerprint_json = excluded.fingerprint_json,
+      updated_at = excluded.updated_at,
+      sequence = excluded.sequence,
+      signature = excluded.signature
   `).run({
     handle: document.handle,
     canonicalId,

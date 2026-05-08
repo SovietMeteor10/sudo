@@ -294,10 +294,15 @@
     <div class="local-maintenance__inner">
       <div class="signup-dialog__title" id="local-maintenance-title">local state</div>
       <div class="signup-dialog__warning">Private message history is stored locally on this device.</div>
+      <div class="signup-dialog__warning">This browser holds your encrypted private keys locally.</div>
+      <div class="signup-dialog__warning">If you lose your passphrase and backup, your local private keys cannot be recovered.</div>
       <div class="signup-dialog__hint">Export encrypted backups before clearing browser data.</div>
       <div class="signup-dialog__hint">This development build may store local message bodies before full encryption is implemented.</div>
       <div class="local-maintenance__status" id="local-storage-status">local storage: checking</div>
       <div class="local-maintenance__actions">
+        <button class="text-button text-button--primary" id="crypto-account-create" type="button">create cryptographic account</button>
+        <button class="text-button" id="crypto-account-unlock" type="button">unlock local keys</button>
+        <button class="text-button" id="crypto-account-lock" type="button">lock keys</button>
         <button class="text-button" id="backup-export" type="button">export encrypted sudo backup</button>
         <button class="text-button" id="backup-import" type="button">import encrypted sudo backup</button>
         <button class="text-button" id="local-state-clear" type="button">clear local state</button>
