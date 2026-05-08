@@ -81,6 +81,31 @@ The intended future transport is onion-first relay access. HTTPS access to a
 portal is useful for deployment, but it is not the same as private network
 transport.
 
+## Signed Text Feeds
+
+sudo feed posts are signed text protocol objects. They are separate from private
+message relay envelopes and from future discovery indexes.
+
+Current feed posts are text-only and support explicit visibility modes:
+
+- `public`: readable by anyone and intended to be indexable later.
+- `unlisted`: fetchable by direct ID or author feed, but not shown in public indexes by default.
+- `connections_only`: intended for approved connections and not discoverable by default.
+- `close_connections`: restricted to an explicit recipient list and not natively repostable with attribution.
+- `public_metadata_encrypted_body`: public title, summary, and tags with opaque encrypted body content.
+- `private_message`: reserved for message semantics and excluded from normal feed display.
+
+The current server can sign feed posts with plaintext development feed keys from
+`data/keys` when they exist. That is DEV-ONLY scaffolding. Production feed
+signing should happen with device-held feed keys, and restricted bodies should
+be encrypted before reaching the server.
+
+RSS-style publishing is available for public and unlisted text posts. The RSS
+endpoint deliberately excludes close-connection content, restricted encrypted
+bodies, deleted posts, and private-message semantics. Future discovery should
+only index public or explicitly discoverable feed metadata; it should not be
+treated as identity trust.
+
 ## Local-First Private State
 
 Private user state belongs to the client device. The current browser portal uses

@@ -33,7 +33,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -236,6 +237,62 @@ body[data-auth-state="signed-in"] .landing {
 
 .stream-list {
   padding: 14px 0 40px;
+}
+
+.feed-composer {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  background: #101211;
+}
+
+.feed-composer__body {
+  width: 100%;
+  min-height: 86px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 9px 10px;
+  background: var(--panel);
+  color: var(--text);
+  outline: none;
+}
+
+.feed-composer__body::placeholder,
+.feed-composer__input::placeholder {
+  color: var(--dim);
+}
+
+.feed-composer__body:focus,
+.feed-composer__input:focus,
+.feed-composer__select:focus {
+  border-color: var(--focus);
+}
+
+.feed-composer__row {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.8fr) minmax(120px, 0.7fr) minmax(120px, 0.7fr) auto;
+  gap: 8px;
+  margin-top: 8px;
+  align-items: center;
+}
+
+.feed-composer__select,
+.feed-composer__input {
+  width: 100%;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 9px;
+  background: var(--panel);
+  color: var(--text);
+  outline: none;
+}
+
+.feed-composer__state {
+  min-height: 18px;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .stream-post {
@@ -775,6 +832,14 @@ body[data-auth-state="signed-in"] .landing {
 
   .stream-list {
     padding-top: 8px;
+  }
+
+  .feed-composer {
+    padding-inline: 14px;
+  }
+
+  .feed-composer__row {
+    grid-template-columns: 1fr;
   }
 
   .stream-post {

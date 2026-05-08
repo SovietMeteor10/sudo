@@ -117,6 +117,34 @@ Relay policy is bounded store-and-forward:
 Current relay inbox and ACK routes are DEV-ONLY and do not yet authenticate the
 recipient device. A real recipient should ACK only after durable local save.
 
+## Signed text feeds
+
+Feed posts use `sudo_feed_post` objects under `/api/feeds`. Posts are text-only,
+bounded in size, signed by the author feed key when the current dev key
+scaffolding is available, and stored in SQLite as protocol JSON plus indexed
+columns.
+
+Visibility modes are explicit:
+
+- `public`: readable by anyone and suitable for future indexing
+- `unlisted`: direct-link/author-feed visible, not public-indexed by default
+- `connections_only`: restricted semantics, DEV-ONLY fetch without auth today
+- `close_connections`: requires an explicit recipient list
+- `public_metadata_encrypted_body`: public title/summary/tags with opaque encrypted body
+- `private_message`: reserved for messaging, excluded from feed lists
+
+Feed routes:
+
+- `POST /api/feeds/posts`
+- `GET /api/feeds/posts/:postId`
+- `GET /api/feeds/users/:canonicalId`
+- `GET /api/feeds/users/:canonicalId/rss`
+- `DELETE /api/feeds/posts/:postId`
+
+The RSS endpoint emits public/unlisted plaintext posts only. Restricted
+visibility and encrypted-body modes are still development scaffolding until
+client-side encryption, recipient authorization, and group key management exist.
+
 ## Local storage and backups
 
 The browser portal keeps private working state in IndexedDB database
@@ -229,7 +257,7 @@ content-type: application/json
 }
 ```
 
-Sessions are restored with `/dev/session` using a bearer token stored in browser `localStorage` for now. That is temporary dev scaffolding only.
+Sessions are restored with `/dev/session` using a bearer token stored in browser IndexedDB for now. That is temporary dev scaffolding only.
 
 ## Handle lookup and connections
 

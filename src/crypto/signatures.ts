@@ -1,5 +1,5 @@
 import { createPublicKey, sign, verify } from "node:crypto";
-import type { IdentityDocument, SignableIdentityDocument } from "../protocol/types.js";
+import type { IdentityDocument, SignableFeedPost, SignableIdentityDocument } from "../protocol/types.js";
 import { base64Url, base64UrlToBuffer } from "./hash.js";
 
 export function canonicalJson(value: unknown): string {
@@ -11,6 +11,10 @@ export function signIdentityDocument(
   privateKey: string
 ): string {
   return base64Url(sign(null, Buffer.from(canonicalJson(document)), privateKey));
+}
+
+export function signFeedPost(post: SignableFeedPost, privateKey: string): string {
+  return base64Url(sign(null, Buffer.from(canonicalJson(post)), privateKey));
 }
 
 export function verifyIdentityDocument(document: IdentityDocument): boolean {

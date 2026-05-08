@@ -1,5 +1,6 @@
 import type {
   ChatSummary as ProtocolChatSummary,
+  FeedPost as ProtocolFeedPost,
   IdentityFingerprint as ProtocolIdentityFingerprint,
   IdentityDocument as ProtocolIdentityDocument,
   SearchResult as ProtocolSearchResult,
@@ -45,5 +46,6 @@ export type SearchState =
   | { status: "error"; query: string; message: string };
 
 export type StreamPost = ProtocolStreamPost;
+export type FeedPost = ProtocolFeedPost;
 
 export type ChatSummary = ProtocolChatSummary;

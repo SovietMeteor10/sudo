@@ -100,15 +100,48 @@ export type SearchResult = {
   fingerprint_grid?: IdentityFingerprint;
 };
 
-export type FeedPost = {
+export type FeedVisibility =
+  | "private_message"
+  | "connections_only"
+  | "close_connections"
+  | "unlisted"
+  | "public"
+  | "public_metadata_encrypted_body";
+
+export type FeedPublicMetadata = {
+  title?: string;
+  summary?: string;
+  tags: string[];
+};
+
+export type SignableFeedPost = {
+  type: "sudo_feed_post";
+  protocol_version: string;
+  post_id: string;
+  author_canonical_id: CanonicalId;
+  author_handle?: Handle;
+  visibility: FeedVisibility;
+  body?: string;
+  encrypted_body?: string;
+  public_metadata: FeedPublicMetadata;
+  allowed_recipients: CanonicalId[];
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  sequence: number;
+};
+
+export type FeedPost = SignableFeedPost & {
+  signature: Signature;
+};
+
+export type StreamPost = {
   id: string;
   handle: Handle;
   at: string;
   body: string;
   signature?: Signature;
 };
-
-export type StreamPost = FeedPost;
 
 export type DiscoveryReaction = {
   subject: CanonicalId | Handle;

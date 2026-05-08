@@ -1,4 +1,4 @@
-import type { IdentityDocument, SearchResult } from "./types.js";
+import type { FeedPost, IdentityDocument, SearchResult } from "./types.js";
 
 export async function lookupHandle(query: string, signal: AbortSignal): Promise<IdentityDocument> {
   const handle = normalizeLookupInput(query);
@@ -130,6 +130,48 @@ export async function searchHandles(query: string, signal: AbortSignal): Promise
 
   const body = await response.json() as { results?: SearchResult[] };
   return Array.isArray(body.results) ? body.results : [];
+}
+
+export type CreateFeedPostRequest = {
+  author_canonical_id: string;
+  author_handle?: string;
+  visibility: FeedPost["visibility"];
+  body?: string;
+  encrypted_body?: string;
+  public_metadata?: {
+    title?: string;
+    summary?: string;
+    tags?: string[];
+  };
+  allowed_recipients?: string[];
+};
+
+export async function createFeedPost(input: CreateFeedPostRequest): Promise<FeedPost> {
+  const response = await fetch("/api/feeds/posts", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(input),
+  });
+
+  const body = await response.json() as { post?: FeedPost; message?: string };
+  if (response.ok && body.post !== undefined) return body.post;
+  throw new Error(body.message ?? `feed post failed: ${response.status}`);
+}
+
+export async function listUserFeedPosts(canonicalId: string): Promise<FeedPost[]> {
+  const response = await fetch(`/api/feeds/users/${encodeURIComponent(canonicalId)}`, {
+    headers: { accept: "application/json" },
+  });
+
+  if (!response.ok) {
+    throw new Error(`feed load failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { posts?: FeedPost[] };
+  return Array.isArray(body.posts) ? body.posts : [];
 }
 
 export function normalizeLookupInput(query: string): string {

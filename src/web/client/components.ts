@@ -2,6 +2,7 @@ import { streamPosts } from "./data.js";
 import { mountTextSurface, unmountAllTextSurfaces } from "./rendering/textSurface.js";
 import type {
   ChatSummary,
+  FeedPost,
   IdentityFingerprint,
   IdentityDocument,
   LocalIdentity,
@@ -80,12 +81,18 @@ export function renderSigninState(root: HTMLElement, state: SigninState): void {
   root.replaceChildren(line(`signed in as ${state.identity.handle}`, "signup-result__label"));
 }
 
-export function renderStream(root: HTMLElement): void {
+export function renderStream(root: HTMLElement, feedPosts: FeedPost[] = []): void {
   unmountAllTextSurfaces();
   const fragment = document.createDocumentFragment();
 
-  for (const post of streamPosts) {
-    fragment.append(renderPost(post));
+  if (feedPosts.length === 0) {
+    for (const post of streamPosts) {
+      fragment.append(renderPost(post));
+    }
+  } else {
+    for (const post of feedPosts) {
+      fragment.append(renderFeedPost(post));
+    }
   }
 
   root.replaceChildren(fragment);
@@ -195,6 +202,26 @@ function renderPost(post: StreamPost): HTMLElement {
   const body = document.createElement("div");
   body.className = "stream-post__body";
   mountTextSurface(body, post.body, { font: BODY_FONT, lineHeight: 23 });
+
+  article.append(meta, body);
+  return article;
+}
+
+function renderFeedPost(post: FeedPost): HTMLElement {
+  const article = document.createElement("article");
+  article.className = "stream-post";
+
+  const meta = document.createElement("div");
+  meta.className = "stream-post__meta";
+  meta.textContent = `${formatTimestamp(post.created_at)}  ${post.author_handle ?? shortCanonical(post.author_canonical_id)}  [${post.visibility}]`;
+
+  const body = document.createElement("div");
+  body.className = "stream-post__body";
+  const text = post.body
+    ?? post.public_metadata.summary
+    ?? post.public_metadata.title
+    ?? "[encrypted body]";
+  mountTextSurface(body, text, { font: BODY_FONT, lineHeight: 23 });
 
   article.append(meta, body);
   return article;

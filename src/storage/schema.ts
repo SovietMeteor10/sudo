@@ -69,6 +69,35 @@ export const schemaSql = `
     PRIMARY KEY (sender_canonical_id, recipient_canonical_id)
   );
 
+  CREATE TABLE IF NOT EXISTS feed_posts (
+    post_id TEXT PRIMARY KEY,
+    author_canonical_id TEXT NOT NULL,
+    author_handle TEXT,
+    visibility TEXT NOT NULL,
+    body TEXT,
+    encrypted_body TEXT,
+    public_metadata_json TEXT,
+    allowed_recipients_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT,
+    sequence INTEGER NOT NULL,
+    signature TEXT,
+    post_json TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS feed_posts_author_created_at_idx
+    ON feed_posts(author_canonical_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS feed_posts_visibility_created_at_idx
+    ON feed_posts(visibility, created_at);
+
+  CREATE INDEX IF NOT EXISTS feed_posts_created_at_idx
+    ON feed_posts(created_at);
+
+  CREATE INDEX IF NOT EXISTS feed_posts_deleted_at_idx
+    ON feed_posts(deleted_at);
+
   CREATE TABLE IF NOT EXISTS dev_account_access (
     canonical_id TEXT PRIMARY KEY,
     password_salt TEXT,

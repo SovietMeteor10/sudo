@@ -47,6 +47,30 @@
 
     <section class="pane pane--stream" data-pane="stream" aria-labelledby="stream-title">
       <div class="pane__title" id="stream-title">stream</div>
+      <form class="feed-composer" id="feed-composer" autocomplete="off">
+        <label class="sr-only" for="feed-body">new feed post</label>
+        <textarea
+          id="feed-body"
+          class="feed-composer__body"
+          name="feed-body"
+          placeholder="write a text-only post"
+          maxlength="16384"
+          spellcheck="true"
+        ></textarea>
+        <div class="feed-composer__row">
+          <select class="feed-composer__select" id="feed-visibility" name="feed-visibility" aria-label="visibility">
+            <option value="public">public</option>
+            <option value="unlisted">unlisted</option>
+            <option value="connections_only">connections only</option>
+            <option value="close_connections">close connections</option>
+            <option value="public_metadata_encrypted_body">public metadata, encrypted body</option>
+          </select>
+          <input id="feed-title" class="feed-composer__input" name="feed-title" placeholder="title/meta" maxlength="120">
+          <input id="feed-tags" class="feed-composer__input" name="feed-tags" placeholder="tags: sudo, text" maxlength="180">
+          <button class="text-button text-button--primary" type="submit">post</button>
+        </div>
+        <div class="feed-composer__state" id="feed-composer-state" aria-live="polite"></div>
+      </form>
       <div class="stream-list" id="stream-list" aria-live="polite"></div>
     </section>
 

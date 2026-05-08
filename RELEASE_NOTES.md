@@ -27,3 +27,10 @@
 - Added append-only local events, local messages, contacts, identities seen, drafts, settings, subscriptions, and pending outbound queue stores.
 - Added encrypted backup export/import using browser Web Crypto PBKDF2 and AES-GCM.
 - Moved browser private state away from `localStorage`.
+
+### Feed System
+
+- Added signed text-only `sudo_feed_post` protocol objects.
+- Added explicit feed visibility modes for public, unlisted, restricted, close-connection, and public-metadata/encrypted-body posts.
+- Added SQLite feed post persistence, soft-delete tombstones, author feed routes, and RSS-style public/unlisted publishing.
+- Added a minimal portal composer and chronological author feed display.

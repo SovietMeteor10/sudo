@@ -1,7 +1,9 @@
 import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
+  createFeedPost,
   fingerprintPublicKey,
+  listUserFeedPosts,
   lookupHandle,
   normalizeLookupInput,
   recoverDevHandle,
@@ -39,6 +41,12 @@ import type { ChatSummary, IdentityDocument, LocalIdentity, SearchResult, Search
 const shell = getRequiredElement("app-shell");
 const identityRoot = getRequiredElement("identity-pane-body");
 const streamRoot = getRequiredElement("stream-list");
+const feedComposer = getRequiredForm("feed-composer");
+const feedBodyInput = getRequiredTextArea("feed-body");
+const feedVisibilityInput = getRequiredSelect("feed-visibility");
+const feedTitleInput = getRequiredInput("feed-title");
+const feedTagsInput = getRequiredInput("feed-tags");
+const feedComposerState = getRequiredElement("feed-composer-state");
 const lookupRoot = getRequiredElement("lookup-result");
 const searchResultsRoot = getRequiredElement("search-results");
 const chatsRoot = getRequiredElement("chat-list");
@@ -95,6 +103,7 @@ let signupState: SignupState = { status: "idle" };
 let signinState: SigninState = { status: "idle" };
 let searchState: SearchState = { status: "idle" };
 let currentIdentity: LocalIdentity = localIdentity;
+let currentIdentityDocument: IdentityDocument | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -132,6 +141,11 @@ searchInput.addEventListener("input", () => {
   }
 
   scheduleSearch(value);
+});
+
+feedComposer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitFeedPost();
 });
 
 signupCancel.addEventListener("click", () => {
@@ -455,6 +469,78 @@ async function refreshLocalStorageStatus(): Promise<void> {
   localStateStatus.textContent = `local storage: ${status.messages} messages, ${status.contacts} contacts, ${status.events} events, ${status.pending_outbound} queued`;
 }
 
+async function refreshFeedPosts(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    renderStream(streamRoot);
+    return;
+  }
+
+  try {
+    const posts = await listUserFeedPosts(currentIdentityDocument.canonical_id);
+    renderStream(streamRoot, posts);
+  } catch {
+    renderStream(streamRoot);
+  }
+}
+
+async function submitFeedPost(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    feedComposerState.textContent = "sign in before posting";
+    return;
+  }
+
+  const visibility = feedVisibilityInput.value;
+  if (!isFeedVisibility(visibility)) {
+    feedComposerState.textContent = "invalid visibility";
+    return;
+  }
+
+  const body = feedBodyInput.value.trim();
+  const title = feedTitleInput.value.trim();
+  const tags = feedTagsInput.value
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter((tag) => tag.length > 0);
+
+  if (body.length === 0 && title.length === 0) {
+    feedComposerState.textContent = "write a body or title";
+    return;
+  }
+
+  feedComposerState.textContent = "posting...";
+
+  try {
+    await createFeedPost({
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility,
+      body: visibility === "public_metadata_encrypted_body" ? undefined : body,
+      encrypted_body: visibility === "public_metadata_encrypted_body"
+        ? `dev-placeholder:${btoa(unescape(encodeURIComponent(body || title)))}`
+        : undefined,
+      public_metadata: {
+        title: title.length === 0 ? undefined : title,
+        summary: visibility === "public_metadata_encrypted_body" && body.length > 0
+          ? body.slice(0, 160)
+          : undefined,
+        tags
+      },
+      // DEV ONLY: until group keys exist, the composer posts close_connections
+      // to the author's own canonical ID so the backend enforces an explicit list.
+      allowed_recipients: visibility === "close_connections"
+        ? [currentIdentityDocument.canonical_id]
+        : undefined
+    });
+    feedBodyInput.value = "";
+    feedTitleInput.value = "";
+    feedTagsInput.value = "";
+    feedComposerState.textContent = "posted";
+    await refreshFeedPosts();
+  } catch (error) {
+    feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
+  }
+}
+
 async function exportEncryptedBackup(): Promise<void> {
   const passphrase = prompt("Backup passphrase. This never leaves this browser.");
   if (passphrase === null || passphrase.length === 0) {
@@ -511,6 +597,7 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
 }
 
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
+  currentIdentityDocument = identity;
   currentIdentity = {
     handle: identity.handle,
     bio: "local-dev identity",
@@ -520,6 +607,7 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
     fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
   };
   renderIdentityPane(identityRoot, currentIdentity);
+  void refreshFeedPosts();
 }
 
 function getIdentityPublicKey(identity: IdentityDocument): string {
@@ -661,6 +749,7 @@ function setSignedIn(handle: string): void {
 
 function setSignedOut(): void {
   authSequence++;
+  currentIdentityDocument = null;
   document.body.dataset["authState"] = "signed-out";
   currentIdentity = localIdentity;
   renderIdentityPane(identityRoot, currentIdentity);
@@ -814,6 +903,12 @@ function getRequiredInput(id: string): HTMLInputElement {
   return element;
 }
 
+function getRequiredTextArea(id: string): HTMLTextAreaElement {
+  const element = document.getElementById(id);
+  if (!(element instanceof HTMLTextAreaElement)) throw new Error(`Missing textarea #${id}`);
+  return element;
+}
+
 function getRequiredButton(id: string): HTMLButtonElement {
   const element = document.getElementById(id);
   if (!(element instanceof HTMLButtonElement)) throw new Error(`Missing button #${id}`);
@@ -830,4 +925,12 @@ function getRequiredDialog(id: string): HTMLDialogElement {
   const element = document.getElementById(id);
   if (!(element instanceof HTMLDialogElement)) throw new Error(`Missing dialog #${id}`);
   return element;
+}
+
+function isFeedVisibility(value: string): value is "connections_only" | "close_connections" | "unlisted" | "public" | "public_metadata_encrypted_body" {
+  return value === "connections_only"
+    || value === "close_connections"
+    || value === "unlisted"
+    || value === "public"
+    || value === "public_metadata_encrypted_body";
 }
