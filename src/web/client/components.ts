@@ -105,9 +105,13 @@ export function renderSignupState(root: HTMLElement, state: SignupState): void {
   root.replaceChildren(
     block("signup-result", [
       line(`created ${state.identity.handle}`),
-      line("account recovery code:", "signup-result__label"),
-      line(state.backupCode, "signup-result__secret"),
-      line("shown once. store it somewhere safe. the server only keeps a hash.", "is-muted"),
+      ...(state.backupCode.length === 0
+        ? [line("save your recovery information in the panel below.", "is-muted")]
+        : [
+            line("account recovery code:", "signup-result__label"),
+            line(state.backupCode, "signup-result__secret"),
+            line("shown once. store it somewhere safe. the server only keeps a hash.", "is-muted")
+          ]),
       line(`fingerprint: ${state.fingerprint.slice(0, 12)}...`, "is-muted"),
     ]),
   );

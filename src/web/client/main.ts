@@ -108,26 +108,32 @@ const signupForm = getRequiredForm("signup-form");
 const signupInput = getRequiredInput("signup-handle");
 const signupPasswordInput = getRequiredInput("signup-password");
 const signupPasswordConfirmInput = getRequiredInput("signup-password-confirm");
-const signupRecoveryPromptInput = getRequiredSelect("signup-recovery-prompt");
-const signupRecoveryPhraseInput = getRequiredInput("signup-recovery-phrase");
 const signupStateRoot = getRequiredElement("signup-state");
 const signupPasskeySupport = getRequiredElement("signup-passkey-support");
 const signinCancel = getRequiredButton("signin-cancel");
 const signinDialog = getRequiredDialog("signin-dialog");
 const signinForm = getRequiredForm("signin-form");
-const signinPasswordFields = getRequiredElement("signin-password-fields");
-const signinRecoveryFields = getRequiredElement("signin-recovery-fields");
 const signinHandleInput = getRequiredInput("signin-handle");
 const signinPasswordInput = getRequiredInput("signin-password");
-const signinRecoverMode = getRequiredButton("signin-recover-mode");
-const signinPasswordMode = getRequiredButton("signin-password-mode");
-const recoverHandleInput = getRequiredInput("recover-handle");
-const recoverBackupCodeInput = getRequiredInput("recover-backup-code");
-const recoverQuestionInput = getRequiredSelect("recover-question");
-const recoverAnswerInput = getRequiredInput("recover-answer");
 const signinStateRoot = getRequiredElement("signin-state");
 const signinPasskeySupport = getRequiredElement("signin-passkey-support");
 const signinSubmit = getRequiredButton("signin-submit");
+const restoreCancel = getRequiredButton("restore-cancel");
+const restoreDialog = getRequiredDialog("restore-dialog");
+const restoreForm = getRequiredForm("restore-form");
+const restoreModeRecovery = getRequiredButton("restore-mode-recovery");
+const restoreModeFile = getRequiredButton("restore-mode-file");
+const restoreRecoveryFields = getRequiredElement("restore-recovery-fields");
+const restoreFileFields = getRequiredElement("restore-file-fields");
+const restoreHandleInput = getRequiredInput("restore-handle");
+const restoreBackupCodeInput = getRequiredInput("restore-backup-code");
+const restoreQuestionInput = getRequiredSelect("restore-question");
+const restoreAnswerInput = getRequiredInput("restore-answer");
+const restoreFileInput = getRequiredInput("restore-file");
+const restorePassphraseInput = getRequiredInput("restore-passphrase");
+const restoreStateRoot = getRequiredElement("restore-state");
+const restorePasskeySupport = getRequiredElement("restore-passkey-support");
+const restoreSubmit = getRequiredButton("restore-submit");
 const recoveryPanel = getRequiredElement("recovery-panel");
 const recoveryPanelSecret = getRequiredElement("recovery-panel-secret");
 const backupCodeCopy = getRequiredButton("backup-code-copy");
@@ -141,17 +147,16 @@ const deviceLinkStart = getRequiredButton("device-link-start");
 const deviceLinkComplete = getRequiredButton("device-link-complete");
 const devicePairingCode = getRequiredInput("device-pairing-code");
 const devicePanelFeedback = getRequiredElement("device-panel-feedback");
-const cryptoAccountCreate = getRequiredButton("crypto-account-create");
 const cryptoAccountUnlock = getRequiredButton("crypto-account-unlock");
 const cryptoAccountLock = getRequiredButton("crypto-account-lock");
 const backupExport = getRequiredButton("backup-export");
 const backupImport = getRequiredButton("backup-import");
-const backupImportFile = getRequiredInput("backup-import-file");
 const localStateClear = getRequiredButton("local-state-clear");
 const localMaintenanceFeedback = getRequiredElement("local-maintenance-feedback");
 const tabButtons = [...document.querySelectorAll("[data-tab-target]")];
 const authActionButtons = [...document.querySelectorAll("[data-auth-action]")];
 const headerAuthActionButtons = [...document.querySelectorAll(".header-auth [data-auth-action]")];
+const landingBrand = getRequiredButton("landing-brand");
 
 const passkeyAccessProvider = new BrowserPasskeyAccessProvider();
 
@@ -176,7 +181,14 @@ let activeLookup: AbortController | null = null;
 let activeSearch: AbortController | null = null;
 let searchDebounce: number | null = null;
 let authSequence = 0;
-let signinMode: "password" | "recovery" = "password";
+let authView: "menu" | "signin" | "signup" | "restore" | "signed-in" = "menu";
+let restoreMode: "recovery" | "file" = "recovery";
+let brandFlickerTimeout: number | null = null;
+let brandFlickerTick: number | null = null;
+let brandFlickerActive = false;
+const brandLabel = "sudo";
+const brandFlickerPool = ["σ", "δ", "с", "д", "す", "ド", "س", "ו", "द", "ο", "そ", "ス", "ا", "א"];
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 renderIdentityPane(identityRoot, currentIdentity);
 renderLookupResult(lookupRoot, lookupState);
@@ -186,6 +198,7 @@ renderChatList(chatsRoot, localChats);
 renderDiscoveryPanel(discoveryRoot, discoveryState, null);
 renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
+landingBrand.textContent = brandLabel;
 syncActivePane("stream");
 void initializeLocalRuntime();
 void refreshNodeDocument();
@@ -255,7 +268,12 @@ signupCancel.addEventListener("click", () => {
   signupDialog.close();
 });
 
-signupDialog.addEventListener("close", clearSignupForm);
+signupDialog.addEventListener("close", () => {
+  clearSignupForm();
+  if (authView !== "signed-in") {
+    setAuthView("menu");
+  }
+});
 
 signupForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -263,7 +281,7 @@ signupForm.addEventListener("submit", (event) => {
     signupInput.value,
     signupPasswordInput.value,
     signupPasswordConfirmInput.value,
-    signupRecoveryPhraseInput.value
+    ""
   );
 });
 
@@ -271,24 +289,36 @@ signinCancel.addEventListener("click", () => {
   signinDialog.close();
 });
 
-signinDialog.addEventListener("close", clearSigninForm);
-
-signinForm.addEventListener("submit", (event) => {
-  event.preventDefault();
-  if (signinMode === "password") {
-    void runSignin(signinHandleInput.value, signinPasswordInput.value);
-  } else {
-    void runRecover(
-      recoverHandleInput.value,
-      recoverBackupCodeInput.value,
-      recoverQuestionInput.value,
-      recoverAnswerInput.value
-    );
+signinDialog.addEventListener("close", () => {
+  clearSigninForm();
+  if (authView !== "signed-in") {
+    setAuthView("menu");
   }
 });
 
-signinRecoverMode.addEventListener("click", () => setSigninMode("recovery"));
-signinPasswordMode.addEventListener("click", () => setSigninMode("password"));
+signinForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runSignin(signinHandleInput.value, signinPasswordInput.value);
+});
+
+restoreCancel.addEventListener("click", () => {
+  restoreDialog.close();
+});
+
+restoreDialog.addEventListener("close", () => {
+  clearRestoreForm();
+  if (authView !== "signed-in") {
+    setAuthView("menu");
+  }
+});
+
+restoreForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void submitRestoreAccount();
+});
+
+restoreModeRecovery.addEventListener("click", () => setRestoreMode("recovery"));
+restoreModeFile.addEventListener("click", () => setRestoreMode("file"));
 
 recoveryAck.addEventListener("change", () => {
   syncRecoveryDismissState();
@@ -312,11 +342,7 @@ backupExport.addEventListener("click", () => {
 });
 
 backupImport.addEventListener("click", () => {
-  backupImportFile.click();
-});
-
-backupImportFile.addEventListener("change", () => {
-  void importSelectedBackup();
+  openRestoreDialog();
 });
 
 deviceLinkStart.addEventListener("click", () => {
@@ -327,12 +353,8 @@ deviceLinkComplete.addEventListener("click", () => {
   void completePairingFlow();
 });
 
-cryptoAccountCreate.addEventListener("click", () => {
-  void createCryptographicAccountFlow();
-});
-
 cryptoAccountUnlock.addEventListener("click", () => {
-  void unlockLocalKeysFlow();
+  openSigninDialog();
 });
 
 cryptoAccountLock.addEventListener("click", () => {
@@ -348,11 +370,29 @@ for (const button of authActionButtons) {
   button.addEventListener("click", () => {
     if (button.dataset["authAction"] === "signup") {
       openSignupDialog();
+    } else if (button.dataset["authAction"] === "restore") {
+      openRestoreDialog();
     } else {
       openSigninDialog();
     }
   });
 }
+
+landingBrand.addEventListener("mouseenter", () => {
+  void startBrandFlicker();
+});
+
+landingBrand.addEventListener("focus", () => {
+  void startBrandFlicker();
+});
+
+landingBrand.addEventListener("mouseleave", () => {
+  stopBrandFlicker();
+});
+
+landingBrand.addEventListener("blur", () => {
+  stopBrandFlicker();
+});
 
 logoutButton.addEventListener("click", logout);
 
@@ -473,7 +513,7 @@ async function runSignup(
   if (password !== passwordConfirm) {
     setSignupState({
       status: "error",
-      message: "passwords do not match",
+      message: "passphrases do not match",
     });
     return;
   }
@@ -511,11 +551,12 @@ async function runSignup(
     currentCryptoAccount = draft.account;
     currentDeviceId = trustedDevice.device_id;
     setCurrentIdentity(identity, fingerprint);
-    setSignupState({ status: "created", identity, fingerprint, backupCode: "account created on this device" });
+    setSignupState({ status: "created", identity, fingerprint, backupCode: "" });
     signupDialog.close();
     setSignedIn(identity.handle);
     localMaintenanceFeedback.textContent = "account created";
     syncActivePane("identity");
+    showRecoveryPanel("");
     await syncCurrentDeviceToServer(trustedDevice);
   } catch (error) {
     setSignupState({
@@ -533,7 +574,7 @@ function setSignupState(nextState: SignupState): void {
 async function runSignin(rawHandle: string, password: string): Promise<void> {
   const handle = normalizeLookupInput(rawHandle);
   if (handle.length === 0 || password.length === 0) {
-    setSigninState({ status: "error", message: "handle and password are required" });
+    setSigninState({ status: "error", message: "handle and passphrase are required" });
     return;
   }
 
@@ -604,13 +645,59 @@ async function runRecover(
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
     setCurrentIdentity(result.identity, fingerprint);
     setSigninState({ status: "signed_in", identity: result.identity });
-    signinDialog.close();
     setSignedIn(result.identity.handle);
     syncActivePane("identity");
   } catch (error) {
     setSigninState({
       status: "error",
       message: error instanceof Error ? error.message : "recovery failed",
+    });
+  }
+}
+
+async function submitRestoreAccount(): Promise<void> {
+  if (restoreMode === "file") {
+    const file = restoreFileInput.files?.[0];
+    const passphrase = restorePassphraseInput.value.trim();
+    if (file === undefined) {
+      setRestoreState({ status: "error", message: "choose a backup file" });
+      return;
+    }
+    if (passphrase.length === 0) {
+      setRestoreState({ status: "error", message: "enter the backup passphrase" });
+      return;
+    }
+
+    setRestoreState({ status: "loading" });
+    try {
+      await importSelectedBackup(file, passphrase);
+      restoreDialog.close();
+      localMaintenanceFeedback.textContent = "backup restored";
+    } catch (error) {
+      setRestoreState({
+        status: "error",
+        message: error instanceof Error ? error.message : "restore failed"
+      });
+    }
+    return;
+  }
+
+  const handle = normalizeLookupInput(restoreHandleInput.value);
+  const backupCode = restoreBackupCodeInput.value.trim();
+  const recoveryAnswer = restoreAnswerInput.value.trim();
+  if (handle.length === 0 || backupCode.length === 0 || recoveryAnswer.length === 0) {
+    setRestoreState({ status: "error", message: "handle, recovery code, and recovery answer are required" });
+    return;
+  }
+
+  setRestoreState({ status: "loading" });
+  try {
+    await runRecover(handle, backupCode, restoreQuestionInput.value, recoveryAnswer);
+    restoreDialog.close();
+  } catch (error) {
+    setRestoreState({
+      status: "error",
+      message: error instanceof Error ? error.message : "restore failed"
     });
   }
 }
@@ -1092,16 +1179,6 @@ async function submitFeedPost(): Promise<void> {
   }
 }
 
-async function createCryptographicAccountFlow(): Promise<void> {
-  openSignupDialog();
-  localMaintenanceFeedback.textContent = "fill in the create account form";
-}
-
-async function unlockLocalKeysFlow(): Promise<void> {
-  openSigninDialog();
-  localMaintenanceFeedback.textContent = "unlock your account from the sign-in form";
-}
-
 async function lockLocalKeysFlow(): Promise<void> {
   lockBrowserCryptoAccount();
   currentCryptoAccount = null;
@@ -1133,17 +1210,7 @@ async function exportEncryptedBackup(): Promise<void> {
   }
 }
 
-async function importSelectedBackup(): Promise<void> {
-  const file = backupImportFile.files?.[0];
-  backupImportFile.value = "";
-  if (file === undefined) return;
-
-  const passphrase = prompt("Backup passphrase. This never leaves this browser.");
-  if (passphrase === null || passphrase.length === 0) {
-    localMaintenanceFeedback.textContent = "import cancelled";
-    return;
-  }
-
+async function importSelectedBackup(file: File, passphrase: string): Promise<void> {
   try {
     const backup = JSON.parse(await file.text()) as EncryptedSudoBackup;
     await importEncryptedBackup(backup, passphrase);
@@ -1336,7 +1403,13 @@ function getChatCanonical(chat: ChatSummary): string {
   return chat.canonical ?? chat.id;
 }
 
+function setAuthView(view: "menu" | "signin" | "signup" | "restore" | "signed-in"): void {
+  authView = view;
+  document.body.dataset["authState"] = view;
+}
+
 function openSignupDialog(): void {
+  setAuthView("signup");
   setSignupState({ status: "idle" });
   clearSignupForm();
   signupDialog.showModal();
@@ -1344,16 +1417,30 @@ function openSignupDialog(): void {
 }
 
 function openSigninDialog(): void {
+  setAuthView("signin");
   setSigninState({ status: "idle" });
   clearSigninForm();
-  setSigninMode("password");
   signinDialog.showModal();
   signinHandleInput.focus();
 }
 
+function openRestoreDialog(): void {
+  if (authView !== "signed-in") {
+    setAuthView("restore");
+  }
+  clearRestoreForm();
+  setRestoreMode(restoreMode);
+  restoreDialog.showModal();
+  if (restoreMode === "file") {
+    restoreFileInput.focus();
+  } else {
+    restoreHandleInput.focus();
+  }
+}
+
 function setSignedIn(handle: string): void {
   authSequence++;
-  document.body.dataset["authState"] = "signed-in";
+  setAuthView("signed-in");
   headerHandle.textContent = handle;
   logoutButton.hidden = false;
   for (const button of headerAuthActionButtons) {
@@ -1368,7 +1455,7 @@ function setSignedOut(): void {
   currentCryptoAccount = null;
   currentLookupRelationship = null;
   currentLookupSubscription = null;
-  document.body.dataset["authState"] = "signed-out";
+  setAuthView("menu");
   currentIdentity = buildAnonymousIdentityView();
   renderIdentityPane(identityRoot, currentIdentity);
   void refreshDevicePanel();
@@ -1462,6 +1549,10 @@ function logout(): void {
   void clearDevSessionToken().then(refreshLocalStorageStatus);
   clearSignupForm();
   clearSigninForm();
+  clearRestoreForm();
+  signupDialog.close();
+  signinDialog.close();
+  restoreDialog.close();
   setSignedOut();
 }
 
@@ -1475,7 +1566,9 @@ function hideRecoveryPanel(): void {
 
 function showRecoveryPanel(backupCode: string): void {
   recoveryPanelSecret.textContent = backupCode;
-  backupCodeFeedback.textContent = "";
+  backupCodeFeedback.textContent = backupCode.length === 0
+    ? "backup your account or copy your recovery information now"
+    : "";
   recoveryPanel.hidden = false;
   recoveryAck.checked = false;
   syncRecoveryDismissState();
@@ -1515,6 +1608,7 @@ function renderPasskeySupport(): void {
   const support = passkeyAccessProvider.isAvailable() ? "available" : "unavailable";
   signupPasskeySupport.textContent = `passkey support: ${support}`;
   signinPasskeySupport.textContent = `passkey support: ${support}`;
+  restorePasskeySupport.textContent = `restore answer path: ${support}`;
 }
 
 function clearSignupForm(): void {
@@ -1522,7 +1616,6 @@ function clearSignupForm(): void {
   signupInput.value = "";
   signupPasswordInput.value = "";
   signupPasswordConfirmInput.value = "";
-  signupRecoveryPhraseInput.value = "";
   setSignupState({ status: "idle" });
 }
 
@@ -1530,37 +1623,91 @@ function clearSigninForm(): void {
   signinForm.reset();
   signinHandleInput.value = "";
   signinPasswordInput.value = "";
-  recoverHandleInput.value = "";
-  recoverBackupCodeInput.value = "";
-  recoverAnswerInput.value = "";
-  if (signinMode !== "password") setSigninMode("password");
   setSigninState({ status: "idle" });
 }
 
-function setSigninMode(mode: "password" | "recovery"): void {
-  signinMode = mode;
-  signinPasswordFields.hidden = mode !== "password";
-  signinRecoveryFields.hidden = mode !== "recovery";
-  signinSubmit.textContent = mode === "password" ? "sign in" : "recover";
-  signinHandleInput.value = "";
-  signinPasswordInput.value = "";
-  recoverHandleInput.value = "";
-  recoverBackupCodeInput.value = "";
-  recoverAnswerInput.value = "";
-  setSigninState({ status: "idle" });
-  if (mode === "password") {
-    signinHandleInput.focus();
-  } else {
-    recoverHandleInput.focus();
+function clearRestoreForm(): void {
+  restoreForm.reset();
+  restoreHandleInput.value = "";
+  restoreBackupCodeInput.value = "";
+  restoreAnswerInput.value = "";
+  restorePassphraseInput.value = "";
+  restoreFileInput.value = "";
+  setRestoreMode("recovery");
+  setRestoreState({ status: "idle" });
+}
+
+function setRestoreMode(mode: "recovery" | "file"): void {
+  restoreMode = mode;
+  restoreRecoveryFields.hidden = mode !== "recovery";
+  restoreFileFields.hidden = mode !== "file";
+  restoreModeRecovery.classList.toggle("is-active", mode === "recovery");
+  restoreModeFile.classList.toggle("is-active", mode === "file");
+  restoreSubmit.textContent = mode === "recovery" ? "restore account" : "restore from file";
+}
+
+function setRestoreState(nextState: { status: "idle" } | { status: "loading" } | { status: "error"; message: string } | { status: "ready"; message: string }): void {
+  restoreStateRoot.textContent = nextState.status === "idle"
+    ? ""
+    : nextState.status === "loading"
+      ? "working..."
+      : nextState.message;
+  restoreStateRoot.classList.toggle("is-danger", nextState.status === "error");
+}
+
+function startBrandFlicker(): void {
+  if (reducedMotionQuery.matches || brandFlickerActive) return;
+  brandFlickerActive = true;
+  scheduleBrandFlicker();
+}
+
+function stopBrandFlicker(): void {
+  brandFlickerActive = false;
+  if (brandFlickerTimeout !== null) {
+    window.clearTimeout(brandFlickerTimeout);
+    brandFlickerTimeout = null;
   }
+  if (brandFlickerTick !== null) {
+    window.clearTimeout(brandFlickerTick);
+    brandFlickerTick = null;
+  }
+  landingBrand.textContent = brandLabel;
+}
+
+function scheduleBrandFlicker(): void {
+  if (!brandFlickerActive || reducedMotionQuery.matches) {
+    stopBrandFlicker();
+    return;
+  }
+
+  const delay = 220 + Math.floor(Math.random() * 640);
+  brandFlickerTimeout = window.setTimeout(() => {
+    if (!brandFlickerActive || reducedMotionQuery.matches) {
+      stopBrandFlicker();
+      return;
+    }
+
+    if (Math.random() < 0.36) {
+      const index = Math.floor(Math.random() * brandLabel.length);
+      const char = brandFlickerPool[Math.floor(Math.random() * brandFlickerPool.length)] ?? brandLabel[index];
+      const chars = brandLabel.split("");
+      chars[index] = char.slice(0, 1);
+      landingBrand.textContent = chars.join("");
+      brandFlickerTick = window.setTimeout(() => {
+        if (brandFlickerActive) landingBrand.textContent = brandLabel;
+      }, 54 + Math.floor(Math.random() * 70));
+    }
+
+    scheduleBrandFlicker();
+  }, delay);
 }
 
 function validatePassword(password: string): string | null {
-  if (password.length < 12) return "password must be at least 12 characters";
-  if (!/[A-Z]/.test(password)) return "password needs an uppercase letter";
-  if (!/[a-z]/.test(password)) return "password needs a lowercase letter";
-  if (!/[0-9]/.test(password)) return "password needs a number";
-  if (!/[^A-Za-z0-9]/.test(password)) return "password needs a symbol";
+  if (password.length < 12) return "passphrase must be at least 12 characters";
+  if (!/[A-Z]/.test(password)) return "passphrase needs an uppercase letter";
+  if (!/[a-z]/.test(password)) return "passphrase needs a lowercase letter";
+  if (!/[0-9]/.test(password)) return "passphrase needs a number";
+  if (!/[^A-Za-z0-9]/.test(password)) return "passphrase needs a symbol";
   return null;
 }
 

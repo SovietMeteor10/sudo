@@ -32,10 +32,13 @@
 
   <section class="landing" id="landing-screen" aria-label="sudo sign in">
     <div class="landing__inner">
-      <div class="landing__brand">sudo</div>
+      <button class="landing__brand" id="landing-brand" type="button" aria-label="sudo">sudo</button>
       <div class="landing__actions">
-        <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
-        <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
+        <div class="landing__row">
+          <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
+          <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
+        </div>
+        <button class="auth-link landing__restore" type="button" data-auth-action="restore">restore account</button>
       </div>
     </div>
   </section>
@@ -111,8 +114,8 @@
   <dialog class="signup-dialog signup-dialog--signup" id="signup-dialog" aria-labelledby="signup-title">
     <form class="signup-dialog__panel" id="signup-form" method="dialog" autocomplete="off" data-lpignore="true">
       <div class="signup-dialog__title" id="signup-title">create account</div>
-      <p class="signup-dialog__warning">Your account lives on this device.</p>
-      <label class="signup-dialog__label" for="signup-handle">handle</label>
+      <p class="signup-dialog__warning">create your sudo account. your data stays on your devices.</p>
+      <label class="signup-dialog__label" for="signup-handle">username / handle</label>
       <input
         id="signup-handle"
         class="lookup__input"
@@ -150,42 +153,12 @@
           >
         </div>
       </div>
-      <div class="signup-dialog__grid" hidden>
-        <div>
-          <label class="signup-dialog__label" for="signup-recovery-prompt">recovery question</label>
-          <select class="signup-dialog__select" id="signup-recovery-prompt" name="recoveryPrompt">
-            <option>first computer you loved</option>
-            <option>favourite useless object</option>
-            <option>phrase only you would know</option>
-            <option>name of a place you made up</option>
-            <option>childhood nickname for something</option>
-            <option>first fictional world you obsessed over</option>
-            <option>weirdest object on your desk</option>
-            <option>private sentence you can remember</option>
-          </select>
-        </div>
-        <div>
-          <label class="signup-dialog__label" for="signup-recovery-phrase">recovery answer</label>
-          <input
-            id="signup-recovery-phrase"
-            class="lookup__input"
-            name="sudo-recovery-answer"
-            placeholder="do not reuse a real password"
-            autocomplete="new-password"
-            data-lpignore="true"
-            data-1p-ignore="true"
-            spellcheck="false"
-            autocapitalize="none"
-          >
-        </div>
-      </div>
       <div class="signup-dialog__hint">3-32 chars: letters, numbers, underscore</div>
       <div class="signup-dialog__hint">passphrase: 12+ chars with uppercase, lowercase, number, symbol</div>
       <div class="signup-dialog__hint" id="signup-passkey-support">device support: checking</div>
-      <div class="signup-dialog__hint">You can link another device later.</div>
       <div class="signup-dialog__state" id="signup-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
-        <button class="text-button" id="signup-cancel" type="button">cancel</button>
+        <button class="text-button" id="signup-cancel" type="button">back</button>
         <button class="text-button text-button--primary" type="submit">create account</button>
       </div>
     </form>
@@ -194,9 +167,8 @@
   <dialog class="signup-dialog" id="signin-dialog" aria-labelledby="signin-title">
     <form class="signup-dialog__panel" id="signin-form" method="dialog" autocomplete="off" data-lpignore="true">
       <div class="signup-dialog__title" id="signin-title">sign in</div>
-      <p class="signup-dialog__warning">Use your handle and passphrase.</p>
-      <div class="signin-password-fields" id="signin-password-fields">
-      <label class="signup-dialog__label" for="signin-handle">handle</label>
+      <p class="signup-dialog__warning">unlock your sudo account on this device.</p>
+      <label class="signup-dialog__label" for="signin-handle">handle or username</label>
       <input
         id="signin-handle"
         class="lookup__input"
@@ -206,7 +178,7 @@
         spellcheck="false"
         autocapitalize="none"
       >
-      <label class="signup-dialog__label" for="signin-password">password</label>
+      <label class="signup-dialog__label" for="signin-password">passphrase</label>
       <input
         id="signin-password"
         class="lookup__input"
@@ -216,30 +188,31 @@
         spellcheck="false"
         autocapitalize="none"
       >
-      <button class="auth-link signup-dialog__mode" id="signin-recover-mode" type="button">recover account</button>
+      <div class="signup-dialog__hint" id="signin-passkey-support">device support: checking</div>
+      <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="signin-cancel" type="button">back</button>
+        <button class="text-button text-button--primary" id="signin-submit" type="submit">sign in</button>
       </div>
-      <div class="signin-recovery-fields" id="signin-recovery-fields" hidden>
-        <label class="signup-dialog__label" for="recover-handle">handle</label>
-        <input
-          id="recover-handle"
-          class="lookup__input"
-          name="sudo-recover-handle"
-          placeholder="@username"
-          autocomplete="off"
-          spellcheck="false"
-          autocapitalize="none"
-        >
-        <label class="signup-dialog__label" for="recover-backup-code">account recovery code</label>
-        <input
-          id="recover-backup-code"
-          class="lookup__input"
-          name="sudo-backup-code"
-          autocomplete="new-password"
-          spellcheck="false"
-          autocapitalize="none"
-        >
-        <label class="signup-dialog__label" for="recover-question">recovery question</label>
-        <select class="signup-dialog__select" id="recover-question" name="sudo-recovery-question">
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog" id="restore-dialog" aria-labelledby="restore-title">
+    <form class="signup-dialog__panel" id="restore-form" method="dialog" autocomplete="off" data-lpignore="true">
+      <div class="signup-dialog__title" id="restore-title">restore account</div>
+      <p class="signup-dialog__warning">restore your sudo account on this device.</p>
+      <div class="signup-dialog__hint">choose recovery or backup file.</div>
+      <div class="restore-tabs" role="tablist" aria-label="restore mode">
+        <button class="lookup-card__button is-active" id="restore-mode-recovery" type="button" data-restore-mode="recovery">recovery</button>
+        <button class="lookup-card__button" id="restore-mode-file" type="button" data-restore-mode="file">backup file</button>
+      </div>
+      <div class="restore-panel" id="restore-recovery-fields">
+        <label class="signup-dialog__label" for="restore-handle">handle or username</label>
+        <input id="restore-handle" class="lookup__input" name="restore-handle" placeholder="@username" autocomplete="off" spellcheck="false" autocapitalize="none">
+        <label class="signup-dialog__label" for="restore-backup-code">recovery code</label>
+        <input id="restore-backup-code" class="lookup__input" name="restore-backup-code" autocomplete="new-password" spellcheck="false" autocapitalize="none">
+        <label class="signup-dialog__label" for="restore-question">recovery question</label>
+        <select class="signup-dialog__select" id="restore-question" name="restore-question">
           <option>first computer you loved</option>
           <option>favourite useless object</option>
           <option>phrase only you would know</option>
@@ -249,35 +222,35 @@
           <option>weirdest object on your desk</option>
           <option>private sentence you can remember</option>
         </select>
-        <label class="signup-dialog__label" for="recover-answer">recovery answer</label>
-        <input
-          id="recover-answer"
-          class="lookup__input"
-          name="sudo-recovery-answer"
-          autocomplete="new-password"
-          spellcheck="false"
-          autocapitalize="none"
-        >
-        <button class="auth-link signup-dialog__mode" id="signin-password-mode" type="button">back to password sign in</button>
+        <label class="signup-dialog__label" for="restore-answer">recovery answer</label>
+        <input id="restore-answer" class="lookup__input" name="restore-answer" autocomplete="new-password" spellcheck="false" autocapitalize="none">
       </div>
-      <div class="signup-dialog__hint" id="signin-passkey-support">device support: checking</div>
-      <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
+      <div class="restore-panel" id="restore-file-fields" hidden>
+        <label class="signup-dialog__label" for="restore-file">backup file</label>
+        <input id="restore-file" class="lookup__input" type="file" accept=".json,.sudo-backup.json,application/json">
+        <label class="signup-dialog__label" for="restore-passphrase">backup passphrase</label>
+        <input id="restore-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="none">
+      </div>
+      <div class="signup-dialog__hint" id="restore-passkey-support">recovery answer restore is still a development path. use backup file restore for now.</div>
+      <div class="signup-dialog__state" id="restore-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
-        <button class="text-button" id="signin-cancel" type="button">cancel</button>
-        <button class="text-button text-button--primary" id="signin-submit" type="submit">sign in</button>
+        <button class="text-button" id="restore-cancel" type="button">back</button>
+        <button class="text-button text-button--primary" id="restore-submit" type="submit">restore account</button>
       </div>
     </form>
   </dialog>
 
   <section class="recovery-panel" id="recovery-panel" hidden aria-labelledby="recovery-panel-title">
     <div class="recovery-panel__inner">
-      <div class="signup-dialog__title" id="recovery-panel-title">account recovery code</div>
+      <div class="signup-dialog__title" id="recovery-panel-title">save your recovery information</div>
       <div class="backup-code-row">
         <div class="signup-result__secret" id="recovery-panel-secret" tabindex="-1"></div>
         <button class="text-button backup-code-copy" id="backup-code-copy" type="button" aria-label="copy recovery code">⧉</button>
       </div>
       <div class="backup-code-feedback" id="backup-code-feedback" aria-live="polite"></div>
-      <div class="signup-dialog__warning">save this. shown once. dev-only backup.</div>
+      <div class="signup-dialog__warning">your account lives on your devices.</div>
+      <div class="signup-dialog__warning">if you lose your devices and recovery information, your messages cannot be recovered.</div>
+      <div class="signup-dialog__warning">save your backup code or create a backup now.</div>
       <label class="recovery-panel__ack">
         <input id="recovery-ack" type="checkbox">
         I saved this
@@ -288,15 +261,13 @@
 
   <section class="local-maintenance" id="local-maintenance" aria-labelledby="local-maintenance-title">
     <div class="local-maintenance__inner">
-      <div class="signup-dialog__title" id="local-maintenance-title">devices</div>
-      <div class="signup-dialog__warning">Private message history is stored locally on this device.</div>
-      <div class="signup-dialog__warning">This device holds your account unlock material locally.</div>
-      <div class="signup-dialog__warning">If you lose this device and your backup, your messages cannot be recovered.</div>
-      <div class="signup-dialog__hint">Export encrypted backups before clearing browser data.</div>
-      <div class="signup-dialog__hint">Link another device later to keep your account with you.</div>
+      <div class="signup-dialog__title" id="local-maintenance-title">account</div>
+      <div class="signup-dialog__warning">private message history is stored on this device.</div>
+      <div class="signup-dialog__warning">if you lose this device and your backup, your messages cannot be recovered.</div>
+      <div class="signup-dialog__hint">backup your account before clearing this device.</div>
+      <div class="signup-dialog__hint">link another device later to keep your account with you.</div>
       <div class="local-maintenance__status" id="local-storage-status">device status: checking</div>
       <div class="local-maintenance__actions">
-        <button class="text-button text-button--primary" id="crypto-account-create" type="button">create account</button>
         <button class="text-button" id="crypto-account-unlock" type="button">unlock account</button>
         <button class="text-button" id="crypto-account-lock" type="button">lock account</button>
         <button class="text-button" id="backup-export" type="button">backup account</button>

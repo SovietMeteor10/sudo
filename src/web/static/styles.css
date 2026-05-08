@@ -31,6 +31,21 @@ body {
   overflow: hidden;
 }
 
+body:not([data-auth-state="signed-in"]) .topbar,
+body:not([data-auth-state="signed-in"]) .shell,
+body:not([data-auth-state="signed-in"]) .local-maintenance,
+body:not([data-auth-state="signed-in"]) .recovery-panel {
+  display: none;
+}
+
+body[data-auth-state="signed-in"] .landing,
+body[data-auth-state="auth-signin"] .landing,
+body[data-auth-state="auth-signup"] .landing,
+body[data-auth-state="auth-restore"] .landing {
+  opacity: 0;
+  pointer-events: none;
+}
+
 button,
 input,
 select,
@@ -38,23 +53,8 @@ textarea {
   font: inherit;
 }
 
-body[data-auth-state="restoring"] .topbar,
-body[data-auth-state="restoring"] .landing,
-body[data-auth-state="restoring"] .shell,
-body[data-auth-state="restoring"] .recovery-panel,
-body[data-auth-state="signed-out"] .topbar,
-body[data-auth-state="signed-out"] .shell,
-body[data-auth-state="signed-out"] .recovery-panel {
-  display: none;
-}
-
 body[data-auth-state="signed-in"] .shell {
   animation: app-enter 160ms ease-out;
-}
-
-body[data-auth-state="signed-in"] .landing {
-  opacity: 0;
-  pointer-events: none;
 }
 
 .topbar {
@@ -150,17 +150,57 @@ body[data-auth-state="signed-in"] .landing {
 
 .landing__inner {
   display: grid;
-  gap: 20px;
+  gap: 22px;
   justify-items: center;
+  padding: 28px 22px;
 }
 
 .landing__brand {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
   font-size: 18px;
+  padding: 0;
+  animation: landing-brand-in 220ms ease-out;
+}
+
+.landing__brand:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: 4px;
 }
 
 .landing__actions {
   display: flex;
-  gap: 18px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: min(86vw, 320px);
+  animation: landing-actions-in 240ms ease-out 70ms both;
+}
+
+.landing__row {
+  display: flex;
+  gap: 10px;
+}
+
+.landing__row .auth-link {
+  flex: 1 1 0;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 9px;
+  background: #101211;
+}
+
+.landing__restore {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 9px;
+  background: #101211;
+  color: var(--muted);
+  text-align: center;
 }
 
 .pane {
@@ -557,13 +597,15 @@ body[data-auth-state="signed-in"] .landing {
 }
 
 .signup-dialog__panel {
+  width: min(92vw, 500px);
   padding: 18px;
   max-height: calc(100vh - 48px);
   overflow: auto;
+  animation: auth-card-in 220ms ease-out;
 }
 
 .signup-dialog--signup .signup-dialog__panel {
-  padding: 18px;
+  width: min(760px, calc(100vw - 32px));
 }
 
 .signup-dialog__title {
@@ -635,6 +677,22 @@ body[data-auth-state="signed-in"] .landing {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
+}
+
+.restore-tabs {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0 10px;
+}
+
+.restore-tabs .lookup-card__button.is-active {
+  border-color: var(--focus);
+  color: var(--text);
+}
+
+.restore-panel {
+  display: grid;
+  gap: 8px;
 }
 
 .signup-result__label {
@@ -753,6 +811,10 @@ body[data-auth-state="signed-in"] .landing {
   margin-top: 12px;
 }
 
+.signup-dialog__panel .signup-dialog__warning:last-of-type {
+  margin-bottom: 14px;
+}
+
 #recovery-dismiss {
   transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
 }
@@ -800,7 +862,43 @@ body[data-auth-state="signed-in"] .landing {
   }
 }
 
+@keyframes landing-brand-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes landing-actions-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .landing__brand,
+  .landing__actions,
+  .signup-dialog__panel,
   body[data-auth-state="signed-in"] .shell {
     animation: none;
   }
@@ -840,6 +938,10 @@ body[data-auth-state="signed-in"] .landing {
     padding-right: 14px;
     padding-left: 8px;
     font-size: 13px;
+  }
+
+  .landing__row {
+    flex-direction: column;
   }
 
   .topnav {
