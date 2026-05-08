@@ -49,9 +49,7 @@ import {
 } from "./components.js";
 import {
   clearDevSessionToken,
-  persistLocalChats,
   readDevSessionToken,
-  readLocalChats,
   writeDevSessionToken
 } from "./localState.js";
 import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup } from "./local/backup.js";
@@ -60,7 +58,9 @@ import {
   clearLocalDb,
   getLocalStorageStatus,
   initializeLocalState,
+  listConversations,
   listCryptoAccounts,
+  listLocalMessagesByConversation,
   listTrustedDevices,
   getLocalDeviceMetadata,
   revokeTrustedDevice,
@@ -68,6 +68,7 @@ import {
   saveTrustedDevice,
   upsertContact
 } from "./local/local-store.js";
+import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
 import type {
   ChatSummary,
   ConnectionRelationship,
@@ -496,12 +497,157 @@ window.addEventListener("keydown", (event) => {
 async function initializeLocalRuntime(): Promise<void> {
   try {
     await initializeLocalState();
-    localChats = await readLocalChats();
-    renderChatList(chatsRoot, localChats);
+    await refreshLocalChats();
     await refreshLocalStorageStatus();
     await refreshDevicePanel();
   } catch (error) {
     localStateStatus.textContent = `device status: ${error instanceof Error ? error.message : "unavailable"}`;
+  }
+}
+
+async function refreshLocalChats(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    localChats = [];
+    renderChatList(chatsRoot, localChats);
+    return;
+  }
+  try {
+    const conversations = await listConversations(currentIdentityDocument.canonical_id);
+    localChats = conversations.map((conversation) => ({
+      id: `local-${conversation.canonical}`,
+      canonical: conversation.canonical,
+      handle: conversation.handle && conversation.handle.length > 0
+        ? conversation.handle
+        : conversation.canonical,
+      state: "draft" as const,
+      lastLine: conversation.lastLine,
+      fingerprint: conversation.fingerprint
+    }));
+  } catch {
+    localChats = [];
+  }
+  renderChatList(chatsRoot, localChats);
+}
+
+// ---- inbox polling ---------------------------------------------------------
+const INBOX_POLL_INTERVAL_MS = 5000;
+let inboxPollTimer: number | null = null;
+let inboxPollOwner: string | null = null;
+let inboxInitialPollDone = false;
+let inboxPollInFlight = false;
+
+function startInboxPolling(canonicalId: string): void {
+  stopInboxPolling();
+  inboxPollOwner = canonicalId;
+  inboxInitialPollDone = false;
+  void pollInbox();
+  inboxPollTimer = window.setInterval(() => {
+    void pollInbox();
+  }, INBOX_POLL_INTERVAL_MS);
+}
+
+function stopInboxPolling(): void {
+  if (inboxPollTimer !== null) {
+    window.clearInterval(inboxPollTimer);
+    inboxPollTimer = null;
+  }
+  inboxPollOwner = null;
+  inboxInitialPollDone = false;
+}
+
+async function pollInbox(): Promise<void> {
+  if (inboxPollOwner === null) return;
+  if (currentIdentityDocument === null) return;
+  if (inboxPollOwner !== currentIdentityDocument.canonical_id) return;
+  if (inboxPollInFlight) return;
+  inboxPollInFlight = true;
+  try {
+    const newMessages = await retrieveRelayInboxAfterLocalSave(inboxPollOwner);
+    if (newMessages.length > 0) {
+      await onIncomingMessages(newMessages);
+    }
+  } catch {
+    // network blip; next tick retries
+  } finally {
+    inboxPollInFlight = false;
+    inboxInitialPollDone = true;
+  }
+}
+
+async function onIncomingMessages(messages: import("./local/local-types.js").LocalMessage[]): Promise<void> {
+  // Sender handle may be missing on stored row; surface it on the chat row
+  // by upserting a contact entry so the chat list shows a real handle.
+  for (const message of messages) {
+    if (message.direction !== "received") continue;
+    const handle = message.sender_handle ?? "";
+    if (handle.length > 0) {
+      try {
+        await upsertContact({
+          canonical_id: message.sender_canonical_id,
+          handle,
+          tier: "unknown",
+          added_at: message.created_at,
+          updated_at: message.updated_at
+        });
+      } catch {
+        // contact upsert is best-effort
+      }
+    }
+  }
+
+  await refreshLocalChats();
+
+  const lastReceived = [...messages]
+    .filter((message) => message.direction === "received")
+    .sort((left, right) => left.created_at.localeCompare(right.created_at))
+    .pop();
+
+  if (lastReceived !== undefined) {
+    const senderCanonical = lastReceived.sender_canonical_id;
+    const senderHandle = lastReceived.sender_handle ?? localChats.find((chat) => chat.canonical === senderCanonical)?.handle ?? senderCanonical;
+    const senderFingerprint = localChats.find((chat) => chat.canonical === senderCanonical)?.fingerprint ?? "";
+
+    if (chatTarget !== null && chatTarget.canonical === senderCanonical) {
+      await renderChatPopupBody(senderCanonical);
+    } else {
+      await openChatPopup({ canonical: senderCanonical, handle: senderHandle, fingerprint: senderFingerprint });
+    }
+
+    // Only beep on truly new messages within an active session, never during
+    // the initial historical fetch right after sign-in.
+    if (inboxInitialPollDone) {
+      void playIncomingMessageSound();
+    }
+  }
+}
+
+// ---- notification sound ----------------------------------------------------
+let audioContext: AudioContext | null = null;
+function playIncomingMessageSound(): void {
+  try {
+    const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (Ctor === undefined) return;
+    if (audioContext === null) audioContext = new Ctor();
+    if (audioContext.state === "suspended") {
+      // Browser autoplay policy: only resume after a user gesture; silently
+      // skip otherwise.
+      void audioContext.resume().catch(() => null);
+      if (audioContext.state === "suspended") return;
+    }
+    const ctx = audioContext;
+    const oscillator = ctx.createOscillator();
+    const gain = ctx.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.12);
+    oscillator.connect(gain);
+    gain.connect(ctx.destination);
+    oscillator.start();
+    oscillator.stop(ctx.currentTime + 0.13);
+  } catch {
+    // never break the app over a sound
   }
 }
 
@@ -1410,8 +1556,7 @@ async function importSelectedBackup(file: File, passphrase: string): Promise<voi
   try {
     const backup = JSON.parse(await file.text()) as EncryptedSudoBackup;
     await importEncryptedBackup(backup, passphrase);
-    localChats = await readLocalChats();
-    renderChatList(chatsRoot, localChats);
+    await refreshLocalChats();
     await refreshLocalStorageStatus();
     flashFeedback("encrypted backup imported");
   } catch {
@@ -1524,19 +1669,7 @@ function toggleChatTarget(result: SearchResult): void {
 }
 
 async function addChatTarget(result: SearchResult): Promise<void> {
-  localChats = [
-    {
-      id: `local-${result.canonical}`,
-      canonical: result.canonical,
-      handle: result.handle,
-      state: "draft",
-      lastLine: "chat draft",
-      fingerprint: result.fingerprint,
-    },
-    ...localChats,
-  ];
   pendingAddedCanonicals.add(result.canonical);
-  await persistLocalChats(localChats).then(refreshLocalStorageStatus);
   if (currentIdentityDocument !== null) {
     await upsertConnectionRelationship({
       owner_canonical_id: currentIdentityDocument.canonical_id,
@@ -1563,7 +1696,7 @@ async function addChatTarget(result: SearchResult): Promise<void> {
     updated_at: new Date().toISOString(),
     fingerprint: result.fingerprint
   }).then(refreshLocalStorageStatus);
-  renderChatList(chatsRoot, localChats);
+  await refreshLocalChats();
   setSearchState(searchState);
 
   const existingTimer = pendingAddedTimers.get(result.canonical);
@@ -1581,13 +1714,11 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
   if (timer !== undefined) window.clearTimeout(timer);
   pendingAddedTimers.delete(canonical);
   pendingAddedCanonicals.delete(canonical);
-  localChats = localChats.filter((chat) => getChatCanonical(chat) !== canonical);
-  await persistLocalChats(localChats).then(refreshLocalStorageStatus);
   if (currentIdentityDocument !== null) {
     await deleteConnectionRelationship(currentIdentityDocument.canonical_id, canonical);
     await deleteFeedSubscription(currentIdentityDocument.canonical_id, canonical);
   }
-  renderChatList(chatsRoot, localChats);
+  await refreshLocalChats();
   setSearchState(searchState);
 }
 
@@ -1641,6 +1772,10 @@ function setSignedIn(handle: string): void {
   setAuthView("signed-in");
   setAccountButtonHandle(handle);
   closeChatPopup();
+  if (currentIdentityDocument !== null) {
+    void refreshLocalChats();
+    startInboxPolling(currentIdentityDocument.canonical_id);
+  }
 }
 
 function setAccountButtonHandle(handle: string | null): void {
@@ -1671,6 +1806,7 @@ function openDevicesDialog(): void {
 
 function setSignedOut(): void {
   authSequence++;
+  stopInboxPolling();
   currentIdentityDocument = null;
   currentIdentityFingerprint = null;
   currentCryptoAccount = null;
@@ -1679,6 +1815,8 @@ function setSignedOut(): void {
   setAuthView("menu");
   currentIdentity = buildAnonymousIdentityView();
   renderIdentityPane(identityRoot, currentIdentity);
+  localChats = [];
+  renderChatList(chatsRoot, localChats);
   void refreshDevicePanel();
   renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   setAccountButtonHandle(null);
@@ -2048,8 +2186,6 @@ function conversationKey(a: string, b: string): string {
 }
 
 async function listConversationMessages(conversationId: string): Promise<Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }>> {
-  const { listLocalMessagesByConversation } = await import("./local/local-store.js");
-  if (typeof listLocalMessagesByConversation !== "function") return [];
   const records = await listLocalMessagesByConversation(conversationId);
   return records
     .map((record) => ({
@@ -2064,27 +2200,34 @@ async function listConversationMessages(conversationId: string): Promise<Array<{
 async function sendChatPopupMessage(): Promise<void> {
   if (chatTarget === null) return;
   if (currentIdentityDocument === null) {
-    feedComposerState.textContent = "sign in to send messages";
+    flashFeedback("sign in to send messages");
     return;
   }
   const body = chatPopupInput.value.trim();
   if (body.length === 0) return;
+  const target = chatTarget;
   try {
-    const { queueAndSubmitLocalMessage } = await import("./local/relay-local.js");
-    await queueAndSubmitLocalMessage({
+    const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: currentIdentityDocument.canonical_id,
-      recipientCanonicalId: chatTarget.canonical,
+      recipientCanonicalId: target.canonical,
       senderHandle: currentIdentityDocument.handle,
-      recipientHandle: chatTarget.handle,
+      recipientHandle: target.handle,
       body,
       senderAccount: currentCryptoAccount
     });
     chatPopupInput.value = "";
     autoGrowTextarea(chatPopupInput, 28, 120);
-    await renderChatPopupBody(chatTarget.canonical);
+    await renderChatPopupBody(target.canonical);
+    await refreshLocalChats();
+    if (!result.ok) {
+      flashFeedback(`send failed: ${result.error ?? "unknown"}`);
+    }
+    // Trigger an immediate inbox poll so a fast reply lands without a 5s wait.
+    void pollInbox();
   } catch (error) {
     const message = error instanceof Error ? error.message : "send failed";
     chatPopupBody.append(makeChatEmpty(message));
+    flashFeedback(`send failed: ${message}`);
   }
 }
 

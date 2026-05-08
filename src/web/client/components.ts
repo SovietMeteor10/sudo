@@ -1,4 +1,3 @@
-import { streamPosts } from "./data.js";
 import { mountTextSurface, unmountAllTextSurfaces } from "./rendering/textSurface.js";
 import type {
   ChatSummary,
@@ -126,18 +125,14 @@ export function renderSigninState(root: HTMLElement, state: SigninState): void {
 
 export function renderStream(root: HTMLElement, feedPosts: FeedPost[] = []): void {
   unmountAllTextSurfaces();
-  const fragment = document.createDocumentFragment();
-
   if (feedPosts.length === 0) {
-    for (const post of streamPosts) {
-      fragment.append(renderPost(post));
-    }
-  } else {
-    for (const post of feedPosts) {
-      fragment.append(renderFeedPost(post));
-    }
+    root.replaceChildren(line("no posts yet", "lookup__empty"));
+    return;
   }
-
+  const fragment = document.createDocumentFragment();
+  for (const post of feedPosts) {
+    fragment.append(renderFeedPost(post));
+  }
   root.replaceChildren(fragment);
 }
 
@@ -205,20 +200,15 @@ export function renderLookupResult(root: HTMLElement, state: LookupState): void 
 }
 
 export function renderChatList(root: HTMLElement, localChats: ChatSummary[] = []): void {
-  const fragment = document.createDocumentFragment();
-
   if (localChats.length === 0) {
-    root.replaceChildren(line("no connections yet", "lookup__empty"));
+    root.replaceChildren(line("no chats yet", "lookup__empty"));
     return;
   }
-
+  const fragment = document.createDocumentFragment();
   for (const chat of localChats) {
     fragment.append(renderChat(chat));
   }
-
   root.replaceChildren(fragment);
-  // TODO: hydrate active chats from encrypted inbox metadata after recipient authentication exists.
-  // TODO: wire compose/decrypt/send flows to local keys; plaintext must stay client-side only.
 }
 
 export function renderSearchResults(
@@ -378,7 +368,8 @@ function renderChat(chat: ChatSummary): HTMLElement {
   row.className = "chat-row";
   row.tabIndex = 0;
   row.setAttribute("role", "button");
-  row.dataset["chatCanonical"] = chat.canonical;
+  const canonical = chat.canonical ?? chat.id;
+  row.dataset["chatCanonical"] = canonical;
   row.dataset["chatHandle"] = chat.handle;
   if (chat.fingerprint !== undefined) row.dataset["chatFingerprint"] = chat.fingerprint;
 
@@ -386,11 +377,15 @@ function renderChat(chat: ChatSummary): HTMLElement {
   handle.className = "chat-row__handle";
   handle.textContent = chat.handle;
 
-  const preview = document.createElement("div");
-  preview.className = "chat-row__preview";
-  preview.textContent = chat.lastLine;
+  row.append(handle);
 
-  row.append(handle, preview);
+  if (chat.lastLine && chat.lastLine.length > 0) {
+    const preview = document.createElement("div");
+    preview.className = "chat-row__preview";
+    preview.textContent = chat.lastLine;
+    row.append(preview);
+  }
+
   return row;
 }
 

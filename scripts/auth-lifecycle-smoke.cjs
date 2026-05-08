@@ -128,6 +128,21 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     const banned_seen = banned.filter((term) => post.bodyLower.includes(term));
     if (banned_seen.length > 0) fail("post-signup", `banned crypto jargon visible: ${banned_seen.join(", ")}`);
     else ok("3c. no crypto jargon (IndexedDB/PBKDF2/AES-GCM/private key/key vault) in main app");
+
+    const demoNeedles = ["@northcatalog", "@linebreak", "wired the registry", "rss still feels", "finger endpoints", "key continuity"];
+    const demoSeen = demoNeedles.filter((needle) => post.bodyLower.includes(needle.toLowerCase()));
+    if (demoSeen.length > 0) fail("post-signup", `demo content visible: ${demoSeen.join(", ")}`);
+    else ok("3d. no demo posts in fresh feed");
+
+    const streamText = await page.evaluate(() => document.getElementById("stream-list")?.innerText.toLowerCase() ?? "");
+    if (!/no posts yet|sign in/i.test(streamText)) {
+      // OK if a real post the user just posted shows up, but for fresh signup it should be empty.
+      if (streamText.trim().length > 0) fail("post-signup", `fresh feed not empty: '${streamText.slice(0, 200)}'`);
+    } else ok("3e. fresh feed shows 'no posts yet'");
+
+    const chatsText = await page.evaluate(() => document.getElementById("chat-list")?.innerText.toLowerCase() ?? "");
+    if (!/no chats yet/.test(chatsText)) fail("post-signup", `chat list not empty: '${chatsText.slice(0, 200)}'`);
+    else ok("3f. fresh chat list shows 'no chats yet'");
   }
 
   // ===== 4. Sign out / sign in same device =====

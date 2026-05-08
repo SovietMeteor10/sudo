@@ -3,6 +3,7 @@ import type { DeviceSyncEvent, IdentityDocument, RelayEnvelope, RelayEnvelopeSta
 export type LocalEventType =
   | "message.sent.local"
   | "message.received.local"
+  | "message.receive.failed.local"
   | "message.acked.local"
   | "message.failed.local"
   | "contact.added"
@@ -27,6 +28,8 @@ export type LocalMessage = {
   direction: "sent" | "received";
   sender_canonical_id: string;
   recipient_canonical_id: string;
+  sender_handle?: string;
+  recipient_handle?: string;
   body: string;
   ciphertext?: string;
   created_at: string;

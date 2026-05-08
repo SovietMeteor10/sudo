@@ -15,6 +15,7 @@
     "smoke:auth": "node scripts/test-register.cjs",
     "smoke:auth-flow": "node scripts/auth-smoke.cjs",
     "smoke:auth-lifecycle": "node scripts/auth-lifecycle-smoke.cjs",
+    "smoke:chat-lifecycle": "node scripts/chat-lifecycle-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

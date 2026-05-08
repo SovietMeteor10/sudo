@@ -51,6 +51,80 @@ export async function listLocalMessagesByConversation(conversationId: string): P
   });
 }
 
+export async function listLocalMessages(): Promise<LocalMessage[]> {
+  return getAllRecords<LocalMessage>("messages");
+}
+
+export type ConversationSummary = {
+  canonical: string;
+  handle: string;
+  lastLine: string;
+  lastAt: string;
+  fingerprint?: string;
+};
+
+// Build a chat list keyed by conversation partner. Picks the latest local
+// message per conversation (sent or received). Falls back to contacts that
+// have no messages yet so newly-added handles appear immediately.
+export async function listConversations(currentCanonicalId: string): Promise<ConversationSummary[]> {
+  const messages = await getAllRecords<LocalMessage>("messages");
+  const contacts = await getAllRecords<LocalContact>("contacts");
+
+  type Acc = { canonical: string; handle: string; lastLine: string; lastAt: string; fingerprint?: string };
+  const byPartner = new Map<string, Acc>();
+
+  for (const message of messages) {
+    const partner = message.sender_canonical_id === currentCanonicalId
+      ? message.recipient_canonical_id
+      : message.sender_canonical_id;
+    if (partner === currentCanonicalId || partner.length === 0) continue;
+    const fallbackHandle = message.direction === "sent"
+      ? "(unknown)"
+      : "(unknown)";
+    const existing = byPartner.get(partner);
+    const candidate: Acc = {
+      canonical: partner,
+      handle: existing?.handle ?? fallbackHandle,
+      lastLine: previewLine(message.body, message.direction),
+      lastAt: message.updated_at || message.created_at
+    };
+    if (existing === undefined || existing.lastAt < candidate.lastAt) {
+      byPartner.set(partner, { ...existing, ...candidate, handle: existing?.handle ?? candidate.handle });
+    }
+  }
+
+  // Hydrate handles + fingerprints from contacts where possible, and surface
+  // contacts that have no messages yet as empty conversation rows.
+  for (const contact of contacts) {
+    if (contact.tier === "blocked") continue;
+    const partner = contact.canonical_id;
+    if (partner === currentCanonicalId) continue;
+    const existing = byPartner.get(partner);
+    if (existing === undefined) {
+      byPartner.set(partner, {
+        canonical: partner,
+        handle: contact.handle,
+        lastLine: "",
+        lastAt: contact.updated_at ?? contact.added_at ?? "",
+        fingerprint: contact.fingerprint
+      });
+    } else {
+      existing.handle = contact.handle || existing.handle;
+      existing.fingerprint = contact.fingerprint ?? existing.fingerprint;
+    }
+  }
+
+  return [...byPartner.values()].sort((left, right) => right.lastAt.localeCompare(left.lastAt));
+}
+
+function previewLine(body: string, direction: "sent" | "received"): string {
+  const trimmed = (body ?? "").replace(/\s+/g, " ").trim();
+  if (trimmed.length === 0) return direction === "sent" ? "you: (empty)" : "(empty)";
+  const prefix = direction === "sent" ? "you: " : "";
+  const limited = trimmed.length > 80 ? `${trimmed.slice(0, 80)}…` : trimmed;
+  return `${prefix}${limited}`;
+}
+
 export async function savePendingOutbound(outbound: PendingOutbound): Promise<void> {
   await putRecord("pending_outbound", outbound);
 }

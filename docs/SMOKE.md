@@ -155,6 +155,33 @@ SUDO_PORT=3017 node dist/server.js &
 BASE_URL=http://127.0.0.1:3017 npm run smoke:auth-lifecycle
 ```
 
+## Two-account chat lifecycle Puppeteer smoke
+
+`scripts/chat-lifecycle-smoke.cjs` (`npm run smoke:chat-lifecycle`) drives
+two isolated browser contexts through the full chat path:
+
+1. create account A
+2. create account B
+3. assert neither user sees demo posts (no `@northcatalog`, `@linebreak`,
+   "wired the registry", etc.)
+4. assert both users see "no chats yet" before any send
+5. A sends a message to B (relay submits the encrypted envelope)
+6. B's inbox poll picks the message up; chat popup auto-opens with sender
+7. assert B sees the message text in the popup body
+8. assert B's chat list now includes A
+9. assert relay inbox is empty after ACK
+10. B replies; A's poll picks it up; A's popup body and chat list update
+
+Polling runs every 5 s, with an immediate poll after any send so a fast
+reply doesn't wait for the next tick. Notification beeps fire only for
+truly new received messages within an active session, not during the
+initial historical fetch.
+
+```sh
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:chat-lifecycle
+```
+
 ## Production manual checklist
 
 After deploying to sudochat.xyz (or any operator node):

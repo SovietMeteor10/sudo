@@ -83,6 +83,8 @@ export async function queueAndSubmitLocalMessage(options: {
     direction: "sent",
     sender_canonical_id: options.senderCanonicalId,
     recipient_canonical_id: options.recipientCanonicalId,
+    sender_handle: options.senderHandle,
+    recipient_handle: options.recipientHandle,
     body: options.body,
     ciphertext,
     created_at: now,
@@ -185,7 +187,7 @@ export async function retrieveRelayInboxAfterLocalSave(
     senderMessagingPublicKey?: string;
     senderMessagingKeyType?: "x25519" | "ecdh-p256";
   } = {}
-): Promise<number> {
+): Promise<LocalMessage[]> {
   const response = await fetch(`/api/relay/inbox/${encodeURIComponent(recipientCanonicalId)}`, {
     headers: { accept: "application/json" }
   });
@@ -194,16 +196,20 @@ export async function retrieveRelayInboxAfterLocalSave(
   const body = await response.json() as { envelopes?: RelayEnvelope[] };
   const envelopes = Array.isArray(body.envelopes) ? body.envelopes : [];
 
+  const saved: LocalMessage[] = [];
+
   for (const envelope of envelopes) {
     const now = new Date().toISOString();
     const messageId = crypto.randomUUID();
-    const plaintext = await maybeDecryptEnvelope(envelope, options);
+    const plaintext = await decodeEnvelopeBody(envelope, options);
     const message: LocalMessage = {
       message_id: messageId,
       conversation_id: conversationIdFor(envelope.sender_canonical_id, envelope.recipient_canonical_id),
       direction: "received",
       sender_canonical_id: envelope.sender_canonical_id,
       recipient_canonical_id: envelope.recipient_canonical_id,
+      sender_handle: envelope.sender_handle,
+      recipient_handle: envelope.recipient_handle,
       body: plaintext,
       ciphertext: envelope.ciphertext,
       created_at: envelope.created_at,
@@ -212,7 +218,23 @@ export async function retrieveRelayInboxAfterLocalSave(
       relay_message_id: envelope.message_id
     };
 
-    await saveLocalMessage(message);
+    try {
+      await saveLocalMessage(message);
+      saved.push(message);
+    } catch (error) {
+      // Don't ACK if local save failed. The relay will keep the envelope until
+      // we successfully persist it on a future poll.
+      const reason = error instanceof Error ? error.message : "save failed";
+      await appendLocalEvent({
+        event_id: crypto.randomUUID(),
+        type: "message.receive.failed.local",
+        created_at: now,
+        subject_id: messageId,
+        data: { relay_message_id: envelope.message_id, reason }
+      });
+      continue;
+    }
+
     await appendLocalEvent({
       event_id: crypto.randomUUID(),
       type: "message.received.local",
@@ -221,23 +243,26 @@ export async function retrieveRelayInboxAfterLocalSave(
       data: { relay_message_id: envelope.message_id }
     });
 
-    const ackResponse = await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-      method: "POST",
-      headers: { accept: "application/json" }
-    });
-
-    if (ackResponse.ok) {
-      await appendLocalEvent({
-        event_id: crypto.randomUUID(),
-        type: "message.acked.local",
-        created_at: new Date().toISOString(),
-        subject_id: messageId,
-        data: { relay_message_id: envelope.message_id }
+    try {
+      const ackResponse = await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+        method: "POST",
+        headers: { accept: "application/json" }
       });
+      if (ackResponse.ok) {
+        await appendLocalEvent({
+          event_id: crypto.randomUUID(),
+          type: "message.acked.local",
+          created_at: new Date().toISOString(),
+          subject_id: messageId,
+          data: { relay_message_id: envelope.message_id }
+        });
+      }
+    } catch {
+      // Ignore ACK errors; the next poll will retry.
     }
   }
 
-  return envelopes.length;
+  return saved;
 }
 
 async function createEnvelopeCiphertext(options: {
@@ -268,7 +293,7 @@ async function createEnvelopeCiphertext(options: {
   };
 }
 
-async function maybeDecryptEnvelope(
+async function decodeEnvelopeBody(
   envelope: RelayEnvelope,
   options: {
     recipientAccount?: BrowserCryptoAccount | null;
@@ -276,6 +301,7 @@ async function maybeDecryptEnvelope(
     senderMessagingKeyType?: "x25519" | "ecdh-p256";
   } = {}
 ): Promise<string> {
+  // Real ECDH/X25519 ciphertext: try to decrypt if we have the right keys.
   if (
     options.recipientAccount !== undefined
     && options.recipientAccount !== null
@@ -296,6 +322,21 @@ async function maybeDecryptEnvelope(
         senderMessagingPublicKey: options.senderMessagingPublicKey,
         senderMessagingKeyType: options.senderMessagingKeyType
       });
+    } catch {
+      // fall through to placeholder decode below
+    }
+  }
+
+  // Dev placeholder ciphertext: ciphertext format is `dev-placeholder:<b64>`.
+  // The body is recoverable until real client-side encryption replaces this
+  // path. Without recovering the body the recipient never sees the message.
+  if (envelope.ciphertext_scheme === "dev-placeholder" && typeof envelope.ciphertext === "string") {
+    const prefix = "dev-placeholder:";
+    const payload = envelope.ciphertext.startsWith(prefix)
+      ? envelope.ciphertext.slice(prefix.length)
+      : envelope.ciphertext;
+    try {
+      return decodeURIComponent(escape(atob(payload)));
     } catch {
       return "";
     }
