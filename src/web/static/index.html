@@ -129,14 +129,11 @@
   </section>
 
   <section class="chat-popup" id="chat-popup" hidden aria-labelledby="chat-popup-handle">
-    <header class="chat-popup__header">
+    <header class="chat-popup__header" id="chat-popup-header" role="button" tabindex="0" aria-label="collapse or expand chat">
       <div class="chat-popup__identity">
         <span class="chat-popup__handle" id="chat-popup-handle"></span>
-        <span class="chat-popup__fingerprint" id="chat-popup-fingerprint"></span>
-        <span class="chat-popup__relay" id="chat-popup-relay"></span>
       </div>
       <div class="chat-popup__controls">
-        <button class="chat-popup__icon" id="chat-popup-minimize" type="button" aria-label="minimize">_</button>
         <button class="chat-popup__icon" id="chat-popup-close" type="button" aria-label="close">×</button>
       </div>
     </header>

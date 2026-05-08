@@ -113,14 +113,12 @@ const accountMenuLogout = getRequiredButton("account-menu-logout");
 const devicesDialog = getRequiredDialog("devices-dialog");
 const devicesCancel = getRequiredButton("devices-cancel");
 const chatPopup = getRequiredElement("chat-popup");
+const chatPopupHeader = getRequiredElement("chat-popup-header");
 const chatPopupHandle = getRequiredElement("chat-popup-handle");
-const chatPopupFingerprint = getRequiredElement("chat-popup-fingerprint");
-const chatPopupRelay = getRequiredElement("chat-popup-relay");
 const chatPopupBody = getRequiredElement("chat-popup-body");
 const chatPopupForm = getRequiredForm("chat-popup-form");
 const chatPopupInput = getRequiredTextArea("chat-popup-input");
 const chatPopupClose = getRequiredButton("chat-popup-close");
-const chatPopupMinimize = getRequiredButton("chat-popup-minimize");
 const signupCancel = getRequiredButton("signup-cancel");
 const signupDialog = getRequiredDialog("signup-dialog");
 const signupForm = getRequiredForm("signup-form");
@@ -452,7 +450,17 @@ chatPopupClose.addEventListener("click", () => {
   closeChatPopup();
 });
 
-chatPopupMinimize.addEventListener("click", () => {
+// Click anywhere in the popup header (except the close button) to collapse
+// or expand the body — replaces the dedicated minimize icon.
+chatPopupHeader.addEventListener("click", (event) => {
+  if (event.target instanceof Element && event.target.closest("#chat-popup-close")) return;
+  chatPopup.classList.toggle("is-minimized");
+});
+
+chatPopupHeader.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  if (event.target instanceof Element && event.target.closest("#chat-popup-close")) return;
+  event.preventDefault();
   chatPopup.classList.toggle("is-minimized");
 });
 
@@ -1839,9 +1847,8 @@ function describeRelayStatus(): string {
 
 function refreshRelayStatusUi(): void {
   accountMenuRelay.textContent = currentIdentityDocument === null ? "" : describeRelayStatus();
-  if (chatTarget !== null && !chatPopup.hidden) {
-    chatPopupRelay.textContent = describeRelayStatus();
-  }
+  // Chat popup header now shows only the partner handle; relay status lives
+  // on the account menu only.
 }
 
 function setAccountMenuOpen(open: boolean): void {
@@ -2163,10 +2170,6 @@ type ChatTarget = { canonical: string; handle: string; fingerprint: string };
 async function openChatPopup(target: ChatTarget): Promise<void> {
   chatTarget = target;
   chatPopupHandle.textContent = target.handle || target.canonical;
-  chatPopupFingerprint.textContent = target.fingerprint
-    ? `fingerprint ${target.fingerprint.slice(0, 12)}...`
-    : "";
-  chatPopupRelay.textContent = describeRelayStatus();
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
   for (const row of chatsRoot.querySelectorAll<HTMLElement>("[data-chat-canonical]")) {

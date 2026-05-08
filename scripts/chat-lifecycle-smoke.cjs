@@ -172,13 +172,19 @@ async function relayInboxLength(canonical) {
     fail("incoming-align", `received bubble not left-aligned: leftOffset=${incomingShape.leftOffset}, bodyWidth=${incomingShape.bodyWidth}`);
   } else ok(`3b. received bubble left-aligned (offset=${incomingShape.leftOffset}px)`);
 
-  // 3c. Honest relay status appears on the popup header.
-  const popupRelay = await pageB.evaluate(() => document.getElementById("chat-popup-relay")?.textContent ?? "");
-  if (!/https fallback|encrypted, not onion-routed|onion|unavailable/i.test(popupRelay)) {
-    fail("popup-relay", `popup header missing relay status: '${popupRelay}'`);
-  } else if (/onion-routed/i.test(popupRelay) && !/not onion-routed/i.test(popupRelay)) {
-    fail("popup-relay", `popup claims onion routing without onion transport: '${popupRelay}'`);
-  } else ok(`3c. popup relay status: '${popupRelay}'`);
+  // 3c. Chat popup header is minimal: only the handle, no fingerprint
+  // or relay text in there. Relay status lives on the account menu.
+  const headerShape = await pageB.evaluate(() => {
+    const handle = document.getElementById("chat-popup-handle")?.textContent ?? "";
+    const hasMinimize = !!document.getElementById("chat-popup-minimize");
+    const hasFingerprint = !!document.getElementById("chat-popup-fingerprint");
+    const hasRelay = !!document.getElementById("chat-popup-relay");
+    return { handle, hasMinimize, hasFingerprint, hasRelay };
+  });
+  if (!headerShape.handle.startsWith("@")) fail("popup-header", `expected handle starting with @, got '${headerShape.handle}'`);
+  else if (headerShape.hasMinimize) fail("popup-header", "minimize button should be removed");
+  else if (headerShape.hasFingerprint || headerShape.hasRelay) fail("popup-header", "popup header should not show fingerprint/relay text");
+  else ok(`3c. chat popup header is just '${headerShape.handle}' (no minimize/fingerprint/relay)`);
 
   // 4. B's chat list shows A
   const bChatList = await pageB.evaluate(() => document.getElementById("chat-list")?.innerText ?? "");

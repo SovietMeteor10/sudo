@@ -860,7 +860,17 @@ body[data-auth-state="auth-restore"] .landing {
   padding: 8px 10px 8px 12px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--panel-soft);
-  cursor: default;
+  cursor: pointer;
+  user-select: none;
+}
+
+.chat-popup__header:focus-visible {
+  outline: 1px solid var(--focus);
+  outline-offset: -1px;
+}
+
+.chat-popup.is-minimized .chat-popup__header {
+  border-bottom: 0;
 }
 
 .chat-popup__identity {
