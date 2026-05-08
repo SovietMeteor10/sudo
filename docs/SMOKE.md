@@ -68,3 +68,46 @@ curl -fsS http://127.0.0.1:3017/api/identity/handles/<handle>
 
 The `canonical_id` should look like
 `sudo:ed25519:<64-hex>` or `sudo:ecdsa-p256:<64-hex>`.
+
+## Identity-register regression
+
+`scripts/test-register.cjs` (also exposed as `npm run smoke:auth`)
+builds an Ed25519 identity document fixture in pure Node, posts it
+to `/api/identity/register`, asserts:
+
+- `[object Promise]` literal canonical_id is rejected
+- a wrong-hash but well-formed canonical_id is rejected
+- a key-type/canonical_id mismatch is rejected
+- a well-formed Ed25519 doc is accepted
+- handle lookup and fingerprint routes round-trip
+
+Run it after any change to canonical_id derivation, identity signing,
+or `/api/identity/register`.
+
+```sh
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:auth
+```
+
+## Sign-in failure messaging
+
+After signup, clear the browser's IndexedDB profile and try to sign
+in with a handle that doesn't exist on this device. The card must:
+
+- not stay on "working..." longer than ~10s
+- produce a clear message such as "account not found on this device.
+  restore or link this device." or "network error..."
+
+If the card hangs, check `fetchWithTimeout` in
+`src/web/client/api.ts` — the 10s timeout should fire.
+
+## Cache headers
+
+`/client/*` and `/protocol/*` must respond with
+`Cache-Control: no-store, no-cache, must-revalidate`. Stale browser
+or CDN copies of `main.js` have caused production canonical_id and
+auth flow regressions even after a successful deploy.
+
+```sh
+curl -sI http://127.0.0.1:3017/client/main.js | grep -i cache-control
+```

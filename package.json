@@ -12,6 +12,7 @@
     "create-user": "npm run build && node dist/cli/createUser.js",
     "check:env": "npm run build && node dist/cli/checkEnv.js",
     "smoke": "bash scripts/smoke.sh",
+    "smoke:auth": "node scripts/test-register.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

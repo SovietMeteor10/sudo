@@ -580,6 +580,7 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
 
   setSigninState({ status: "loading" });
 
+  let localUnlockError: unknown = null;
   try {
     const account = await unlockBrowserCryptoAccountByHandle(handle, password);
     currentCryptoAccount = account;
@@ -598,24 +599,48 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
     setSignedIn(identity.handle);
     syncActivePane("identity");
     await syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId));
+    return;
   } catch (error) {
-    try {
-      const result = await signinDevHandle(handle, password);
-      await writeDevSessionToken(result.sessionToken);
-      const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
-      setCurrentIdentity(result.identity, fingerprint);
-      setSigninState({ status: "signed_in", identity: result.identity });
-      signinDialog.close();
-      setSignedIn(result.identity.handle);
-      syncActivePane("identity");
-      return;
-    } catch (devError) {
-      setSigninState({
-        status: "error",
-        message: error instanceof Error ? error.message : devError instanceof Error ? devError.message : "sign-in failed",
-      });
-    }
+    localUnlockError = error;
   }
+
+  // Local-first unlock failed. Try the legacy dev sign-in path so accounts
+  // created before client-side keys still work; map every outcome into a
+  // clear, user-readable message.
+  try {
+    const result = await signinDevHandle(handle, password);
+    await writeDevSessionToken(result.sessionToken);
+    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
+    setCurrentIdentity(result.identity, fingerprint);
+    setSigninState({ status: "signed_in", identity: result.identity });
+    signinDialog.close();
+    setSignedIn(result.identity.handle);
+    syncActivePane("identity");
+  } catch (devError) {
+    setSigninState({ status: "error", message: explainSigninFailure(localUnlockError, devError) });
+  }
+}
+
+function explainSigninFailure(localError: unknown, devError: unknown): string {
+  const localMessage = localError instanceof Error ? localError.message : "";
+  const devMessage = devError instanceof Error ? devError.message : "";
+  const localMissing = /stored account not found/i.test(localMessage);
+  const looksLikeNetwork = /timeout|network|failed to fetch/i.test(devMessage);
+  const looksLikeBadCredentials = /invalid|credentials|not found|wrong/i.test(devMessage);
+
+  if (looksLikeNetwork) {
+    return "network error. check your connection and try again.";
+  }
+
+  if (localMissing && looksLikeBadCredentials) {
+    return "account not found on this device. restore or link this device.";
+  }
+
+  if (!localMissing) {
+    return "wrong passphrase, or this account is on another device.";
+  }
+
+  return devMessage || localMessage || "sign-in failed";
 }
 
 async function runRecover(

@@ -138,7 +138,7 @@ export async function revokeTrustedDevice(ownerCanonicalId: string, deviceId: st
 }
 
 export async function registerIdentityDocument(identityDocument: IdentityDocument): Promise<IdentityDocument> {
-  const response = await fetch("/api/identity/register", {
+  const response = await fetchWithTimeout("/api/identity/register", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -170,7 +170,7 @@ export async function signupDevHandle(
   recoveryQuestion: string,
   recoveryAnswer: string
 ): Promise<SignupDevResponse> {
-  const response = await fetch("/dev/signup", {
+  const response = await fetchWithTimeout("/dev/signup", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -193,7 +193,7 @@ export async function recoverDevHandle(
   recoveryQuestion: string,
   recoveryAnswer: string
 ): Promise<SigninDevResponse> {
-  const response = await fetch("/dev/recover", {
+  const response = await fetchWithTimeout("/dev/recover", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -211,7 +211,7 @@ export async function recoverDevHandle(
 }
 
 export async function signinDevHandle(handle: string, password: string): Promise<SigninDevResponse> {
-  const response = await fetch("/dev/signin", {
+  const response = await fetchWithTimeout("/dev/signin", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -232,7 +232,7 @@ export async function signinDevHandle(handle: string, password: string): Promise
 }
 
 export async function restoreDevSession(token: string): Promise<IdentityDocument> {
-  const response = await fetch("/dev/session", {
+  const response = await fetchWithTimeout("/dev/session", {
     headers: {
       accept: "application/json",
       authorization: `Bearer ${token}`,
@@ -245,6 +245,28 @@ export async function restoreDevSession(token: string): Promise<IdentityDocument
 
   const errorBody = await readErrorBody(response);
   throw new Error(errorBody.message);
+}
+
+export class NetworkTimeoutError extends Error {
+  constructor() {
+    super("network timeout");
+    this.name = "NetworkTimeoutError";
+  }
+}
+
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: init.signal ?? controller.signal });
+  } catch (error) {
+    if ((error as Error)?.name === "AbortError") {
+      throw new NetworkTimeoutError();
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function searchHandles(query: string, signal: AbortSignal): Promise<SearchResult[]> {

@@ -90,6 +90,7 @@ export function createSignedIdentityDocument(options: CreateIdentityDocumentOpti
 
 export function registerIdentityDocument(document: IdentityDocument): IdentityDocument {
   if (!verifyIdentityDocument(document)) {
+    logRegistrationFailure("invalid_identity_signature", document);
     throw new Error("invalid identity signature");
   }
 
@@ -99,10 +100,37 @@ export function registerIdentityDocument(document: IdentityDocument): IdentityDo
   );
 
   if (document.canonical_id !== expectedCanonicalId) {
+    logRegistrationFailure("canonical_id_mismatch", document, expectedCanonicalId);
     throw new Error("canonical id does not match identity public key");
   }
 
   normalizeHandle(document.handle);
   saveIdentity(document.canonical_id, document);
   return document;
+}
+
+function logRegistrationFailure(
+  reason: "invalid_identity_signature" | "canonical_id_mismatch",
+  document: IdentityDocument,
+  expectedCanonicalId?: string
+): void {
+  if (process.env.NODE_ENV === "production" && process.env.SUDO_LOG_LEVEL !== "debug") return;
+
+  const claimedId = typeof document.canonical_id === "string" ? document.canonical_id : "(missing)";
+  const claimedKeyType = document.keys?.identity?.type ?? "(unset)";
+  const publicKey = document.keys?.identity?.public_key;
+  const publicKeyLength = typeof publicKey === "string" ? publicKey.length : -1;
+  const claimedIdPrefix = typeof claimedId === "string" ? claimedId.split(":").slice(0, 2).join(":") : "(invalid)";
+  const expectedPrefix = expectedCanonicalId === undefined
+    ? undefined
+    : expectedCanonicalId.split(":").slice(0, 2).join(":");
+
+  console.warn("[identity.register]", reason, {
+    claimedCanonicalIdPrefix: claimedIdPrefix,
+    claimedKeyType,
+    publicKeyLength,
+    publicKeyEmpty: publicKeyLength <= 0,
+    expectedCanonicalIdPrefix: expectedPrefix,
+    handle: document.handle ?? "(missing)"
+  });
 }
