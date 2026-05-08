@@ -1425,6 +1425,8 @@ function openSigninDialog(): void {
 }
 
 function openRestoreDialog(): void {
+  if (signupDialog.open) signupDialog.close();
+  if (signinDialog.open) signinDialog.close();
   if (authView !== "signed-in") {
     setAuthView("restore");
   }

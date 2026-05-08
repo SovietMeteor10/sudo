@@ -95,16 +95,23 @@ body[data-auth-state="signed-in"] .shell {
 }
 
 .auth-link {
-  border: 0;
-  padding: 0;
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 5px 9px;
+  background: var(--bg);
   color: var(--muted);
   cursor: pointer;
+  text-decoration: none;
 }
 
 .auth-link:hover,
 .auth-link:focus-visible {
   color: var(--text);
+  border-color: var(--line);
 }
 
 .topnav__tab,
@@ -186,20 +193,6 @@ body[data-auth-state="signed-in"] .shell {
 .landing__row .auth-link {
   flex: 1 1 0;
   justify-content: center;
-  min-height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 5px 9px;
-  background: #101211;
-}
-
-.landing__restore {
-  min-height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 5px 9px;
-  background: #101211;
-  color: var(--muted);
   text-align: center;
 }
 
