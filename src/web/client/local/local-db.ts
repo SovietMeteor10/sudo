@@ -19,9 +19,26 @@ export type LocalStoreName = typeof localStoreNames[number];
 
 let openPromise: Promise<IDBDatabase> | null = null;
 
+// Some browsers (Safari, iOS) and multi-tab scenarios can hang
+// `indexedDB.open` indefinitely when another tab holds an older-version
+// connection. We add an explicit `onblocked` reject + a hard timeout so
+// auth flows surface a clear error instead of waiting forever.
+const OPEN_TIMEOUT_MS = 6000;
+
 export function openLocalDb(): Promise<IDBDatabase> {
-  openPromise ??= new Promise((resolve, reject) => {
+  if (openPromise !== null) return openPromise;
+  openPromise = new Promise<IDBDatabase>((resolve, reject) => {
+    let settled = false;
+    const settleResolve = (value: IDBDatabase) => { if (!settled) { settled = true; resolve(value); } };
+    const settleReject = (error: Error) => { if (!settled) { settled = true; openPromise = null; reject(error); } };
+
+    const timer = setTimeout(() => settleReject(new Error("local database open timed out")), OPEN_TIMEOUT_MS);
     const request = indexedDB.open(LOCAL_DB_NAME, LOCAL_DB_VERSION);
+
+    request.onblocked = () => {
+      clearTimeout(timer);
+      settleReject(new Error("local database is in use by another tab"));
+    };
 
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -84,8 +101,14 @@ export function openLocalDb(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("failed to open local IndexedDB"));
+    request.onsuccess = () => {
+      clearTimeout(timer);
+      settleResolve(request.result);
+    };
+    request.onerror = () => {
+      clearTimeout(timer);
+      settleReject(request.error ?? new Error("failed to open local IndexedDB"));
+    };
   });
 
   return openPromise;

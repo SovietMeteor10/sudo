@@ -88,12 +88,18 @@ export async function importPublicKey(publicKeySpki: string, keyType: SigningKey
         ? { name: "X25519" }
         : { name: "ECDH", namedCurve: "P-256" };
 
+  // Web Crypto requires empty usages for ECDH/X25519 public keys (you can
+  // only derive with the *private* key plus a peer public). Passing
+  // ["deriveBits"] here makes Chrome throw "Cannot create a key using the
+  // specified key usages." Signing public keys take ["verify"].
+  const usages: KeyUsage[] = keyType === "ed25519" || keyType === "ecdsa-p256" ? ["verify"] : [];
+
   return crypto.subtle.importKey(
     "spki",
     toBufferSource(base64UrlToBytes(publicKeySpki)),
     algorithm as any,
     true,
-    keyType === "ed25519" || keyType === "ecdsa-p256" ? ["verify"] : ["deriveBits"]
+    usages
   );
 }
 

@@ -636,15 +636,21 @@ async function doSignup(handle: string, password: string): Promise<void> {
   }));
   const identity = await withStep("identity-register", () => registerIdentityDocument(draft.identity_document));
   const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(identity)), 5000);
-  const deviceMetadata = await withStep("device-metadata", () => getLocalDeviceMetadata().catch(() => null));
-  const trustedDevice = buildTrustedDeviceRecord(identity, draft.account, deviceMetadata?.device_id ?? crypto.randomUUID());
+  // Device metadata is local-only and must NEVER block signup. If the local
+  // DB is slow/blocked we fall back to a fresh UUID and continue.
+  const deviceId = await resolveDeviceIdNonBlocking();
+  const trustedDevice = buildTrustedDeviceRecord(identity, draft.account, deviceId);
   await withStep("save-identity-seen", () => saveIdentitySeen({
     canonical_id: identity.canonical_id,
     document: identity,
     seen_at: new Date().toISOString()
   }));
   await withStep("store-crypto-account", () => storeBrowserCryptoAccount(draft.record));
-  await withStep("save-trusted-device", () => saveTrustedDevice(trustedDevice));
+  await withStep("save-trusted-device", () => saveTrustedDevice(trustedDevice).catch((error) => {
+    // Don't block signup on local trusted-device write failure either; the
+    // crypto account is the source of truth and is already stored above.
+    console.warn("[auth] save-trusted-device failed", error instanceof Error ? error.message : error);
+  }));
   currentCryptoAccount = draft.account;
   currentDeviceId = trustedDevice.device_id;
   setCurrentIdentity(identity, fingerprint);
@@ -657,7 +663,24 @@ async function doSignup(handle: string, password: string): Promise<void> {
   // Best-effort device sync; never blocks signup completion.
   void syncCurrentDeviceToServer(trustedDevice).catch((error) => {
     console.warn("[auth] device sync after signup failed", error instanceof Error ? error.message : error);
+    devicePanelFeedback.textContent = "device sync delayed; account created";
   });
+}
+
+async function resolveDeviceIdNonBlocking(): Promise<string> {
+  // Short, soft timeout: device metadata is purely a UX nicety. If anything
+  // in the local DB stack stalls, generate a fresh device id and let the
+  // background sync reconcile later.
+  try {
+    const metadata = await Promise.race<{ device_id: string } | null>([
+      getLocalDeviceMetadata().catch(() => null),
+      new Promise((resolve) => setTimeout(() => resolve(null), 1500))
+    ]);
+    if (metadata?.device_id) return metadata.device_id;
+  } catch {
+    // ignore, fall through
+  }
+  return crypto.randomUUID();
 }
 
 function setSignupState(nextState: SignupState): void {
@@ -942,13 +965,7 @@ function buildTrustedDeviceRecord(
 
 async function ensureCurrentDeviceId(): Promise<string> {
   if (currentDeviceId !== null) return currentDeviceId;
-  const metadata = await getLocalDeviceMetadata().catch(() => null);
-  if (metadata !== null) {
-    currentDeviceId = metadata.device_id;
-    return metadata.device_id;
-  }
-
-  const deviceId = crypto.randomUUID();
+  const deviceId = await resolveDeviceIdNonBlocking();
   currentDeviceId = deviceId;
   return deviceId;
 }
@@ -1746,7 +1763,10 @@ function renderPasskeySupport(): void {
   const support = passkeyAccessProvider.isAvailable() ? "available" : "unavailable";
   signupPasskeySupport.textContent = `passkey support: ${support}`;
   signinPasskeySupport.textContent = `passkey support: ${support}`;
-  restorePasskeySupport.textContent = `restore answer path: ${support}`;
+  // Recovery-answer / recovery-code restore is dev scaffolding only. Backup
+  // file restore is the supported path today; say so plainly so users don't
+  // submit a recovery answer expecting it to work.
+  restorePasskeySupport.textContent = "restore by recovery answer is still a development path. use backup file restore.";
 }
 
 function clearSignupForm(): void {

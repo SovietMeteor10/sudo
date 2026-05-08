@@ -123,6 +123,105 @@ SUDO_PORT=3017 node dist/server.js &
 BASE_URL=http://127.0.0.1:3017 npm run smoke:auth-flow
 ```
 
+## Full account-lifecycle Puppeteer torture test
+
+`scripts/auth-lifecycle-smoke.cjs` (`npm run smoke:auth-lifecycle`)
+exercises the entire account lifecycle in a real browser, with a
+fresh browser context per scenario. Every assertion has a 15 s
+ceiling; nothing is allowed to sit on "creating account..." /
+"signing in..." / "restoring..." past timeout.
+
+Cases covered:
+
+1. landing page (sudo + sign in + sign up; no restore on landing)
+2. create account success (must reach signed-in within 15 s)
+3. post-signup state (handle visible, current device set, no
+   crypto jargon: IndexedDB / PBKDF2 / AES-GCM / private key)
+4. sign out, sign in same device with the same passphrase
+5. sign in with unknown handle → friendly error
+6. sign in with wrong passphrase → friendly error
+7. backup export → encrypted JSON, no plaintext private material
+8. restore from backup file → succeeds, sign-in works after restore
+9. recovery answer / backup code path UI is honest about not yet
+   working — must say so plainly, not look like a working path
+10. device-link foundation returns a pairing code (or clear copy)
+11. network-timeout simulation: with `/api/devices/register` made to
+    hang, signup must still complete (device sync is non-blocking)
+12. static module integrity: every `/client/*` and `/protocol/*`
+    response is 200 and JS content-type
+
+```sh
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:auth-lifecycle
+```
+
+## Production manual checklist
+
+After deploying to sudochat.xyz (or any operator node):
+
+1. **Hard refresh the portal.** Chrome/Firefox: Cmd-Shift-R / Ctrl-F5.
+   Safari: option+Cmd-E then Cmd-R. The `Cache-Control: no-store`
+   header on `/client` and `/protocol` should also defeat CDN caches
+   on the next request, but a one-time hard refresh removes any
+   already-cached response.
+2. Open devtools → Network. Verify these all return 200, not 404
+   HTML, and JavaScript content-type:
+   - `/client/main.js`
+   - `/protocol/relays.js`
+   - `/protocol/constants.js`
+   - `/protocol/identity.js`
+3. Run the back-end smokes from anywhere with reachable HTTP:
+
+   ```sh
+   BASE_URL=https://sudochat.xyz npm run smoke
+   BASE_URL=https://sudochat.xyz npm run smoke:auth
+   ```
+
+4. Sign-up flow:
+   - landing shows sudo + sign in + sign up; no restore button
+   - tap sign up, fill a fresh handle + strong passphrase, submit
+   - must enter the main app within ~3 s; never hang on
+     "creating account..." past 15 s
+5. Sign-out flow:
+   - tap logout
+   - landing returns within ~1 s
+6. Sign-in flow on the same device:
+   - tap sign in, same handle + passphrase, submit
+   - must enter the main app within ~1–2 s
+7. Failure paths:
+   - sign in with a non-existent handle → "account not found on this
+     device. restore or link this device." within ~1 s
+   - sign in with the right handle but wrong passphrase → "wrong
+     passphrase, or this account is on another device." within ~1 s
+8. Backup → restore round-trip:
+   - while signed in, click `backup account`
+   - clear browser data for the site (or open a private window)
+   - tap sign in → restore account → backup file → upload → submit
+   - feedback should be `backup restored`; sign-in works for the
+     same handle on this fresh browser
+
+## Recovering from a stale `[object Promise]` IndexedDB
+
+Pre-2026-05-08 builds wrote `canonical_id: "sudo:ed25519:[object Promise]"`
+to IndexedDB. Server-side registration was always rejected, but the
+local crypto record still got stored. Symptoms:
+
+- create account fails with "canonical id does not match identity
+  public key"
+- sign in fails with "wrong passphrase, or this account is on another
+  device." even after the fix is deployed
+
+Fix on the affected browser:
+
+1. Open the portal.
+2. Devtools → Application → IndexedDB → `sudo_local_state` → Delete
+   database. (Or: `Application → Storage → Clear site data`.)
+3. Hard refresh (`Cmd-Shift-R`).
+4. Sign up again.
+
+A backup file from a healthy device can be imported instead of
+clearing.
+
 ## Cache headers
 
 `/client/*` and `/protocol/*` must respond with
