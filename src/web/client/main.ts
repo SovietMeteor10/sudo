@@ -495,12 +495,93 @@ function setLookupState(nextState: LookupState): void {
   renderLookupResult(lookupRoot, lookupState);
 }
 
+// Hard timeout for the entire signup/signin flow. If the orchestration takes
+// longer than this, the user sees a clear "this is taking too long" error and
+// the dialog button is reset, instead of staring at "creating account..."
+// indefinitely. Per-step timeouts inside `withStep` are tighter than this.
+const AUTH_FLOW_TIMEOUT_MS = 15000;
+const AUTH_STEP_TIMEOUT_MS = 12000;
+
+let signupBusy = false;
+let signinBusy = false;
+
+async function withStep<T>(label: string, work: () => Promise<T>, timeoutMs = AUTH_STEP_TIMEOUT_MS): Promise<T> {
+  const start = performance.now();
+  console.debug(`[auth] step start: ${label}`);
+  let timer: number | null = null;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => reject(new AuthStepTimeout(label)), timeoutMs);
+    });
+    const result = await Promise.race([work(), timeout]);
+    console.debug(`[auth] step ok: ${label} ${Math.round(performance.now() - start)}ms`);
+    return result;
+  } catch (error) {
+    const elapsed = Math.round(performance.now() - start);
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[auth] step fail: ${label} ${elapsed}ms ${message}`);
+    throw error instanceof AuthStepTimeout ? error : new AuthStepError(label, error);
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
+  }
+}
+
+class AuthStepTimeout extends Error {
+  constructor(public readonly label: string) {
+    super(`step timeout: ${label}`);
+    this.name = "AuthStepTimeout";
+  }
+}
+
+class AuthStepError extends Error {
+  constructor(public readonly label: string, public readonly cause: unknown) {
+    const inner = cause instanceof Error ? cause.message : String(cause);
+    super(inner);
+    this.name = "AuthStepError";
+  }
+}
+
+class AuthFlowTimeout extends Error {
+  constructor() {
+    super("flow timeout");
+    this.name = "AuthFlowTimeout";
+  }
+}
+
+async function withFlowTimeout<T>(work: () => Promise<T>): Promise<T> {
+  let timer: number | null = null;
+  try {
+    const timeout = new Promise<never>((_, reject) => {
+      timer = window.setTimeout(() => reject(new AuthFlowTimeout()), AUTH_FLOW_TIMEOUT_MS);
+    });
+    return await Promise.race([work(), timeout]);
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
+  }
+}
+
+function describeAuthFailure(error: unknown): string {
+  if (error instanceof AuthFlowTimeout) {
+    return "this is taking too long. check your connection and try again.";
+  }
+  if (error instanceof AuthStepTimeout) {
+    return `network slow or unreachable (${error.label}). try again.`;
+  }
+  if (error instanceof AuthStepError) {
+    return error.message || `step failed: ${error.label}`;
+  }
+  if (error instanceof Error) return error.message;
+  return "operation failed";
+}
+
 async function runSignup(
   rawHandle: string,
   password: string,
   passwordConfirm: string,
   rawRecoveryAnswer: string
 ): Promise<void> {
+  if (signupBusy) return;
+
   const handle = normalizeLookupInput(rawHandle);
   if (!/^[A-Za-z0-9_]{3,32}$/.test(handle)) {
     setSignupState({
@@ -527,43 +608,56 @@ async function runSignup(
     return;
   }
 
+  signupBusy = true;
   setSignupState({ status: "loading" });
 
   try {
-    const nodeDocument = currentNodeDocument ?? await ensureNodeDocument().catch(() => null);
-    const draft = await createBrowserCryptoAccount({
-      handle,
-      passphrase: password,
-      homeNode: window.location.origin,
-      deliveryRelays: nodeDocument?.relay_capabilities ?? []
-    });
-    const identity = await registerIdentityDocument(draft.identity_document);
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
-    const deviceMetadata = await getLocalDeviceMetadata();
-    const trustedDevice = buildTrustedDeviceRecord(identity, draft.account, deviceMetadata?.device_id ?? crypto.randomUUID());
-    await saveIdentitySeen({
-      canonical_id: identity.canonical_id,
-      document: identity,
-      seen_at: new Date().toISOString()
-    });
-    await storeBrowserCryptoAccount(draft.record);
-    await saveTrustedDevice(trustedDevice);
-    currentCryptoAccount = draft.account;
-    currentDeviceId = trustedDevice.device_id;
-    setCurrentIdentity(identity, fingerprint);
-    setSignupState({ status: "created", identity, fingerprint, backupCode: "" });
-    signupDialog.close();
-    setSignedIn(identity.handle);
-    localMaintenanceFeedback.textContent = "account created";
-    syncActivePane("identity");
-    showRecoveryPanel("");
-    await syncCurrentDeviceToServer(trustedDevice);
+    await withFlowTimeout(() => doSignup(handle, password));
   } catch (error) {
-    setSignupState({
-      status: "error",
-      message: error instanceof Error ? error.message : "account creation failed",
-    });
+    setSignupState({ status: "error", message: describeAuthFailure(error) });
+  } finally {
+    signupBusy = false;
   }
+}
+
+async function doSignup(handle: string, password: string): Promise<void> {
+  const nodeDocument = await withStep(
+    "node-document",
+    () => currentNodeDocument !== null
+      ? Promise.resolve(currentNodeDocument)
+      : ensureNodeDocument().catch(() => null as NodeCapabilityDocument | null),
+    8000
+  );
+  const draft = await withStep("crypto-account-create", () => createBrowserCryptoAccount({
+    handle,
+    passphrase: password,
+    homeNode: window.location.origin,
+    deliveryRelays: nodeDocument?.relay_capabilities ?? []
+  }));
+  const identity = await withStep("identity-register", () => registerIdentityDocument(draft.identity_document));
+  const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(identity)), 5000);
+  const deviceMetadata = await withStep("device-metadata", () => getLocalDeviceMetadata().catch(() => null));
+  const trustedDevice = buildTrustedDeviceRecord(identity, draft.account, deviceMetadata?.device_id ?? crypto.randomUUID());
+  await withStep("save-identity-seen", () => saveIdentitySeen({
+    canonical_id: identity.canonical_id,
+    document: identity,
+    seen_at: new Date().toISOString()
+  }));
+  await withStep("store-crypto-account", () => storeBrowserCryptoAccount(draft.record));
+  await withStep("save-trusted-device", () => saveTrustedDevice(trustedDevice));
+  currentCryptoAccount = draft.account;
+  currentDeviceId = trustedDevice.device_id;
+  setCurrentIdentity(identity, fingerprint);
+  setSignupState({ status: "created", identity, fingerprint, backupCode: "" });
+  signupDialog.close();
+  setSignedIn(identity.handle);
+  localMaintenanceFeedback.textContent = "account created";
+  syncActivePane("identity");
+  showRecoveryPanel("");
+  // Best-effort device sync; never blocks signup completion.
+  void syncCurrentDeviceToServer(trustedDevice).catch((error) => {
+    console.warn("[auth] device sync after signup failed", error instanceof Error ? error.message : error);
+  });
 }
 
 function setSignupState(nextState: SignupState): void {
@@ -572,52 +666,69 @@ function setSignupState(nextState: SignupState): void {
 }
 
 async function runSignin(rawHandle: string, password: string): Promise<void> {
+  if (signinBusy) return;
+
   const handle = normalizeLookupInput(rawHandle);
   if (handle.length === 0 || password.length === 0) {
     setSigninState({ status: "error", message: "handle and passphrase are required" });
     return;
   }
 
+  signinBusy = true;
   setSigninState({ status: "loading" });
 
+  try {
+    await withFlowTimeout(() => doSignin(handle, password));
+  } catch (error) {
+    setSigninState({ status: "error", message: describeAuthFailure(error) });
+  } finally {
+    signinBusy = false;
+  }
+}
+
+async function doSignin(handle: string, password: string): Promise<void> {
   let localUnlockError: unknown = null;
   try {
-    const account = await unlockBrowserCryptoAccountByHandle(handle, password);
+    const account = await withStep(
+      "unlock-local-account",
+      () => unlockBrowserCryptoAccountByHandle(handle, password)
+    );
     currentCryptoAccount = account;
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(account.identity_document));
+    const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(account.identity_document)), 5000);
     const identity = account.identity_document;
-    await saveIdentitySeen({
+    await withStep("save-identity-seen", () => saveIdentitySeen({
       canonical_id: identity.canonical_id,
       document: identity,
       seen_at: new Date().toISOString()
-    });
-    currentDeviceId = await ensureCurrentDeviceId();
-    await saveTrustedDevice(buildTrustedDeviceRecord(identity, account, currentDeviceId));
+    }));
+    currentDeviceId = await withStep("ensure-device-id", () => ensureCurrentDeviceId());
+    await withStep("save-trusted-device", () => saveTrustedDevice(buildTrustedDeviceRecord(identity, account, currentDeviceId!)));
     setCurrentIdentity(identity, fingerprint);
     setSigninState({ status: "signed_in", identity });
     signinDialog.close();
     setSignedIn(identity.handle);
     syncActivePane("identity");
-    await syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId));
+    void syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId!)).catch((error) => {
+      console.warn("[auth] device sync after signin failed", error instanceof Error ? error.message : error);
+    });
     return;
   } catch (error) {
     localUnlockError = error;
   }
 
-  // Local-first unlock failed. Try the legacy dev sign-in path so accounts
-  // created before client-side keys still work; map every outcome into a
-  // clear, user-readable message.
+  // Local-first unlock failed. Try the legacy dev sign-in path; map every
+  // outcome to a user-readable message rather than a swallowed promise.
   try {
-    const result = await signinDevHandle(handle, password);
-    await writeDevSessionToken(result.sessionToken);
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
+    const result = await withStep("dev-signin", () => signinDevHandle(handle, password));
+    await withStep("write-dev-session", () => writeDevSessionToken(result.sessionToken));
+    const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(result.identity)), 5000);
     setCurrentIdentity(result.identity, fingerprint);
     setSigninState({ status: "signed_in", identity: result.identity });
     signinDialog.close();
     setSignedIn(result.identity.handle);
     syncActivePane("identity");
   } catch (devError) {
-    setSigninState({ status: "error", message: explainSigninFailure(localUnlockError, devError) });
+    throw new Error(explainSigninFailure(localUnlockError, devError));
   }
 }
 

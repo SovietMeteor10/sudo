@@ -14,7 +14,7 @@ import type {
 
 export async function lookupHandle(query: string, signal: AbortSignal): Promise<IdentityDocument> {
   const handle = normalizeLookupInput(query);
-  const response = await fetch(`/.well-known/handles/${encodeURIComponent(handle)}`, {
+  const response = await fetchWithTimeout(`/.well-known/handles/${encodeURIComponent(handle)}`, {
     headers: { accept: "application/json" },
     signal,
   });
@@ -35,7 +35,7 @@ export async function lookupHandle(query: string, signal: AbortSignal): Promise<
 }
 
 export async function getNodeDocument(): Promise<NodeCapabilityDocument> {
-  const response = await fetch("/.well-known/sudo/node.json", {
+  const response = await fetchWithTimeout("/.well-known/sudo/node.json", {
     headers: { accept: "application/json" }
   });
 
@@ -47,7 +47,7 @@ export async function getNodeDocument(): Promise<NodeCapabilityDocument> {
 }
 
 export async function listTrustedDevices(ownerCanonicalId: string): Promise<TrustedDevice[]> {
-  const response = await fetch(`/api/devices/${encodeURIComponent(ownerCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(ownerCanonicalId)}`, {
     headers: { accept: "application/json" }
   });
 
@@ -60,7 +60,7 @@ export async function listTrustedDevices(ownerCanonicalId: string): Promise<Trus
 }
 
 export async function registerTrustedDevice(input: TrustedDevice): Promise<TrustedDevice> {
-  const response = await fetch("/api/devices/register", {
+  const response = await fetchWithTimeout("/api/devices/register", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -78,7 +78,7 @@ export async function registerTrustedDevice(input: TrustedDevice): Promise<Trust
 }
 
 export async function startDevicePairing(ownerCanonicalId: string): Promise<{ pairing_code: string; pairing_token: string; expires_at: string }> {
-  const response = await fetch("/api/devices/pair/start", {
+  const response = await fetchWithTimeout("/api/devices/pair/start", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -102,7 +102,7 @@ export async function completeDevicePairing(input: {
   device_public_key: string;
   encrypted_bootstrap_payload: string;
 }): Promise<{ ok: true; device: TrustedDevice; pairing_code: string }> {
-  const response = await fetch("/api/devices/pair/complete", {
+  const response = await fetchWithTimeout("/api/devices/pair/complete", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -120,7 +120,7 @@ export async function completeDevicePairing(input: {
 }
 
 export async function revokeTrustedDevice(ownerCanonicalId: string, deviceId: string): Promise<TrustedDevice> {
-  const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, {
+  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -271,7 +271,7 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
 
 export async function searchHandles(query: string, signal: AbortSignal): Promise<SearchResult[]> {
   const handle = normalizeLookupInput(query);
-  const response = await fetch(`/dev/search-handles?q=${encodeURIComponent(handle)}`, {
+  const response = await fetchWithTimeout(`/dev/search-handles?q=${encodeURIComponent(handle)}`, {
     headers: { accept: "application/json" },
     signal,
   });
@@ -288,7 +288,7 @@ export async function getConnectionRelationship(
   ownerCanonicalId: string,
   subjectCanonicalId: string
 ): Promise<ConnectionRelationship> {
-  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
     headers: { accept: "application/json" }
   });
 
@@ -312,7 +312,7 @@ export async function upsertConnectionRelationship(input: {
   subscribed?: boolean;
   notes?: string;
 }): Promise<ConnectionRelationship> {
-  const response = await fetch("/api/connections", {
+  const response = await fetchWithTimeout("/api/connections", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -330,7 +330,7 @@ export async function deleteConnectionRelationship(
   ownerCanonicalId: string,
   subjectCanonicalId: string
 ): Promise<boolean> {
-  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
     method: "DELETE",
     headers: { accept: "application/json" }
   });
@@ -344,7 +344,7 @@ export async function deleteConnectionRelationship(
 }
 
 export async function listConnections(ownerCanonicalId: string): Promise<ConnectionRelationship[]> {
-  const response = await fetch(`/api/connections/${encodeURIComponent(ownerCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/connections/${encodeURIComponent(ownerCanonicalId)}`, {
     headers: { accept: "application/json" }
   });
 
@@ -365,7 +365,7 @@ export async function upsertFeedSubscription(input: {
   include_close?: boolean;
   muted?: boolean;
 }): Promise<FeedSubscription> {
-  const response = await fetch("/api/subscriptions", {
+  const response = await fetchWithTimeout("/api/subscriptions", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -380,7 +380,7 @@ export async function upsertFeedSubscription(input: {
 }
 
 export async function listFeedSubscriptions(ownerCanonicalId: string): Promise<FeedSubscription[]> {
-  const response = await fetch(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}`, {
     headers: { accept: "application/json" }
   });
 
@@ -393,7 +393,7 @@ export async function listFeedSubscriptions(ownerCanonicalId: string): Promise<F
 }
 
 export async function deleteFeedSubscription(ownerCanonicalId: string, authorCanonicalId: string): Promise<boolean> {
-  const response = await fetch(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(authorCanonicalId)}`, {
+  const response = await fetchWithTimeout(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(authorCanonicalId)}`, {
     method: "DELETE",
     headers: { accept: "application/json" }
   });
@@ -427,7 +427,7 @@ export type CreateFeedPostRequest = {
 };
 
 export async function createFeedPost(input: CreateFeedPostRequest): Promise<FeedPost> {
-  const response = await fetch("/api/feeds/posts", {
+  const response = await fetchWithTimeout("/api/feeds/posts", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -444,7 +444,7 @@ export async function createFeedPost(input: CreateFeedPostRequest): Promise<Feed
 export async function listUserFeedPosts(canonicalId: string, viewerCanonicalId?: string): Promise<FeedPost[]> {
   const url = new URL(`/api/feeds/users/${encodeURIComponent(canonicalId)}`, window.location.origin);
   if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
-  const response = await fetch(url.toString(), {
+  const response = await fetchWithTimeout(url.toString(), {
     headers: { accept: "application/json" },
   });
 
@@ -465,7 +465,7 @@ export async function createDiscoveryReaction(input: {
   created_at?: string;
   signature?: string;
 }): Promise<{ reaction: DiscoveryReaction; index: DiscoveryPostIndex }> {
-  const response = await fetch("/api/discovery/reactions", {
+  const response = await fetchWithTimeout("/api/discovery/reactions", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -480,7 +480,7 @@ export async function createDiscoveryReaction(input: {
 }
 
 export async function getDiscoveryPost(postId: string): Promise<DiscoveryPostIndex> {
-  const response = await fetch(`/api/discovery/posts/${encodeURIComponent(postId)}`, {
+  const response = await fetchWithTimeout(`/api/discovery/posts/${encodeURIComponent(postId)}`, {
     headers: { accept: "application/json" }
   });
 
@@ -497,7 +497,7 @@ export async function getDiscoveryPost(postId: string): Promise<DiscoveryPostInd
 }
 
 export async function listDiscoveryPosts(mode: DiscoveryMode, limit = 20, offset = 0): Promise<DiscoveryPostIndex[]> {
-  const response = await fetch(`/api/discovery/${mode}?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`, {
+  const response = await fetchWithTimeout(`/api/discovery/${mode}?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`, {
     headers: { accept: "application/json" }
   });
 
@@ -510,7 +510,7 @@ export async function listDiscoveryPosts(mode: DiscoveryMode, limit = 20, offset
 }
 
 export async function reindexDiscoveryPosts(): Promise<number> {
-  const response = await fetch("/api/discovery/reindex", {
+  const response = await fetchWithTimeout("/api/discovery/reindex", {
     method: "POST",
     headers: { accept: "application/json" }
   });

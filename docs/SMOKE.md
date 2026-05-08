@@ -94,12 +94,34 @@ BASE_URL=http://127.0.0.1:3017 npm run smoke:auth
 After signup, clear the browser's IndexedDB profile and try to sign
 in with a handle that doesn't exist on this device. The card must:
 
-- not stay on "working..." longer than ~10s
+- not stay on "working..." longer than ~15s
 - produce a clear message such as "account not found on this device.
   restore or link this device." or "network error..."
 
 If the card hangs, check `fetchWithTimeout` in
-`src/web/client/api.ts` — the 10s timeout should fire.
+`src/web/client/api.ts` and the `withFlowTimeout` /
+`AUTH_FLOW_TIMEOUT_MS` guard in `src/web/client/main.ts` — both must
+fire within 15 seconds.
+
+## Auth-flow Puppeteer regression
+
+`scripts/auth-smoke.cjs` (`npm run smoke:auth-flow`) drives a real
+headless browser:
+
+- creates an account end-to-end and asserts signed-in within 15s
+- reloads the page and asserts a clean post-reload state
+- signs in with an unknown handle and asserts the dialog resolves to
+  a clear, user-readable error (never "creating account..." or
+  "signing in..." after timeout)
+
+Requires `puppeteer-core` and a Chrome binary. See the file header
+for env-var configuration. Browser console errors and failed network
+requests during the run are reported in the output.
+
+```sh
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:auth-flow
+```
 
 ## Cache headers
 

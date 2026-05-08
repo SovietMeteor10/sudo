@@ -13,6 +13,7 @@
     "check:env": "npm run build && node dist/cli/checkEnv.js",
     "smoke": "bash scripts/smoke.sh",
     "smoke:auth": "node scripts/test-register.cjs",
+    "smoke:auth-flow": "node scripts/auth-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
