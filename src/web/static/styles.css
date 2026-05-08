@@ -572,8 +572,10 @@ body[data-auth-state="signed-in"] .shell {
 }
 
 .signup-dialog {
-  width: min(430px, calc(100vw - 28px));
+  width: min(calc(100vw - 32px), 520px);
+  max-width: 520px;
   max-height: calc(100vh - 48px);
+  margin: auto;
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 0;
@@ -582,7 +584,13 @@ body[data-auth-state="signed-in"] .shell {
 }
 
 .signup-dialog--signup {
-  width: min(760px, calc(100vw - 32px));
+  width: min(calc(100vw - 32px), 760px);
+  max-width: 760px;
+}
+
+.signup-dialog--restore {
+  width: min(calc(100vw - 32px), 720px);
+  max-width: 720px;
 }
 
 .signup-dialog::backdrop {
@@ -590,15 +598,23 @@ body[data-auth-state="signed-in"] .shell {
 }
 
 .signup-dialog__panel {
-  width: min(92vw, 500px);
+  width: 100%;
+  max-width: 100%;
   padding: 18px;
   max-height: calc(100vh - 48px);
   overflow: auto;
   animation: auth-card-in 220ms ease-out;
 }
 
-.signup-dialog--signup .signup-dialog__panel {
-  width: min(760px, calc(100vw - 32px));
+.signup-dialog__panel > * {
+  max-width: 100%;
+}
+
+.signup-dialog input,
+.signup-dialog select,
+.signup-dialog textarea {
+  width: 100%;
+  max-width: 100%;
 }
 
 .signup-dialog__title {
@@ -667,9 +683,18 @@ body[data-auth-state="signed-in"] .shell {
 
 .signup-dialog__actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
+}
+
+.signup-dialog__actions .signup-dialog__mode {
+  margin-right: auto;
+}
+
+.signup-dialog__actions > .text-button {
+  flex: 0 1 auto;
 }
 
 .restore-tabs {
@@ -1033,5 +1058,26 @@ body[data-auth-state="signed-in"] .shell {
   .signup-dialog__grid {
     grid-template-columns: 1fr;
     gap: 0;
+  }
+
+  .signup-dialog__actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .signup-dialog__actions > .text-button {
+    width: 100%;
+  }
+
+  .signup-dialog__actions .signup-dialog__mode {
+    margin-right: 0;
+  }
+
+  .restore-tabs {
+    flex-direction: column;
+  }
+
+  .restore-tabs .lookup-card__button {
+    width: 100%;
   }
 }

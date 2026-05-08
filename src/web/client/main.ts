@@ -308,7 +308,7 @@ restoreCancel.addEventListener("click", () => {
 restoreDialog.addEventListener("close", () => {
   clearRestoreForm();
   if (authView !== "signed-in") {
-    setAuthView("menu");
+    openSigninDialog();
   }
 });
 

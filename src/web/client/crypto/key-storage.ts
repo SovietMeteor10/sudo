@@ -68,7 +68,7 @@ export async function createBrowserCryptoAccount(options: {
   const messaging = await generateMessagingKeyPair();
   const device = await generateDeviceKeyPair();
 
-  const unsigned = createIdentityDocumentDraft({
+  const unsigned = await createIdentityDocumentDraft({
     handle,
     homeNode: options.homeNode,
     identityPublicKey: identity.publicKeySpki,

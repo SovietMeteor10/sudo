@@ -1,5 +1,6 @@
 import { sha256Hex, signIdentityDocument } from "../crypto/index.js";
 import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
+import { formatCanonicalId } from "../protocol/identity.js";
 import type { IdentityDocument, RelayCapability, SignableIdentityDocument, SigningKeyType } from "../protocol/types.js";
 import {
   getIdentityByCanonicalId,
@@ -39,7 +40,7 @@ export function resolveIdentityFingerprintByCanonicalId(canonicalId: string) {
 }
 
 export function deriveCanonicalId(identityPublicKey: string, keyType: SigningKeyType = "ed25519"): string {
-  return `sudo:${keyType}:${sha256Hex(identityPublicKey)}`;
+  return formatCanonicalId(keyType, sha256Hex(identityPublicKey));
 }
 
 export function createSignedIdentityDocument(options: CreateIdentityDocumentOptions): IdentityDocument {

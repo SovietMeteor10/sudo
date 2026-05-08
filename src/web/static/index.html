@@ -157,7 +157,6 @@
       <div class="signup-dialog__hint" id="signup-passkey-support">device support: checking</div>
       <div class="signup-dialog__state" id="signup-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
-        <button class="auth-link signup-dialog__mode" type="button" data-auth-action="restore">restore account</button>
         <button class="text-button" id="signup-cancel" type="button">back</button>
         <button class="text-button text-button--primary" type="submit">create account</button>
       </div>
@@ -191,13 +190,14 @@
       <div class="signup-dialog__hint" id="signin-passkey-support">device support: checking</div>
       <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
+        <button class="text-button signup-dialog__mode" type="button" data-auth-action="restore">restore account</button>
         <button class="text-button" id="signin-cancel" type="button">back</button>
         <button class="text-button text-button--primary" id="signin-submit" type="submit">sign in</button>
       </div>
     </form>
   </dialog>
 
-  <dialog class="signup-dialog" id="restore-dialog" aria-labelledby="restore-title">
+  <dialog class="signup-dialog signup-dialog--restore" id="restore-dialog" aria-labelledby="restore-title">
     <form class="signup-dialog__panel" id="restore-form" method="dialog" autocomplete="off" data-lpignore="true">
       <div class="signup-dialog__title" id="restore-title">restore account</div>
       <p class="signup-dialog__warning">restore your sudo account on this device.</p>

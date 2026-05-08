@@ -5,14 +5,20 @@ import type {
   SignableIdentityDocument,
   SigningKeyType
 } from "../../../protocol/types.js";
+import { formatCanonicalId } from "../../../protocol/identity.js";
 import { base64Url } from "../local/crypto.js";
 import { canonicalJson } from "./signing.js";
 
-export function deriveCanonicalIdFromPublicKey(publicKey: string, keyType: SigningKeyType): string {
-  return `sudo:${keyType}:${sha256Hex(publicKey)}`;
+// Browser identity keys are currently transitional ECDSA P-256 (or Ed25519
+// where Web Crypto exposes it). The canonical_id always names the actual key
+// type so server verification can pick the right algorithm. Hashing is async
+// in the browser (crypto.subtle.digest), so anything that derives a
+// canonical_id must be awaited.
+export async function deriveCanonicalIdFromPublicKey(publicKey: string, keyType: SigningKeyType): Promise<string> {
+  return formatCanonicalId(keyType, await sha256Hex(publicKey));
 }
 
-export function createIdentityDocumentDraft(options: {
+export async function createIdentityDocumentDraft(options: {
   handle: string;
   homeNode: string;
   identityPublicKey: string;
@@ -26,9 +32,9 @@ export function createIdentityDocumentDraft(options: {
   messagingKeyType: MessagingKeyType;
   feedKeyType?: SigningKeyType;
   deviceKeyType?: SigningKeyType;
-}): SignableIdentityDocument {
+}): Promise<SignableIdentityDocument> {
   const createdAt = options.createdAt ?? new Date().toISOString();
-  const canonicalId = deriveCanonicalIdFromPublicKey(options.identityPublicKey, options.identityKeyType);
+  const canonicalId = await deriveCanonicalIdFromPublicKey(options.identityPublicKey, options.identityKeyType);
 
   return {
     type: "sudo_identity",
