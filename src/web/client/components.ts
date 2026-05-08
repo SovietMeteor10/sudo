@@ -5,12 +5,14 @@ import type {
   ConnectionRelationship,
   DiscoveryPostIndex,
   DiscoveryState,
+  DeviceSyncEvent,
   FeedPost,
   FeedSubscription,
   IdentityFingerprint,
   IdentityDocument,
   LocalIdentity,
   LookupState,
+  TrustedDevice,
   SearchResult,
   SearchState,
   SignupState,
@@ -42,16 +44,56 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
   );
 }
 
+export function renderDevicePanel(
+  root: HTMLElement,
+  currentDeviceId: string | null,
+  devices: TrustedDevice[],
+  pairingCode: string | null
+): void {
+  const fragment = document.createDocumentFragment();
+
+  if (pairingCode !== null) {
+    fragment.append(line(`pairing code: ${pairingCode}`, "is-muted"));
+  }
+
+  if (devices.length === 0) {
+    fragment.append(line("no linked devices yet", "lookup__empty"));
+    root.replaceChildren(fragment);
+    return;
+  }
+
+  for (const device of devices) {
+    const row = block("device-row", [
+      line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name"),
+      line(`status: ${device.trust_state}`, "is-muted"),
+      line(`last seen: ${device.last_seen_at}`, "is-muted"),
+      line(`sync: ${device.capabilities.can_sync ? "yes" : "no"}  decrypt: ${device.capabilities.can_decrypt ? "yes" : "no"}`, "is-muted"),
+      line(`id: ${shortCanonical(device.device_id)}`, "is-muted"),
+    ]);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "lookup-card__button";
+    button.dataset["deviceAction"] = "revoke";
+    button.dataset["deviceId"] = device.device_id;
+    button.textContent = device.trust_state === "revoked" ? "revoked" : "revoke";
+    button.disabled = device.trust_state === "revoked";
+    row.append(button);
+    fragment.append(row);
+  }
+
+  root.replaceChildren(fragment);
+}
+
 export function renderSignupState(root: HTMLElement, state: SignupState): void {
   if (state.status === "idle") {
     root.replaceChildren(
-      line("unsafe local-dev only: server writes plaintext private keys to data/keys", "is-muted"),
+      line("development account flow only", "is-muted"),
     );
     return;
   }
 
   if (state.status === "loading") {
-    root.replaceChildren(line("creating local identity...", "is-muted"));
+    root.replaceChildren(line("creating account...", "is-muted"));
     return;
   }
 
@@ -63,9 +105,9 @@ export function renderSignupState(root: HTMLElement, state: SignupState): void {
   root.replaceChildren(
     block("signup-result", [
       line(`created ${state.identity.handle}`),
-      line("sudo backup code:", "signup-result__label"),
+      line("account recovery code:", "signup-result__label"),
       line(state.backupCode, "signup-result__secret"),
-      line("shown once. store it locally. server only keeps a hash.", "is-muted"),
+      line("shown once. store it somewhere safe. the server only keeps a hash.", "is-muted"),
       line(`fingerprint: ${state.fingerprint.slice(0, 12)}...`, "is-muted"),
     ]),
   );
@@ -73,7 +115,7 @@ export function renderSignupState(root: HTMLElement, state: SignupState): void {
 
 export function renderSigninState(root: HTMLElement, state: SigninState): void {
   if (state.status === "idle") {
-    root.replaceChildren(line("use handle and password", "is-muted"));
+    root.replaceChildren(line("use your handle and passphrase", "is-muted"));
     return;
   }
 

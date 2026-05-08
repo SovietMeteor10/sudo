@@ -5,10 +5,12 @@ import type {
   FeedSubscription as ProtocolFeedSubscription,
   DiscoveryPostIndex as ProtocolDiscoveryPostIndex,
   DiscoveryReaction as ProtocolDiscoveryReaction,
+  DeviceSyncEvent as ProtocolDeviceSyncEvent,
   IdentityFingerprint as ProtocolIdentityFingerprint,
   IdentityDocument as ProtocolIdentityDocument,
   NodeCapabilityDocument as ProtocolNodeCapabilityDocument,
   RelayCapability as ProtocolRelayCapability,
+  TrustedDevice as ProtocolTrustedDevice,
   SearchResult as ProtocolSearchResult,
   StreamPost as ProtocolStreamPost
 } from "../../protocol/types.js";
@@ -21,6 +23,8 @@ export type ConnectionRelationship = ProtocolConnectionRelationship;
 export type FeedSubscription = ProtocolFeedSubscription;
 export type DiscoveryPostIndex = ProtocolDiscoveryPostIndex;
 export type DiscoveryReaction = ProtocolDiscoveryReaction;
+export type TrustedDevice = ProtocolTrustedDevice;
+export type DeviceSyncEvent = ProtocolDeviceSyncEvent;
 
 export type LocalIdentity = {
   handle: string;

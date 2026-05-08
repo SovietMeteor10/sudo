@@ -3,10 +3,12 @@ import type {
   DiscoveryMode,
   DiscoveryPostIndex,
   DiscoveryReaction,
+  DeviceSyncEvent,
   FeedPost,
   FeedSubscription,
   IdentityDocument,
   NodeCapabilityDocument,
+  TrustedDevice,
   SearchResult
 } from "./types.js";
 
@@ -42,6 +44,97 @@ export async function getNodeDocument(): Promise<NodeCapabilityDocument> {
   }
 
   return response.json() as Promise<NodeCapabilityDocument>;
+}
+
+export async function listTrustedDevices(ownerCanonicalId: string): Promise<TrustedDevice[]> {
+  const response = await fetch(`/api/devices/${encodeURIComponent(ownerCanonicalId)}`, {
+    headers: { accept: "application/json" }
+  });
+
+  if (!response.ok) {
+    throw new Error(`device list failed: ${response.status}`);
+  }
+
+  const body = await response.json() as { devices?: TrustedDevice[] };
+  return Array.isArray(body.devices) ? body.devices : [];
+}
+
+export async function registerTrustedDevice(input: TrustedDevice): Promise<TrustedDevice> {
+  const response = await fetch("/api/devices/register", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  const body = await response.json() as { ok?: boolean; device?: TrustedDevice; error?: string };
+  if (response.ok && body.device !== undefined) {
+    return body.device;
+  }
+
+  throw new Error(body.error ?? `device registration failed: ${response.status}`);
+}
+
+export async function startDevicePairing(ownerCanonicalId: string): Promise<{ pairing_code: string; pairing_token: string; expires_at: string }> {
+  const response = await fetch("/api/devices/pair/start", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ owner_canonical_id: ownerCanonicalId })
+  });
+
+  const body = await response.json() as { ok?: boolean; pairing_code?: string; pairing_token?: string; expires_at?: string; error?: string };
+  if (response.ok && body.pairing_code && body.pairing_token && body.expires_at) {
+    return { pairing_code: body.pairing_code, pairing_token: body.pairing_token, expires_at: body.expires_at };
+  }
+
+  throw new Error(body.error ?? `device pairing start failed: ${response.status}`);
+}
+
+export async function completeDevicePairing(input: {
+  pairing_code: string;
+  device_id: string;
+  name: string;
+  device_public_key: string;
+  encrypted_bootstrap_payload: string;
+}): Promise<{ ok: true; device: TrustedDevice; pairing_code: string }> {
+  const response = await fetch("/api/devices/pair/complete", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(input)
+  });
+
+  const body = await response.json() as { ok?: boolean; device?: TrustedDevice; pairing_code?: string; error?: string };
+  if (response.ok && body.device !== undefined && body.pairing_code !== undefined) {
+    return { ok: true, device: body.device, pairing_code: body.pairing_code };
+  }
+
+  throw new Error(body.error ?? `device pairing complete failed: ${response.status}`);
+}
+
+export async function revokeTrustedDevice(ownerCanonicalId: string, deviceId: string): Promise<TrustedDevice> {
+  const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ owner_canonical_id: ownerCanonicalId })
+  });
+
+  const body = await response.json() as { ok?: boolean; device?: TrustedDevice; error?: string };
+  if (response.ok && body.device !== undefined) {
+    return body.device;
+  }
+
+  throw new Error(body.error ?? `device revoke failed: ${response.status}`);
 }
 
 export async function registerIdentityDocument(identityDocument: IdentityDocument): Promise<IdentityDocument> {

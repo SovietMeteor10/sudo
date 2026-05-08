@@ -8,6 +8,7 @@ import type {
   LocalSetting,
   LocalStateSnapshot,
   LocalStorageStatus,
+  LocalTrustedDevice,
   PendingOutbound
 } from "./local-types.js";
 
@@ -19,6 +20,7 @@ export async function initializeLocalState(): Promise<void> {
   const now = new Date().toISOString();
   await putSetting("device.metadata", {
     device_id: crypto.randomUUID(),
+    device_name: "This device",
     created_at: now
   });
   await appendLocalEvent({
@@ -56,6 +58,24 @@ export async function getCryptoAccount(canonicalId: string): Promise<LocalCrypto
 
 export async function listCryptoAccounts(): Promise<LocalCryptoAccountRecord[]> {
   return getAllRecords<LocalCryptoAccountRecord>("crypto_accounts");
+}
+
+export async function saveTrustedDevice(device: LocalTrustedDevice): Promise<void> {
+  await putRecord("trusted_devices", device);
+}
+
+export async function listTrustedDevices(): Promise<LocalTrustedDevice[]> {
+  return getAllRecords<LocalTrustedDevice>("trusted_devices");
+}
+
+export async function revokeTrustedDevice(deviceId: string): Promise<void> {
+  const device = await getRecord<LocalTrustedDevice>("trusted_devices", deviceId);
+  if (device === null) return;
+  await putRecord("trusted_devices", {
+    ...device,
+    trust_state: "revoked",
+    last_seen_at: new Date().toISOString()
+  });
 }
 
 export async function upsertContact(contact: LocalContact): Promise<void> {
@@ -106,6 +126,10 @@ export async function getSetting(key: string): Promise<unknown | null> {
   return record?.value ?? null;
 }
 
+export async function getLocalDeviceMetadata(): Promise<{ device_id: string; device_name: string; created_at: string } | null> {
+  return (await getSetting("device.metadata")) as { device_id: string; device_name: string; created_at: string } | null;
+}
+
 export async function putSetting(key: string, value: unknown): Promise<void> {
   await putRecord("settings", {
     key,
@@ -135,6 +159,14 @@ export async function getLocalChatsFromContacts(): Promise<Array<{ id: string; c
     }));
 }
 
+// Future device sync will stream encrypted diffs derived from the append-only
+// local event log rather than mirroring whole stores.
+export async function listLocalSyncEvents(sinceCreatedAt?: string): Promise<LocalEvent[]> {
+  const events = await getAllRecords<LocalEvent>("events");
+  if (sinceCreatedAt === undefined) return events;
+  return events.filter((event) => Date.parse(event.created_at) > Date.parse(sinceCreatedAt));
+}
+
 export async function exportLocalSnapshot(): Promise<LocalStateSnapshot> {
   return {
     events: await getAllRecords("events"),
@@ -143,9 +175,11 @@ export async function exportLocalSnapshot(): Promise<LocalStateSnapshot> {
     subscriptions: await getAllRecords("subscriptions"),
     drafts: await getAllRecords("drafts"),
     crypto_accounts: await getAllRecords("crypto_accounts"),
+    trusted_devices: await getAllRecords("trusted_devices"),
     identities: await getAllRecords("identities"),
     settings: await getAllRecords("settings"),
-    pending_outbound: await getAllRecords("pending_outbound")
+    pending_outbound: await getAllRecords("pending_outbound"),
+    device_sync_events: await getAllRecords("device_sync_events")
   };
 }
 
@@ -157,9 +191,11 @@ export async function importLocalSnapshot(snapshot: LocalStateSnapshot): Promise
     putMany("subscriptions", snapshot.subscriptions),
     putMany("drafts", snapshot.drafts),
     putMany("crypto_accounts", snapshot.crypto_accounts),
+    putMany("trusted_devices", snapshot.trusted_devices),
     putMany("identities", snapshot.identities),
     putMany("settings", snapshot.settings),
-    putMany("pending_outbound", snapshot.pending_outbound)
+    putMany("pending_outbound", snapshot.pending_outbound),
+    putMany("device_sync_events", snapshot.device_sync_events)
   ]);
 }
 
@@ -173,7 +209,9 @@ export async function getLocalStorageStatus(): Promise<LocalStorageStatus> {
     crypto_accounts: await countStore("crypto_accounts"),
     identities: await countStore("identities"),
     settings: await countStore("settings"),
-    pending_outbound: await countStore("pending_outbound")
+    pending_outbound: await countStore("pending_outbound"),
+    trusted_devices: await countStore("trusted_devices"),
+    device_sync_events: await countStore("device_sync_events")
   };
 }
 

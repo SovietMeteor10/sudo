@@ -1,5 +1,5 @@
 export const LOCAL_DB_NAME = "sudo_local_state";
-export const LOCAL_DB_VERSION = 2;
+export const LOCAL_DB_VERSION = 3;
 
 export const localStoreNames = [
   "events",
@@ -9,8 +9,10 @@ export const localStoreNames = [
   "drafts",
   "identities",
   "crypto_accounts",
+  "trusted_devices",
   "settings",
-  "pending_outbound"
+  "pending_outbound",
+  "device_sync_events"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -57,6 +59,13 @@ export function openLocalDb(): Promise<IDBDatabase> {
         store.createIndex("by_updated_at", "updated_at");
       }
 
+      if (!db.objectStoreNames.contains("trusted_devices")) {
+        const store = db.createObjectStore("trusted_devices", { keyPath: "device_id" });
+        store.createIndex("by_owner", "owner_canonical_id");
+        store.createIndex("by_trust_state", "trust_state");
+        store.createIndex("by_last_seen_at", "last_seen_at");
+      }
+
       if (!db.objectStoreNames.contains("settings")) {
         db.createObjectStore("settings", { keyPath: "key" });
       }
@@ -65,6 +74,13 @@ export function openLocalDb(): Promise<IDBDatabase> {
         const store = db.createObjectStore("pending_outbound", { keyPath: "local_queue_id" });
         store.createIndex("by_recipient", "recipient_canonical_id");
         store.createIndex("by_status", "status");
+      }
+
+      if (!db.objectStoreNames.contains("device_sync_events")) {
+        const store = db.createObjectStore("device_sync_events", { keyPath: "event_id" });
+        store.createIndex("by_owner", "owner_canonical_id");
+        store.createIndex("by_device", "device_id");
+        store.createIndex("by_created_at", "created_at");
       }
     };
 

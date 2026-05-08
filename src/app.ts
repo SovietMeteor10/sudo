@@ -1,6 +1,7 @@
 import express from "express";
 import "./storage/db.js";
 import { connectionsRouter, subscriptionsRouter } from "./connections/connections.routes.js";
+import { devicesRouter } from "./devices/devices.routes.js";
 import { discoveryRouter } from "./discovery/discovery.routes.js";
 import { feedRouter } from "./feeds/feed.routes.js";
 import { identityRouter } from "./identity/identity.routes.js";
@@ -28,6 +29,7 @@ export function createApp() {
   });
 
   app.use("/api/identity", identityRouter);
+  app.use("/api/devices", devicesRouter);
   app.use("/api/connections", connectionsRouter);
   app.use("/api/subscriptions", subscriptionsRouter);
   app.use("/api/relay", relayRouter);

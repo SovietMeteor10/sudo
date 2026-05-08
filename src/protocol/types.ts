@@ -207,6 +207,31 @@ export type FeedSubscription = {
   updated_at: string;
 };
 
+export type TrustedDevice = {
+  type: "sudo_trusted_device";
+  device_id: string;
+  owner_canonical_id: CanonicalId;
+  name: string;
+  created_at: string;
+  last_seen_at: string;
+  trust_state: "active" | "revoked";
+  device_public_key: PublicKey;
+  capabilities: {
+    can_sync: boolean;
+    can_decrypt: boolean;
+  };
+};
+
+export type DeviceSyncEvent = {
+  type: "sudo_device_sync_event";
+  event_id: string;
+  owner_canonical_id: CanonicalId;
+  device_id: string;
+  event_type: string;
+  created_at: string;
+  encrypted_payload: string;
+};
+
 export type StreamPost = {
   id: string;
   handle: Handle;

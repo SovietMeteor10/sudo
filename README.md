@@ -22,9 +22,10 @@ The current UX is intentionally spare: a three-pane shell for identity, stream, 
 
 - local signup and sign-in
 - password-based dev auth
-- generated backup code shown once
+- account recovery code shown once
 - recovery question/answer scaffolding
 - signed identity documents
+- trusted devices and pairing foundation
 - handle lookup and fuzzy search
 - local connections list for conversation targets
 - encrypted inbox blob endpoints
@@ -106,6 +107,32 @@ whether the viewer wants public, connections, or close-connection content.
 The server-side visibility filters for restricted posts are still DEV-ONLY
 scaffolding. They are useful for the current portal, but they are not a
 replacement for future client-side encryption and group-key enforcement.
+
+## Trusted devices
+
+sudo accounts are replicated across trusted devices. The normal flow is:
+
+1. create an account on one device
+2. sign in on that device
+3. optionally link another device later
+
+The browser creates and keeps the device-held account material locally, then
+registers signed public identity data with the server. A trusted device record
+tracks the device name, trust state, last seen time, and capability flags.
+
+The device panel lets you:
+
+- see the current device
+- see linked devices
+- create a pairing code
+- link another device
+- revoke a device
+- back up the account
+- restore the account
+- reset this device
+
+Future encrypted event-diff sync will flow between trusted devices. It should
+stay local-first and should not turn the relay into canonical storage.
 
 ## Identity documents
 
@@ -202,18 +229,18 @@ placeholder signatures until client-held signing is implemented.
 
 ## Local storage and backups
 
-The browser portal keeps private working state in IndexedDB database
-`sudo_local_state`, not in server SQLite. This includes contacts, local events,
-private message history, pending outbound messages, identities seen, drafts,
-subscriptions, device metadata, and app settings.
+The browser portal keeps private working state on this device, not in server
+SQLite. This includes contacts, local events, private message history, pending
+outbound messages, identities seen, drafts, subscriptions, device metadata,
+trusted devices, and app settings.
 
 The maintenance panel can export and import encrypted `.sudo-backup.json` files.
-Backups are encrypted locally with Web Crypto PBKDF2 and AES-GCM. The backup
-passphrase stays in the browser and is not sent to the server.
+Backups are encrypted locally. The backup passphrase stays in the browser and
+is not sent to the server.
 
 Development caveats:
 
-- local message bodies may be plaintext in IndexedDB until full client-side encryption lands
+- local message bodies may be plaintext on this device until full client-side encryption lands
 - clearing browser data can delete private state
 - relay ACK must happen only after the client has saved the envelope locally
 - multi-device sync is future work
@@ -288,7 +315,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the detailed threat model and [docs
 
 Sign-in uses handle + password.
 
-Recovery uses the backup code plus recovery answer only for local-dev recovery.
+Recovery uses the recovery code plus recovery answer only for local-dev recovery.
 
 Example request shapes:
 
@@ -326,7 +353,7 @@ content-type: application/json
 }
 ```
 
-Sessions are restored with `/dev/session` using a bearer token stored in browser IndexedDB for now. That is temporary dev scaffolding only.
+Sessions are restored with `/dev/session` using a bearer token stored in the browser for now. That is temporary dev scaffolding only.
 
 ## Handle lookup and connections
 

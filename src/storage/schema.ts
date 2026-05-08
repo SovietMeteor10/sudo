@@ -106,6 +106,47 @@ export const schemaSql = `
   CREATE INDEX IF NOT EXISTS feed_subscriptions_author_idx
     ON feed_subscriptions(author_canonical_id);
 
+  CREATE TABLE IF NOT EXISTS trusted_devices (
+    device_id TEXT PRIMARY KEY,
+    owner_canonical_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    trust_state TEXT NOT NULL,
+    device_public_key TEXT NOT NULL,
+    capabilities_json TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS trusted_devices_owner_idx
+    ON trusted_devices(owner_canonical_id);
+
+  CREATE INDEX IF NOT EXISTS trusted_devices_trust_state_idx
+    ON trusted_devices(trust_state);
+
+  CREATE TABLE IF NOT EXISTS device_sync_events (
+    event_id TEXT PRIMARY KEY,
+    owner_canonical_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    encrypted_payload TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS device_sync_events_owner_created_at_idx
+    ON device_sync_events(owner_canonical_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS device_sync_events_device_created_at_idx
+    ON device_sync_events(device_id, created_at);
+
+  CREATE TABLE IF NOT EXISTS device_pairing_tokens (
+    pairing_token TEXT PRIMARY KEY,
+    owner_canonical_id TEXT NOT NULL,
+    pairing_code TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS feed_posts (
     post_id TEXT PRIMARY KEY,
     author_canonical_id TEXT NOT NULL,

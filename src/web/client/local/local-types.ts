@@ -1,4 +1,4 @@
-import type { IdentityDocument, RelayEnvelope, RelayEnvelopeStatus } from "../../../protocol/types.js";
+import type { DeviceSyncEvent, IdentityDocument, RelayEnvelope, RelayEnvelopeStatus, TrustedDevice } from "../../../protocol/types.js";
 
 export type LocalEventType =
   | "message.sent.local"
@@ -67,6 +67,8 @@ export type LocalCryptoAccountRecord = {
   updated_at: string;
 };
 
+export type LocalTrustedDevice = TrustedDevice;
+
 export type LocalIdentityRecord = {
   canonical_id: string;
   document: IdentityDocument;
@@ -97,9 +99,11 @@ export type LocalStateSnapshot = {
   subscriptions: LocalSubscription[];
   drafts: LocalDraft[];
   crypto_accounts: LocalCryptoAccountRecord[];
+  trusted_devices: LocalTrustedDevice[];
   identities: LocalIdentityRecord[];
   settings: LocalSetting[];
   pending_outbound: PendingOutbound[];
+  device_sync_events: DeviceSyncEvent[];
 };
 
 export type LocalStorageStatus = {
@@ -109,7 +113,9 @@ export type LocalStorageStatus = {
   subscriptions: number;
   drafts: number;
   crypto_accounts: number;
+  trusted_devices: number;
   identities: number;
   settings: number;
   pending_outbound: number;
+  device_sync_events: number;
 };

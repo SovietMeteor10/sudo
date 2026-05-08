@@ -21,6 +21,20 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "feed_subscriptions", "include_close", "INTEGER");
   addColumnIfMissing(db, "feed_subscriptions", "muted", "INTEGER");
 
+  addColumnIfMissing(db, "trusted_devices", "owner_canonical_id", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "name", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "created_at", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "last_seen_at", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "trust_state", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "device_public_key", "TEXT");
+  addColumnIfMissing(db, "trusted_devices", "capabilities_json", "TEXT");
+
+  addColumnIfMissing(db, "device_sync_events", "owner_canonical_id", "TEXT");
+  addColumnIfMissing(db, "device_sync_events", "device_id", "TEXT");
+  addColumnIfMissing(db, "device_sync_events", "event_type", "TEXT");
+  addColumnIfMissing(db, "device_sync_events", "created_at", "TEXT");
+  addColumnIfMissing(db, "device_sync_events", "encrypted_payload", "TEXT");
+
   addColumnIfMissing(db, "discovery_reactions", "actor_handle", "TEXT");
   addColumnIfMissing(db, "discovery_reactions", "signature", "TEXT");
   addColumnIfMissing(db, "discovery_post_index", "public_metadata_json", "TEXT");

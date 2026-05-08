@@ -3,6 +3,7 @@ import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
   registerIdentityDocument,
   createDiscoveryReaction,
+  completeDevicePairing,
   deleteConnectionRelationship,
   deleteFeedSubscription,
   createFeedPost,
@@ -14,6 +15,10 @@ import {
   lookupHandle,
   normalizeLookupInput,
   getNodeDocument,
+  listTrustedDevices as listServerTrustedDevices,
+  revokeTrustedDevice as revokeServerTrustedDevice,
+  registerTrustedDevice,
+  startDevicePairing,
   recoverDevHandle,
   restoreDevSession,
   searchHandles,
@@ -34,6 +39,7 @@ import { signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
   renderChatList,
   renderDiscoveryPanel,
+  renderDevicePanel,
   renderIdentityPane,
   renderLookupResult,
   renderSearchResults,
@@ -49,12 +55,17 @@ import {
   writeDevSessionToken
 } from "./localState.js";
 import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup } from "./local/backup.js";
+import { base64Url, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
   getLocalStorageStatus,
   initializeLocalState,
   listCryptoAccounts,
+  listTrustedDevices,
+  getLocalDeviceMetadata,
+  revokeTrustedDevice,
   saveIdentitySeen,
+  saveTrustedDevice,
   upsertContact
 } from "./local/local-store.js";
 import type {
@@ -124,6 +135,12 @@ const backupCodeFeedback = getRequiredElement("backup-code-feedback");
 const recoveryAck = getRequiredInput("recovery-ack");
 const recoveryDismiss = getRequiredButton("recovery-dismiss");
 const localStateStatus = getRequiredElement("local-storage-status");
+const deviceCurrentStatus = getRequiredElement("device-current-status");
+const deviceList = getRequiredElement("device-list");
+const deviceLinkStart = getRequiredButton("device-link-start");
+const deviceLinkComplete = getRequiredButton("device-link-complete");
+const devicePairingCode = getRequiredInput("device-pairing-code");
+const devicePanelFeedback = getRequiredElement("device-panel-feedback");
 const cryptoAccountCreate = getRequiredButton("crypto-account-create");
 const cryptoAccountUnlock = getRequiredButton("crypto-account-unlock");
 const cryptoAccountLock = getRequiredButton("crypto-account-lock");
@@ -150,6 +167,8 @@ let currentCryptoAccount: BrowserCryptoAccount | null = null;
 let currentLookupRelationship: ConnectionRelationship | null = null;
 let currentLookupSubscription: FeedSubscription | null = null;
 let currentNodeDocument: NodeCapabilityDocument | null = null;
+let currentDeviceId: string | null = null;
+let activePairingCode: string | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -214,6 +233,16 @@ discoveryRoot.addEventListener("click", (event) => {
   const postId = target.closest("[data-post-id]")?.getAttribute("data-post-id");
   if (reaction !== undefined && postId !== undefined && postId !== null && isDiscoveryReaction(reaction)) {
     void handleDiscoveryReaction(postId, reaction);
+  }
+});
+
+deviceList.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) return;
+  const action = target.dataset["deviceAction"];
+  const deviceId = target.dataset["deviceId"];
+  if (action === "revoke" && deviceId !== undefined) {
+    void revokeDevice(deviceId);
   }
 });
 
@@ -290,6 +319,14 @@ backupImportFile.addEventListener("change", () => {
   void importSelectedBackup();
 });
 
+deviceLinkStart.addEventListener("click", () => {
+  void startPairingFlow();
+});
+
+deviceLinkComplete.addEventListener("click", () => {
+  void completePairingFlow();
+});
+
 cryptoAccountCreate.addEventListener("click", () => {
   void createCryptographicAccountFlow();
 });
@@ -342,8 +379,9 @@ async function initializeLocalRuntime(): Promise<void> {
     localChats = await readLocalChats();
     renderChatList(chatsRoot, localChats);
     await refreshLocalStorageStatus();
+    await refreshDevicePanel();
   } catch (error) {
-    localStateStatus.textContent = `local storage: ${error instanceof Error ? error.message : "unavailable"}`;
+    localStateStatus.textContent = `device status: ${error instanceof Error ? error.message : "unavailable"}`;
   }
 }
 
@@ -424,7 +462,6 @@ async function runSignup(
   rawRecoveryAnswer: string
 ): Promise<void> {
   const handle = normalizeLookupInput(rawHandle);
-  const recoveryAnswer = rawRecoveryAnswer.trim();
   if (!/^[A-Za-z0-9_]{3,32}$/.test(handle)) {
     setSignupState({
       status: "error",
@@ -450,38 +487,40 @@ async function runSignup(
     return;
   }
 
-  if (recoveryAnswer.length < 1) {
-    setSignupState({
-      status: "error",
-      message: "choose a recovery question and answer",
-    });
-    return;
-  }
-
   setSignupState({ status: "loading" });
 
   try {
-    const result = await signupDevHandle(handle, password, signupRecoveryPromptInput.value, recoveryAnswer);
-    const identity = result.identity;
+    const nodeDocument = currentNodeDocument ?? await ensureNodeDocument().catch(() => null);
+    const draft = await createBrowserCryptoAccount({
+      handle,
+      passphrase: password,
+      homeNode: window.location.origin,
+      deliveryRelays: nodeDocument?.relay_capabilities ?? []
+    });
+    const identity = await registerIdentityDocument(draft.identity_document);
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
+    const deviceMetadata = await getLocalDeviceMetadata();
+    const trustedDevice = buildTrustedDeviceRecord(identity, draft.account, deviceMetadata?.device_id ?? crypto.randomUUID());
     await saveIdentitySeen({
       canonical_id: identity.canonical_id,
       document: identity,
       seen_at: new Date().toISOString()
     });
+    await storeBrowserCryptoAccount(draft.record);
+    await saveTrustedDevice(trustedDevice);
+    currentCryptoAccount = draft.account;
+    currentDeviceId = trustedDevice.device_id;
     setCurrentIdentity(identity, fingerprint);
-    setSignupState({ status: "created", identity, fingerprint, backupCode: result.backupCode });
-    // DEV ONLY: this browser IndexedDB session token is temporary scaffolding.
-    // Production should bind sessions to device-held credentials.
-    await writeDevSessionToken(result.sessionToken);
+    setSignupState({ status: "created", identity, fingerprint, backupCode: "account created on this device" });
     signupDialog.close();
     setSignedIn(identity.handle);
-    showRecoveryPanel(result.backupCode);
+    localMaintenanceFeedback.textContent = "account created";
     syncActivePane("identity");
+    await syncCurrentDeviceToServer(trustedDevice);
   } catch (error) {
     setSignupState({
       status: "error",
-      message: error instanceof Error ? error.message : "signup failed",
+      message: error instanceof Error ? error.message : "account creation failed",
     });
   }
 }
@@ -501,21 +540,40 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
   setSigninState({ status: "loading" });
 
   try {
-    const result = await signinDevHandle(handle, password);
-    // DEV ONLY: this browser IndexedDB session token is temporary scaffolding.
-    // Production should bind sessions to device-held credentials.
-    await writeDevSessionToken(result.sessionToken);
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
-    setCurrentIdentity(result.identity, fingerprint);
-    setSigninState({ status: "signed_in", identity: result.identity });
-    signinDialog.close();
-    setSignedIn(result.identity.handle);
-    syncActivePane("identity");
-  } catch (error) {
-    setSigninState({
-      status: "error",
-      message: error instanceof Error ? error.message : "sign-in failed",
+    const account = await unlockBrowserCryptoAccountByHandle(handle, password);
+    currentCryptoAccount = account;
+    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(account.identity_document));
+    const identity = account.identity_document;
+    await saveIdentitySeen({
+      canonical_id: identity.canonical_id,
+      document: identity,
+      seen_at: new Date().toISOString()
     });
+    currentDeviceId = await ensureCurrentDeviceId();
+    await saveTrustedDevice(buildTrustedDeviceRecord(identity, account, currentDeviceId));
+    setCurrentIdentity(identity, fingerprint);
+    setSigninState({ status: "signed_in", identity });
+    signinDialog.close();
+    setSignedIn(identity.handle);
+    syncActivePane("identity");
+    await syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId));
+  } catch (error) {
+    try {
+      const result = await signinDevHandle(handle, password);
+      await writeDevSessionToken(result.sessionToken);
+      const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
+      setCurrentIdentity(result.identity, fingerprint);
+      setSigninState({ status: "signed_in", identity: result.identity });
+      signinDialog.close();
+      setSignedIn(result.identity.handle);
+      syncActivePane("identity");
+      return;
+    } catch (devError) {
+      setSigninState({
+        status: "error",
+        message: error instanceof Error ? error.message : devError instanceof Error ? devError.message : "sign-in failed",
+      });
+    }
   }
 }
 
@@ -527,7 +585,7 @@ async function runRecover(
 ): Promise<void> {
   const handle = normalizeLookupInput(rawHandle);
   if (handle.length === 0 || backupCode.trim().length === 0 || recoveryAnswer.trim().length === 0) {
-    setSigninState({ status: "error", message: "handle, backup code, and recovery answer are required" });
+    setSigninState({ status: "error", message: "handle, recovery code, and recovery answer are required" });
     return;
   }
 
@@ -540,7 +598,7 @@ async function runRecover(
       recoveryQuestion,
       recoveryAnswer.trim()
     );
-    // DEV ONLY: this browser IndexedDB session token is temporary scaffolding.
+    // DEV ONLY: this browser session token is temporary scaffolding.
     // Production should bind sessions to device-held credentials.
     await writeDevSessionToken(result.sessionToken);
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
@@ -590,7 +648,188 @@ async function restoreStoredSession(): Promise<void> {
 
 async function refreshLocalStorageStatus(): Promise<void> {
   const status = await getLocalStorageStatus();
-  localStateStatus.textContent = `local storage: ${status.messages} messages, ${status.contacts} contacts, ${status.events} events, ${status.pending_outbound} queued`;
+  localStateStatus.textContent = `device status: ${status.messages} messages, ${status.contacts} contacts, ${status.events} events, ${status.pending_outbound} queued, ${status.trusted_devices} devices`;
+  void refreshDevicePanel();
+}
+
+async function refreshDevicePanel(): Promise<void> {
+  const metadata = await getLocalDeviceMetadata().catch(() => null);
+  if (currentDeviceId === null && metadata !== null) {
+    currentDeviceId = metadata.device_id;
+  }
+
+  const localDevices = await listTrustedDevices().catch(() => []);
+  const serverDevices = currentIdentityDocument === null
+    ? []
+    : await listServerTrustedDevices(currentIdentityDocument.canonical_id).catch(() => []);
+
+  const devicesById = new Map<string, import("./types.js").TrustedDevice>();
+  for (const device of [...serverDevices, ...localDevices]) {
+    devicesById.set(device.device_id, device);
+  }
+
+  if (currentIdentityDocument !== null && currentCryptoAccount !== null) {
+    const currentDevice = buildTrustedDeviceRecord(
+      currentIdentityDocument,
+      currentCryptoAccount,
+      currentDeviceId ?? metadata?.device_id ?? crypto.randomUUID()
+    );
+    devicesById.set(currentDevice.device_id, currentDevice);
+    currentDeviceId = currentDevice.device_id;
+  }
+
+  const devices = [...devicesById.values()].sort((left, right) => right.last_seen_at.localeCompare(left.last_seen_at));
+  deviceCurrentStatus.textContent = currentIdentityDocument === null
+    ? "not signed in"
+    : `signed in as ${currentIdentityDocument.handle}`;
+  renderDevicePanel(deviceList, currentDeviceId, devices, activePairingCode);
+}
+
+async function syncCurrentDeviceToServer(device: import("./types.js").TrustedDevice): Promise<void> {
+  if (currentIdentityDocument === null) return;
+
+  try {
+    await registerTrustedDevice(device);
+    devicePanelFeedback.textContent = "device saved";
+  } catch {
+    devicePanelFeedback.textContent = "device saved locally";
+  }
+}
+
+function buildTrustedDeviceRecord(
+  identity: IdentityDocument,
+  account: BrowserCryptoAccount,
+  deviceId: string
+): import("./types.js").TrustedDevice {
+  return {
+    type: "sudo_trusted_device",
+    device_id: deviceId,
+    owner_canonical_id: identity.canonical_id,
+    name: "This device",
+    created_at: new Date().toISOString(),
+    last_seen_at: new Date().toISOString(),
+    trust_state: "active",
+    device_public_key: identity.keys.device?.public_key ?? identity.keys.identity.public_key,
+    capabilities: {
+      can_sync: true,
+      can_decrypt: true
+    }
+  };
+}
+
+async function ensureCurrentDeviceId(): Promise<string> {
+  if (currentDeviceId !== null) return currentDeviceId;
+  const metadata = await getLocalDeviceMetadata().catch(() => null);
+  if (metadata !== null) {
+    currentDeviceId = metadata.device_id;
+    return metadata.device_id;
+  }
+
+  const deviceId = crypto.randomUUID();
+  currentDeviceId = deviceId;
+  return deviceId;
+}
+
+async function unlockBrowserCryptoAccountByHandle(handle: string, passphrase: string): Promise<BrowserCryptoAccount> {
+  const accounts = await listCryptoAccounts();
+  const selected = accounts.find((account) => account.canonical_id === handle || account.handle === handle || account.handle === `@${handle}`);
+  if (selected === undefined) {
+    throw new Error("stored account not found");
+  }
+
+  return unlockBrowserCryptoAccount(selected.canonical_id, passphrase);
+}
+
+async function startPairingFlow(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    devicePanelFeedback.textContent = "sign in first";
+    return;
+  }
+
+  try {
+    const result = await startDevicePairing(currentIdentityDocument.canonical_id);
+    activePairingCode = result.pairing_code;
+    devicePairingCode.value = result.pairing_code;
+    devicePanelFeedback.textContent = `pairing code ready: ${result.pairing_code}`;
+    await refreshDevicePanel();
+  } catch (error) {
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing start failed";
+  }
+}
+
+async function completePairingFlow(): Promise<void> {
+  if (currentIdentityDocument === null || currentCryptoAccount === null) {
+    devicePanelFeedback.textContent = "unlock your account first";
+    return;
+  }
+
+  const pairingCode = devicePairingCode.value.trim() || (activePairingCode ?? "");
+  if (pairingCode.length === 0) {
+    devicePanelFeedback.textContent = "enter a pairing code";
+    return;
+  }
+
+  try {
+    const deviceId = await ensureCurrentDeviceId();
+    const device = buildTrustedDeviceRecord(currentIdentityDocument, currentCryptoAccount, deviceId);
+    const payload = await createEncryptedBootstrapPayload(device, pairingCode);
+    const result = await completeDevicePairing({
+      pairing_code: pairingCode,
+      device_id: device.device_id,
+      name: device.name,
+      device_public_key: device.device_public_key,
+      encrypted_bootstrap_payload: payload
+    });
+    await saveTrustedDevice(result.device);
+    await registerTrustedDevice(result.device);
+    activePairingCode = null;
+    devicePairingCode.value = "";
+    devicePanelFeedback.textContent = "device linked";
+    await refreshDevicePanel();
+  } catch (error) {
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing complete failed";
+  }
+}
+
+async function revokeDevice(deviceId: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    return;
+  }
+
+  try {
+    const device = await revokeServerTrustedDevice(currentIdentityDocument.canonical_id, deviceId);
+    await revokeTrustedDevice(device.device_id);
+    devicePanelFeedback.textContent = "device revoked";
+    await refreshDevicePanel();
+  } catch (error) {
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "device revoke failed";
+  }
+}
+
+async function createEncryptedBootstrapPayload(
+  device: import("./types.js").TrustedDevice,
+  pairingCode: string
+): Promise<string> {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = await deriveBackupKey(pairingCode, salt, 120000);
+  const payload = {
+    device_id: device.device_id,
+    owner_canonical_id: device.owner_canonical_id,
+    name: device.name,
+    created_at: device.created_at,
+    last_seen_at: device.last_seen_at
+  };
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    new TextEncoder().encode(JSON.stringify(payload))
+  );
+  return JSON.stringify({
+    salt: base64Url(salt),
+    iv: base64Url(iv),
+    ciphertext: base64Url(ciphertext)
+  });
 }
 
 async function refreshFeedPosts(): Promise<void> {
@@ -854,100 +1093,19 @@ async function submitFeedPost(): Promise<void> {
 }
 
 async function createCryptographicAccountFlow(): Promise<void> {
-  const handle = normalizeLookupInput(prompt("Choose a handle for this cryptographic account") ?? "");
-  if (!/^[A-Za-z0-9_]{3,32}$/.test(handle)) {
-    localMaintenanceFeedback.textContent = "invalid handle";
-    return;
-  }
-
-  const passphrase = prompt("Choose a passphrase for local key storage");
-  if (passphrase === null || passphrase.length < 12) {
-    localMaintenanceFeedback.textContent = "passphrase cancelled or too short";
-    return;
-  }
-
-  const confirmPassphrase = prompt("Confirm the passphrase");
-  if (confirmPassphrase !== passphrase) {
-    localMaintenanceFeedback.textContent = "passphrases do not match";
-    return;
-  }
-
-  const homeNode = prompt("Home node URL", window.location.origin) ?? window.location.origin;
-  localMaintenanceFeedback.textContent = "creating browser cryptographic account...";
-
-  try {
-    const nodeDocument = currentNodeDocument ?? await ensureNodeDocument().catch(() => null);
-    const draft = await createBrowserCryptoAccount({
-      handle,
-      passphrase,
-      homeNode,
-      deliveryRelays: nodeDocument?.relay_capabilities ?? []
-    });
-    const identity = await registerIdentityDocument(draft.identity_document);
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
-
-    await storeBrowserCryptoAccount(draft.record);
-    await saveIdentitySeen({
-      canonical_id: identity.canonical_id,
-      document: identity,
-      seen_at: new Date().toISOString()
-    });
-
-    currentCryptoAccount = draft.account;
-    setCurrentIdentity(identity, fingerprint);
-    setSignedIn(identity.handle);
-    localMaintenanceFeedback.textContent = "browser cryptographic account created";
-    await refreshLocalStorageStatus();
-  } catch (error) {
-    lockBrowserCryptoAccount();
-    currentCryptoAccount = null;
-    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "account creation failed";
-  }
+  openSignupDialog();
+  localMaintenanceFeedback.textContent = "fill in the create account form";
 }
 
 async function unlockLocalKeysFlow(): Promise<void> {
-  const accounts = await listCryptoAccounts();
-  if (accounts.length === 0) {
-    localMaintenanceFeedback.textContent = "no stored cryptographic accounts";
-    return;
-  }
-
-  const locator = normalizeLookupInput(
-    prompt("Enter a handle or canonical ID to unlock") ?? currentIdentityDocument?.canonical_id ?? ""
-  );
-  const selected = accounts.find((account) => account.canonical_id === locator || account.handle === locator || account.handle === `@${locator}`);
-  if (selected === undefined) {
-    localMaintenanceFeedback.textContent = "stored account not found";
-    return;
-  }
-
-  const passphrase = prompt(`Enter the passphrase for ${selected.handle}`);
-  if (passphrase === null || passphrase.length === 0) {
-    localMaintenanceFeedback.textContent = "unlock cancelled";
-    return;
-  }
-
-  try {
-    const account = await unlockBrowserCryptoAccount(selected.canonical_id, passphrase);
-    currentCryptoAccount = account;
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(account.identity_document));
-    await saveIdentitySeen({
-      canonical_id: account.identity_document.canonical_id,
-      document: account.identity_document,
-      seen_at: new Date().toISOString()
-    });
-    setCurrentIdentity(account.identity_document, fingerprint);
-    setSignedIn(account.handle);
-    localMaintenanceFeedback.textContent = "local keys unlocked";
-  } catch (error) {
-    localMaintenanceFeedback.textContent = error instanceof Error ? error.message : "unlock failed";
-  }
+  openSigninDialog();
+  localMaintenanceFeedback.textContent = "unlock your account from the sign-in form";
 }
 
 async function lockLocalKeysFlow(): Promise<void> {
   lockBrowserCryptoAccount();
   currentCryptoAccount = null;
-  localMaintenanceFeedback.textContent = "local keys locked";
+  localMaintenanceFeedback.textContent = "account locked";
   if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
     setCurrentIdentity(currentIdentityDocument, currentIdentityFingerprint);
   }
@@ -1005,7 +1163,7 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
   renderChatList(chatsRoot, localChats);
   await initializeLocalState();
   await refreshLocalStorageStatus();
-  localMaintenanceFeedback.textContent = "local state cleared";
+  localMaintenanceFeedback.textContent = "device reset";
 }
 
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
@@ -1013,6 +1171,7 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   currentIdentityFingerprint = fingerprint;
   currentIdentity = buildIdentityView(identity, fingerprint);
   renderIdentityPane(identityRoot, currentIdentity);
+  void refreshDevicePanel();
   void refreshLookupRelationship();
   void refreshFeedPosts();
   renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
@@ -1212,6 +1371,7 @@ function setSignedOut(): void {
   document.body.dataset["authState"] = "signed-out";
   currentIdentity = buildAnonymousIdentityView();
   renderIdentityPane(identityRoot, currentIdentity);
+  void refreshDevicePanel();
   renderDiscoveryPanel(discoveryRoot, discoveryState, null);
   headerHandle.textContent = "";
   logoutButton.hidden = true;
@@ -1257,10 +1417,10 @@ function buildIdentityView(identity: IdentityDocument, fingerprint: string): Loc
   const relaySelection = selectRelayForRecipient(identity);
   return {
     handle: identity.handle,
-    bio: currentCryptoAccount === null ? "local-dev identity" : "browser cryptographic account",
-    status: currentCryptoAccount === null ? "keys locked" : "keys unlocked",
-    privacyMode: currentCryptoAccount === null ? "ghost mode: off" : "browser-held keys",
-    onionState: `onion: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
+    bio: currentCryptoAccount === null ? "account on this device" : "account unlocked",
+    status: currentCryptoAccount === null ? "locked" : "unlocked",
+    privacyMode: currentCryptoAccount === null ? "account locked" : "account unlocked",
+    onionState: `relay: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
     fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
     portalTransport: `portal: ${describePortalTransport(window.location.origin)}`,
     relayTransport: relaySelection.ok ? `relay: ${relaySelection.privacy_level}` : "relay: unavailable",
@@ -1279,7 +1439,7 @@ function buildAnonymousIdentityView(): LocalIdentity {
   return {
     ...localIdentity,
     portalTransport: `portal: ${describePortalTransport(window.location.origin)}`,
-    onionState: `onion: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
+    onionState: `relay: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
     relayTransport: currentNodeDocument === null
       ? localIdentity.relayTransport
       : `relay: ${currentNodeDocument.relay_capabilities[0]?.transport ?? "unavailable"}`,
@@ -1324,7 +1484,7 @@ function showRecoveryPanel(backupCode: string): void {
 function syncRecoveryDismissState(): void {
   const isActive = recoveryAck.checked;
   recoveryDismiss.disabled = !isActive;
-  recoveryDismiss.title = isActive ? "dismiss backup code panel" : "check I saved this first";
+  recoveryDismiss.title = isActive ? "dismiss recovery code panel" : "check I saved this first";
 }
 
 async function copyBackupCode(): Promise<void> {

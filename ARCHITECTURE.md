@@ -56,6 +56,22 @@ If the visual fingerprint changes for a known handle or contact, users should
 treat that as an identity change until they can verify key continuity out of
 band.
 
+## Trusted Devices
+
+sudo accounts are replicated across trusted devices. A user account is not
+just a login on one browser; it is a cryptographic identity plus a set of
+device registrations that can be linked and revoked over time.
+
+The current model keeps the browser as the local owner of account material and
+uses the server as a relay and rendezvous point. The server stores signed
+public identity data and trusted-device metadata, but it is not the canonical
+owner of private user state.
+
+Trusted devices are modeled separately so future encrypted event-diff sync can
+move between devices without turning the relay into the source of truth. That
+future sync layer should stream encrypted changes for messages, contacts,
+subscriptions, feed state, and device events rather than copying whole stores.
+
 ## Relay Model
 
 sudo relays are temporary bounded mailboxes for encrypted envelopes. They are
