@@ -1,14 +1,15 @@
 // Lower-left notifications coordinator. Polls the read-only
-// /api/notifications/incoming endpoint, filters out anything the
-// recipient device has already dismissed (kept in IndexedDB so
-// reload preserves state), and re-renders into the notifications
-// panel. Dismissal lives client-side because the underlying social
-// actions (follow / connect) are still owner-canonical on the
-// server — we don't add a server-side dismissed table for the MVP.
+// /api/notifications/incoming endpoint (follow notifications only —
+// connect/friend is intentionally NOT a notification category),
+// filters out anything the recipient device has already dismissed
+// (kept in IndexedDB so reload preserves state), and re-renders
+// into the notifications panel. Dismissal lives client-side because
+// the underlying follow rows are owner-canonical on the server —
+// we don't add a server-side dismissed table for the MVP.
 //
 // No new architecture: piggy-backs on the existing settings store
 // and the same lookup-pane relationship helpers that drive the
-// "connect back" / "block" actions.
+// "follow back" / "block" actions.
 
 import {
   listConnections,
@@ -126,24 +127,6 @@ async function handleNotificationAction(
         include_connections: true,
         include_close: false,
         muted: false
-      });
-    } else if (action === "connect-back") {
-      // Reciprocate the trust tier the actor chose. Default to known
-      // when the actor's tier is missing (older event).
-      const tier = notification.tier === "close" ? "close" : "known";
-      await upsertConnectionRelationship({
-        owner_canonical_id: ownerCanonicalId,
-        subject_canonical_id: notification.actor_canonical_id,
-        subject_handle: notification.actor_handle,
-        tier,
-        subscribed: true
-      });
-      await applyContactUpsertWithBroadcast(ownerCanonicalId, {
-        canonical_id: notification.actor_canonical_id,
-        handle: notification.actor_handle ?? notification.actor_canonical_id,
-        tier,
-        added_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
       });
     } else if (action === "block") {
       await upsertConnectionRelationship({

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Relationship/notifications UX smoke. Drives two real browser
-// contexts and asserts the new product polish:
+// contexts and asserts the product polish:
 //
 //   1. Lookup-card buttons are stateful toggles, not always-visible
 //      pairs. follow ↔ unfollow, connect ↔ remove, close-friend
@@ -9,12 +9,14 @@
 //   2. Lower-left identity profile-card block is gone. The new
 //      notifications panel renders in its place with a "no
 //      notifications" empty state.
-//   3. When A follows B, B sees a "follow" notification.
-//   4. When A connects with B, B sees a "connect" notification with
-//      "connect back" / "dismiss" / "block" actions. accept-back
-//      creates the reciprocal relationship; dismiss hides; block
-//      blocks the actor.
-//   5. The post-detail back-header height roughly matches the
+//   3. Follows are the ONLY notification category. When A follows
+//      B, B sees "@A follows you" with follow back / dismiss /
+//      block actions. When A *connects* with B (sets known/close),
+//      B does NOT receive a notification — connect/friend status
+//      lives in the relationship UI, not in the notifications
+//      stream. Dismiss persists. Block from a follow notification
+//      sets tier=blocked.
+//   4. The post-detail back-header height roughly matches the
 //      left-column .column__title row height (~34px) and is no
 //      taller than 40px.
 
@@ -37,6 +39,30 @@ const fail = (label, msg) => { failures.push(`${label}: ${msg}`); console.error(
 const ok = (label) => { passes.push(label); console.log("ok:", label); };
 
 const PASSPHRASE = "CorrectHorseBatteryStaple9!";
+
+// Mint a server-only identity via /dev/signup. Returns the new
+// canonical_id or null on failure. Used by the notifications subtests
+// that need a third-party actor (charlie / diana) without spinning
+// up a full browser context for them.
+async function devSignupServerOnly(handle) {
+  try {
+    const resp = await fetch(BASE + "/dev/signup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle,
+        password: PASSPHRASE,
+        recoveryQuestion: "smoke",
+        recoveryAnswer: "smoke-answer"
+      })
+    });
+    if (!resp.ok) return null;
+    const body = await resp.json();
+    return body?.identity?.canonical_id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 async function newSignedInContext(browser, handle) {
   const context = await browser.createBrowserContext();
@@ -298,7 +324,10 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
     await clickLookupAction(pageA, "set-subscribe");
     ok("A followed B");
 
-    // Wait for B's notification panel to pick it up.
+    // Wait for B's notification panel to pick it up. The notification
+    // text and action set are asserted explicitly: "@A follows you"
+    // plus follow back / dismiss / block — no "wants to connect" or
+    // "connect back" anywhere.
     const followNotif = await waitForNotification(pageB, "follow:", 25000);
     if (!followNotif.matched) {
       fail("notif-follow", `B did not see follow notification within 25s`);
@@ -306,67 +335,201 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
       ok(`B saw follow notification in ${followNotif.elapsed}ms`);
     }
 
-    // ===== A connects with B → B sees connect notification =====
-    await clickLookupAction(pageA, "set-known");
-    ok("A connected with B (tier=known)");
-    const connectNotif = await waitForNotification(pageB, "connect:", 25000);
-    if (!connectNotif.matched) {
-      fail("notif-connect", `B did not see connect notification within 25s`);
-    } else {
-      ok(`B saw connect notification in ${connectNotif.elapsed}ms`);
-    }
-
-    // ===== B accepts connect-back =====
-    if (connectNotif.matched) {
-      const clickedAccept = await pageB.evaluate((id) => {
+    if (followNotif.matched) {
+      const shape = await pageB.evaluate((id) => {
         const row = document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`);
-        if (!row) return false;
-        const buttons = Array.from(row.querySelectorAll(".notification-row__action"));
-        const accept = buttons.find((b) => (b.textContent || "").trim() === "connect back");
-        if (!(accept instanceof HTMLButtonElement)) return false;
-        accept.click();
-        return true;
-      }, connectNotif.id);
-      if (!clickedAccept) fail("notif-accept", "could not click 'connect back'");
-
-      // After accept, the row should be dismissed locally and B's
-      // lookup card on A should now show set-unknown (connected).
-      await new Promise((r) => setTimeout(r, 1500));
-      const stillThere = await pageB.evaluate((id) => {
-        return document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`) !== null;
-      }, connectNotif.id);
-      if (stillThere) fail("notif-accept-dismiss", "notification still showing after accept");
-      else ok("connect-back dismissed the notification");
-
-      await resolveLookup(pageB, `@${handleA}`);
-      const reciprocal = (await lookupActions(pageB)).map((a) => a.action);
-      if (!reciprocal.includes("set-unknown")) {
-        fail("notif-accept-reciprocal", `B's view of A should be connected; actions=${reciprocal.join("/")}`);
+        if (!(row instanceof HTMLElement)) return null;
+        const lead = row.querySelector(".notification-row__line")?.textContent?.trim() ?? "";
+        const buttons = Array.from(row.querySelectorAll(".notification-row__action"))
+          .map((b) => (b.textContent ?? "").trim())
+          .filter((label) => label.length > 0);
+        return { lead, buttons };
+      }, followNotif.id);
+      if (shape === null) {
+        fail("notif-follow-shape", "follow notification row missing in DOM");
       } else {
-        ok(`accept created reciprocal connection: ${reciprocal.join(", ")}`);
+        if (!/^@\S+ follows you$/.test(shape.lead)) {
+          fail("notif-follow-text", `unexpected lead line: '${shape.lead}'`);
+        } else {
+          ok(`notif-follow-text: '${shape.lead}'`);
+        }
+        const expected = ["follow back", "dismiss", "block"];
+        const missing = expected.filter((label) => !shape.buttons.includes(label));
+        const extra = shape.buttons.filter((label) => !expected.includes(label));
+        if (missing.length > 0 || extra.length > 0) {
+          fail("notif-follow-actions", `expected exactly ${expected.join("/")}; got ${shape.buttons.join("/")}`);
+        } else {
+          ok(`notif-follow-actions: ${shape.buttons.join(", ")}`);
+        }
       }
     }
 
-    // ===== Dismiss: dismissing the follow notification hides it
-    //       immediately. The IndexedDB-backed dismissal store keeps
-    //       it hidden across the next poll cycle. =====
+    // ===== A connects with B → B does NOT receive a notification =====
+    // connect/friend is a relationship action, not a notification
+    // category. After A clicks "connect" we wait through a full
+    // poll cycle and assert no connect-prefixed notification appears
+    // and no notification text contains "wants to connect" /
+    // "connect back" anywhere on the panel.
+    await clickLookupAction(pageA, "set-known");
+    ok("A connected with B (tier=known)");
+    await new Promise((r) => setTimeout(r, 14000));
+    const noConnectNotif = await pageB.evaluate(() => {
+      const ids = Array.from(document.querySelectorAll("#notifications-list .notification-row"))
+        .map((row) => row.dataset.notificationId ?? "");
+      const text = (document.getElementById("notifications-panel")?.textContent ?? "").toLowerCase();
+      return {
+        hasConnectId: ids.some((id) => id.startsWith("connect:")),
+        hasConnectCopy: text.includes("wants to connect")
+          || text.includes("connect back")
+          || text.includes("wants to be a close friend")
+      };
+    });
+    if (noConnectNotif.hasConnectId) {
+      fail("notif-no-connect", "B received a connect-prefixed notification (should never happen)");
+    } else {
+      ok("no connect notification received after A connected with B");
+    }
+    if (noConnectNotif.hasConnectCopy) {
+      fail("notif-no-connect-copy", "panel still mentions 'wants to connect' / 'connect back'");
+    } else {
+      ok("notifications panel contains no 'wants to connect' or 'connect back' copy");
+    }
+
+    // ===== B follows A back from the notification =====
     if (followNotif.matched) {
-      const clickedDismiss = await pageB.evaluate((id) => {
+      const clickedFollowBack = await pageB.evaluate((id) => {
         const row = document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`);
         if (!row) return false;
         const buttons = Array.from(row.querySelectorAll(".notification-row__action"));
-        const dismiss = buttons.find((b) => (b.textContent || "").trim() === "dismiss");
-        if (!(dismiss instanceof HTMLButtonElement)) return false;
-        dismiss.click();
+        const target = buttons.find((b) => (b.textContent || "").trim() === "follow back");
+        if (!(target instanceof HTMLButtonElement)) return false;
+        target.click();
         return true;
       }, followNotif.id);
-      if (!clickedDismiss) fail("notif-dismiss", "could not click 'dismiss'");
-      // Wait through one full poll cycle so the next refetch tries
-      // (and shouldn't) re-render the dismissed row.
-      await new Promise((r) => setTimeout(r, 14000));
-      const reappeared = (await notificationActorIds(pageB)).includes(followNotif.id);
-      if (reappeared) fail("notif-dismiss-persist", "dismissed follow notification reappeared after re-poll");
-      else ok("dismiss survives the next poll cycle (IndexedDB-backed)");
+      if (!clickedFollowBack) {
+        fail("notif-follow-back-click", "could not click 'follow back'");
+      } else {
+        await new Promise((r) => setTimeout(r, 1500));
+        // Notification dismisses locally on action.
+        const stillThere = await pageB.evaluate((id) =>
+          document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`) !== null
+        , followNotif.id);
+        if (stillThere) fail("notif-follow-back-dismiss", "follow notification still showing after follow back");
+        else ok("follow-back dismissed the notification");
+
+        // B's lookup card on A should now reflect the new follow.
+        await resolveLookup(pageB, `@${handleA}`);
+        const after = (await lookupActions(pageB)).map((a) => a.action);
+        if (!after.includes("set-unsubscribe")) {
+          fail("notif-follow-back-state", `B should now follow A; actions=${after.join("/")}`);
+        } else {
+          ok(`follow-back created reciprocal subscription: ${after.join(", ")}`);
+        }
+      }
+    }
+
+    // ===== Dismiss + persistence: a fresh follower @charlie must
+    //       produce a notification, "dismiss" must hide it
+    //       immediately, and the dismissal must survive the next
+    //       poll cycle (IndexedDB-backed). =====
+    const handleC = "charl" + Date.now().toString().slice(-7);
+    const charlieId = await devSignupServerOnly(handleC);
+    if (charlieId === null) {
+      fail("notif-dismiss-setup", "could not create @charlie via /dev/signup");
+    } else {
+      // Look up B's canonical_id once.
+      const bCanonical = await fetch(`${BASE}/api/identity/handles/${handleB}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((body) => body?.canonical_id ?? null)
+        .catch(() => null);
+      if (bCanonical === null) {
+        fail("notif-dismiss-setup", "could not resolve B's canonical_id");
+      } else {
+        await fetch(`${BASE}/api/subscriptions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            owner_canonical_id: charlieId,
+            author_canonical_id: bCanonical,
+            author_handle: `@${handleB}`,
+            include_public: true,
+            include_connections: true,
+            include_close: false,
+            muted: false
+          })
+        });
+        const charlieNotif = await waitForNotification(pageB, `follow:${charlieId}`, 25000);
+        if (!charlieNotif.matched) {
+          fail("notif-dismiss-arrive", "B did not see @charlie's follow notification");
+        } else {
+          ok(`B saw @${handleC}'s follow notification (${charlieNotif.elapsed}ms)`);
+          await pageB.evaluate((id) => {
+            const row = document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`);
+            const dismiss = Array.from(row?.querySelectorAll(".notification-row__action") ?? [])
+              .find((b) => (b.textContent || "").trim() === "dismiss");
+            if (dismiss instanceof HTMLButtonElement) dismiss.click();
+          }, charlieNotif.id);
+          await new Promise((r) => setTimeout(r, 14000)); // one full poll cycle
+          const stillThere = (await notificationActorIds(pageB)).includes(charlieNotif.id);
+          if (stillThere) fail("notif-dismiss-persist", "dismissed notification reappeared after re-poll");
+          else ok("dismiss persists across the next poll cycle (IndexedDB-backed)");
+        }
+      }
+    }
+
+    // ===== Block from a follow notification: another fresh
+    //       follower @diana arrives; clicking "block" hides the
+    //       notification AND sets B's relationship to @diana to
+    //       tier=blocked. =====
+    const handleD = "dian" + Date.now().toString().slice(-7);
+    const dianaId = await devSignupServerOnly(handleD);
+    if (dianaId === null) {
+      fail("notif-block-setup", "could not create @diana via /dev/signup");
+    } else {
+      const bCanonical2 = await fetch(`${BASE}/api/identity/handles/${handleB}`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((body) => body?.canonical_id ?? null)
+        .catch(() => null);
+      if (bCanonical2 === null) {
+        fail("notif-block-setup", "could not resolve B's canonical_id");
+      } else {
+        await fetch(`${BASE}/api/subscriptions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            owner_canonical_id: dianaId,
+            author_canonical_id: bCanonical2,
+            author_handle: `@${handleB}`,
+            include_public: true,
+            include_connections: true,
+            include_close: false,
+            muted: false
+          })
+        });
+        const dianaNotif = await waitForNotification(pageB, `follow:${dianaId}`, 25000);
+        if (!dianaNotif.matched) {
+          fail("notif-block-arrive", "B did not see @diana's follow notification");
+        } else {
+          await pageB.evaluate((id) => {
+            const row = document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`);
+            const block = Array.from(row?.querySelectorAll(".notification-row__action") ?? [])
+              .find((b) => (b.textContent || "").trim() === "block");
+            if (block instanceof HTMLButtonElement) block.click();
+          }, dianaNotif.id);
+          await new Promise((r) => setTimeout(r, 1500));
+          const stillThere = (await notificationActorIds(pageB)).includes(dianaNotif.id);
+          if (stillThere) fail("notif-block-dismiss", "follow notification still showing after block");
+          else ok("block dismissed @diana's follow notification");
+
+          await resolveLookup(pageB, `@${handleD}`);
+          const dianaActions = (await lookupActions(pageB)).map((a) => a.action);
+          if (dianaActions.length !== 1 || dianaActions[0] !== "set-unblock") {
+            fail("notif-block-state", `expected B to have @diana blocked; actions=${dianaActions.join("/")}`);
+          } else {
+            ok(`block from notification set tier=blocked: ${dianaActions.join(", ")}`);
+          }
+        }
+      }
     }
 
     if (failures.length === 0) {

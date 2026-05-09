@@ -264,59 +264,36 @@ export type IncomingFollower = {
 };
 
 export function listIncomingFollowers(authorCanonicalId: string, limit = 50): IncomingFollower[] {
+  // Resolve the FOLLOWER's handle from the identities table — the
+  // feed_subscriptions row only stores the author's handle (the
+  // target), not the owner's. Without this join the notification
+  // would render "@you follows you", since author_handle here is
+  // the recipient's own handle.
   const rows = db.prepare(`
-    SELECT owner_canonical_id, author_handle, created_at, updated_at, muted
-    FROM feed_subscriptions
-    WHERE author_canonical_id = ?
-    ORDER BY created_at DESC
+    SELECT
+      fs.owner_canonical_id,
+      i.handle AS owner_handle,
+      fs.created_at,
+      fs.updated_at,
+      fs.muted
+    FROM feed_subscriptions fs
+    LEFT JOIN identities i ON i.canonical_id = fs.owner_canonical_id
+    WHERE fs.author_canonical_id = ?
+    ORDER BY fs.created_at DESC
     LIMIT ?
   `).all(authorCanonicalId, limit) as Array<{
     owner_canonical_id: string;
-    author_handle: string | null;
+    owner_handle: string | null;
     created_at: string;
     updated_at: string;
     muted: number;
   }>;
   return rows.map((row) => ({
     actor_canonical_id: row.owner_canonical_id,
-    actor_handle: row.author_handle ?? undefined,
+    actor_handle: row.owner_handle ?? undefined,
     created_at: row.created_at,
     updated_at: row.updated_at,
     muted: row.muted !== 0
-  }));
-}
-
-export type IncomingConnection = {
-  actor_canonical_id: string;
-  actor_handle?: string;
-  tier: ConnectionTier;
-  created_at: string;
-  updated_at: string;
-};
-
-export function listIncomingConnections(subjectCanonicalId: string, limit = 50): IncomingConnection[] {
-  // Only surface known/close — blocked connections are private to
-  // the owner and not a notification.
-  const rows = db.prepare(`
-    SELECT owner_canonical_id, subject_handle, tier, created_at, updated_at
-    FROM connections
-    WHERE subject_canonical_id = ?
-      AND tier IN ('known', 'close')
-    ORDER BY created_at DESC
-    LIMIT ?
-  `).all(subjectCanonicalId, limit) as Array<{
-    owner_canonical_id: string;
-    subject_handle: string | null;
-    tier: ConnectionTier;
-    created_at: string;
-    updated_at: string;
-  }>;
-  return rows.map((row) => ({
-    actor_canonical_id: row.owner_canonical_id,
-    actor_handle: row.subject_handle ?? undefined,
-    tier: row.tier,
-    created_at: row.created_at,
-    updated_at: row.updated_at
   }));
 }
 

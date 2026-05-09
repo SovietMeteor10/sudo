@@ -232,21 +232,20 @@ export type TrustedDevice = {
   };
 };
 
-// Social-action notification surfaced to a recipient (someone followed
-// or connected to them). Derived server-side from feed_subscriptions
-// and connections; dismissal is local-only on the recipient device.
-// `id` is stable for a given (kind, actor) pair so dismissal in
-// IndexedDB survives re-fetches.
+// Social-action notification surfaced to a recipient. Today the only
+// surfaced category is "someone followed me" — the connect/friend
+// relationship is intentionally NOT a notification category, so a
+// connection request never enters this stream. Derived server-side
+// from feed_subscriptions; dismissal is local-only on the recipient
+// device. `id` is stable for a given actor so dismissal in IndexedDB
+// survives re-fetches.
 export type SocialNotification = {
   type: "sudo_social_notification";
   id: string;
-  kind: "follow" | "connect";
+  kind: "follow";
   recipient_canonical_id: CanonicalId;
   actor_canonical_id: CanonicalId;
   actor_handle?: Handle;
-  // Only meaningful for kind="connect"; reflects the tier the actor
-  // chose (known | close).
-  tier?: "known" | "close";
   created_at: string;
   updated_at: string;
 };

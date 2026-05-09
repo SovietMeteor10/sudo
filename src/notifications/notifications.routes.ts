@@ -1,18 +1,15 @@
-// Read-only social-notification surface. Derived from
-// feed_subscriptions and connections — no separate notifications
-// table is needed because the underlying social actions are already
-// stored. Dismissal is the recipient device's responsibility (kept
-// in IndexedDB), so this route always returns the full incoming
-// list and the client filters out anything it has dismissed.
+// Read-only social-notification surface. Today this only derives
+// follow notifications from feed_subscriptions — connection requests
+// are deliberately NOT a notification category. Dismissal is the
+// recipient device's responsibility (kept in IndexedDB), so this
+// route always returns the full incoming list and the client
+// filters out anything it has dismissed.
 //
 // This is a single-node MVP shape. A federated future will move
 // these to author-host pulls or push deliveries.
 
 import { Router } from "express";
-import {
-  listIncomingConnections,
-  listIncomingFollowers
-} from "../connections/connections.store.js";
+import { listIncomingFollowers } from "../connections/connections.store.js";
 import type { SocialNotification } from "../protocol/types.js";
 
 export const notificationsRouter = Router();
@@ -28,10 +25,8 @@ notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) =
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.trunc(limitRaw))) : 100;
 
   const followers = listIncomingFollowers(recipientCanonicalId, limit);
-  const connections = listIncomingConnections(recipientCanonicalId, limit);
 
   const notifications: SocialNotification[] = [];
-
   for (const follower of followers) {
     if (follower.actor_canonical_id === recipientCanonicalId) continue;
     notifications.push({
@@ -43,21 +38,6 @@ notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) =
       actor_handle: follower.actor_handle,
       created_at: follower.created_at,
       updated_at: follower.updated_at
-    });
-  }
-
-  for (const connection of connections) {
-    if (connection.actor_canonical_id === recipientCanonicalId) continue;
-    notifications.push({
-      type: "sudo_social_notification",
-      id: `connect:${connection.actor_canonical_id}`,
-      kind: "connect",
-      recipient_canonical_id: recipientCanonicalId,
-      actor_canonical_id: connection.actor_canonical_id,
-      actor_handle: connection.actor_handle,
-      tier: connection.tier === "close" ? "close" : "known",
-      created_at: connection.created_at,
-      updated_at: connection.updated_at
     });
   }
 

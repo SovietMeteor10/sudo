@@ -83,10 +83,13 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
 }
 
 // Notifications panel — lower-left of the shell. Renders incoming
-// follow / connect notifications with state-aware action buttons.
+// follow notifications with state-aware action buttons. The
+// connect/friend relationship is intentionally NOT a notification
+// category, so this surface stays narrow: "@handle follows you"
+// with follow back / dismiss / block.
 // `dismissed` is the local-only set of notification ids the user has
 // already dismissed, kept in IndexedDB by the coordinator.
-export type NotificationActionKind = "follow-back" | "connect-back" | "dismiss" | "block";
+export type NotificationActionKind = "follow-back" | "dismiss" | "block";
 
 export function renderNotificationsPanel(
   list: HTMLElement,
@@ -124,14 +127,9 @@ function renderNotificationRow(
   row.dataset["notificationId"] = notification.id;
 
   const actorHandle = notification.actor_handle ?? notification.actor_canonical_id;
-  const verb = notification.kind === "follow"
-    ? "follows you"
-    : notification.tier === "close"
-      ? "wants to be a close friend"
-      : "wants to connect";
   const lead = document.createElement("div");
   lead.className = "notification-row__line";
-  lead.textContent = `${actorHandle} ${verb}`;
+  lead.textContent = `${actorHandle} follows you`;
   row.append(lead);
 
   const actorTier = ownConnections.get(notification.actor_canonical_id);
@@ -140,17 +138,16 @@ function renderNotificationRow(
 
   const sub = document.createElement("div");
   sub.className = "notification-row__sub notification-row__line";
-  sub.textContent = describeReciprocal(notification.kind, reciprocallyFollowing, reciprocallyConnected);
+  sub.textContent = describeReciprocal(reciprocallyFollowing, reciprocallyConnected);
   row.append(sub);
 
   const actions = document.createElement("div");
   actions.className = "notification-row__actions";
 
-  if (notification.kind === "follow" && !reciprocallyFollowing && !reciprocallyConnected) {
+  // "follow back" only when the viewer doesn't already follow or
+  // hold a connection to the actor — otherwise the action is a no-op.
+  if (!reciprocallyFollowing && !reciprocallyConnected) {
     actions.append(notificationButton("follow back", () => onAction(notification, "follow-back")));
-  }
-  if (notification.kind === "connect" && !reciprocallyConnected) {
-    actions.append(notificationButton("connect back", () => onAction(notification, "connect-back")));
   }
   actions.append(notificationButton("dismiss", () => onAction(notification, "dismiss")));
   if (actorTier !== "blocked") {
@@ -169,19 +166,10 @@ function notificationButton(label: string, onClick: () => void): HTMLButtonEleme
   return button;
 }
 
-function describeReciprocal(
-  kind: SocialNotification["kind"],
-  reciprocallyFollowing: boolean,
-  reciprocallyConnected: boolean
-): string {
-  if (kind === "follow") {
-    if (reciprocallyFollowing) return "you follow them too";
-    if (reciprocallyConnected) return "you are connected";
-    return "follow back, dismiss, or block";
-  }
+function describeReciprocal(reciprocallyFollowing: boolean, reciprocallyConnected: boolean): string {
+  if (reciprocallyFollowing) return "you follow them too";
   if (reciprocallyConnected) return "you are connected";
-  if (reciprocallyFollowing) return "you follow them";
-  return "connect back, dismiss, or block";
+  return "follow back, dismiss, or block";
 }
 
 export function renderDevicePanel(
