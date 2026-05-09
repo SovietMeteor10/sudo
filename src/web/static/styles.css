@@ -823,6 +823,10 @@ body[data-auth-state="auth-restore"] .landing {
   gap: 8px;
 }
 
+.auth-recovery--waiting {
+  border-color: var(--line-soft);
+}
+
 .auth-recovery__hint {
   color: var(--muted);
   font-size: 12px;
@@ -833,6 +837,46 @@ body[data-auth-state="auth-restore"] .landing {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.auth-recovery__advanced {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.auth-recovery__advanced > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+
+.auth-recovery__advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.auth-recovery__advanced > summary::before {
+  content: "▸ ";
+  color: var(--dim);
+}
+
+.auth-recovery__advanced[open] > summary::before {
+  content: "▾ ";
+}
+
+.auth-recovery__advanced .auth-recovery__hint {
+  margin-top: 6px;
+}
+
+.auth-recovery__advanced .auth-recovery__actions {
+  margin-top: 8px;
+}
+
+.auth-recovery__reset {
+  /* The destructive action is intentionally muted in tone — never the
+   * dominant button in the recovery panel. */
 }
 
 .signup-dialog input:focus-visible {

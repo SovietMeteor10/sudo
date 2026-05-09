@@ -38,6 +38,66 @@ export function isLocalDatabaseError(error: unknown): error is LocalDatabaseErro
 let openPromise: Promise<IDBDatabase> | null = null;
 let cachedDb: IDBDatabase | null = null;
 
+// ---- cross-tab DB coordination via BroadcastChannel ----
+// Older tabs holding stale-version connections block new tabs from
+// migrating. Rather than asking the user to close them, we ask peer tabs
+// to release their database connections. Each tab listens on the same
+// channel and closes its cached IDB on request.
+const BROADCAST_CHANNEL_NAME = "sudo_local_db";
+type DbBroadcastMessage =
+  | { type: "release-db"; reason?: string }
+  | { type: "db-released" }
+  | { type: "db-open-retry" };
+
+let broadcastChannel: BroadcastChannel | null = null;
+function getBroadcastChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === "undefined") return null;
+  if (broadcastChannel !== null) return broadcastChannel;
+  try {
+    const channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
+    channel.onmessage = (event) => {
+      const message = event.data as DbBroadcastMessage | undefined;
+      if (message === undefined || typeof message.type !== "string") return;
+      if (message.type === "release-db") {
+        // Another tab is trying to migrate or open this database. Close
+        // our cached connection so it can proceed; we'll reopen lazily on
+        // the next read/write.
+        if (cachedDb !== null) {
+          try { cachedDb.close(); } catch { /* ignore */ }
+        }
+        cachedDb = null;
+        openPromise = null;
+        try { channel.postMessage({ type: "db-released" } satisfies DbBroadcastMessage); } catch { /* ignore */ }
+      }
+    };
+    broadcastChannel = channel;
+  } catch {
+    broadcastChannel = null;
+  }
+  return broadcastChannel;
+}
+
+function broadcast(message: DbBroadcastMessage): void {
+  const channel = getBroadcastChannel();
+  if (channel === null) return;
+  try { channel.postMessage(message); } catch { /* ignore */ }
+}
+
+// Eagerly attach the channel listener so even an idle tab can hear and
+// release the DB when a sibling tab needs to migrate.
+getBroadcastChannel();
+
+// Public so the auth flow can ask peer tabs to release their connections
+// before retrying an open. Safe to call even if no peers exist.
+export function releaseLocalDbConnection(reason: string = "unknown"): void {
+  if (cachedDb !== null) {
+    try { cachedDb.close(); } catch { /* ignore */ }
+  }
+  cachedDb = null;
+  openPromise = null;
+  broadcast({ type: "release-db", reason });
+}
+
 // First-open or migration on a profile with existing data can be slow,
 // especially on Safari/iOS or under devtools. The previous 6s budget cut
 // off legitimate v3→v4 migrations; 20s is the new ceiling.
@@ -79,11 +139,11 @@ export function openLocalDb(): Promise<IDBDatabase> {
     }
 
     request.onblocked = () => {
-      // Another tab still holds an older-version connection. Don't kill our
-      // pending open immediately — give the other tab a chance to receive
-      // its versionchange and close. The OPEN_TIMEOUT_MS will eventually
-      // fire if it never does.
-      console.warn("[local-db] open blocked by another tab; waiting for it to close");
+      // Another tab still holds an older-version connection. Ask peer tabs
+      // (over BroadcastChannel) to release their connections so the upgrade
+      // can proceed. The OPEN_TIMEOUT_MS will fire if no peer responds.
+      console.warn("[local-db] open blocked by another tab; broadcasting release-db");
+      broadcast({ type: "release-db", reason: "open_blocked" });
     };
 
     request.onupgradeneeded = (event) => {
@@ -113,6 +173,7 @@ export function openLocalDb(): Promise<IDBDatabase> {
         try { db.close(); } catch { /* ignore */ }
         if (cachedDb === db) cachedDb = null;
         openPromise = null;
+        broadcast({ type: "db-released" });
       };
       db.onclose = () => {
         if (cachedDb === db) cachedDb = null;
@@ -186,6 +247,56 @@ export async function probeLocalDbWritable(timeoutMs = 5000): Promise<void> {
       timeoutMs
     ))
   ]);
+}
+
+// Retry the local DB open until it succeeds or the caller aborts. Local
+// data is treated as durable: we never give up and we never delete state.
+// The auth flow uses this so a transient block (older tab still attached)
+// resolves quietly without dropping the user into an error state.
+export type RetryOpenOptions = {
+  signal?: AbortSignal;
+  // Called once per attempt with the current attempt number (1-indexed) and
+  // the most recent failure (if any). UIs use it to swap into a calm
+  // "still opening local data..." state.
+  onAttempt?: (attempt: number, lastError: LocalDatabaseError | null) => void;
+};
+
+export async function retryOpenLocalDb(options: RetryOpenOptions = {}): Promise<IDBDatabase> {
+  const delays = [0, 1000, 3000, 5000, 5000, 5000]; // backoff; index >= length stays at 5000ms
+  let attempt = 0;
+  let lastError: LocalDatabaseError | null = null;
+  while (true) {
+    if (options.signal?.aborted) {
+      throw new LocalDatabaseError("retry cancelled", "open_failed");
+    }
+    options.onAttempt?.(attempt + 1, lastError);
+    try {
+      return await openLocalDb();
+    } catch (error) {
+      if (!isLocalDatabaseError(error)) throw error;
+      lastError = error;
+      attempt += 1;
+      // Ask peer tabs (if any) to release their connection so the next
+      // attempt can win the upgrade. No-op if BroadcastChannel is absent.
+      releaseLocalDbConnection("retry");
+      const delay = delays[Math.min(attempt - 1, delays.length - 1)] ?? 5000;
+      if (delay > 0) await waitOrAbort(delay, options.signal);
+    }
+  }
+}
+
+// Wait `ms` milliseconds, but resolve early when the signal aborts.
+function waitOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    const timer = setTimeout(() => { resolve(); cleanup(); }, ms);
+    const onAbort = () => { resolve(); cleanup(); };
+    function cleanup() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function runProbe(): Promise<void> {

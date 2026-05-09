@@ -59,12 +59,14 @@ export type LookupState =
 export type SignupState =
   | { status: "idle" }
   | { status: "loading" }
+  | { status: "waiting_for_local_data"; attempt: number }
   | { status: "created"; identity: IdentityDocument; fingerprint: string; backupCode: string }
   | { status: "error"; message: string };
 
 export type SigninState =
   | { status: "idle" }
   | { status: "loading" }
+  | { status: "waiting_for_local_data"; attempt: number }
   | { status: "signed_in"; identity: IdentityDocument }
   | { status: "error"; message: string };
 

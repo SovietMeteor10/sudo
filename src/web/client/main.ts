@@ -68,7 +68,7 @@ import {
   saveTrustedDevice,
   upsertContact
 } from "./local/local-store.js";
-import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable } from "./local/local-db.js";
+import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, releaseLocalDbConnection } from "./local/local-db.js";
 import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
 import type {
   ChatSummary,
@@ -883,6 +883,26 @@ async function runSignup(
   signupBusy = true;
   setSignupState({ status: "loading" });
 
+  // Park outside the auth flow timeout: waiting for the local DB is not a
+  // network problem and shouldn't get killed by it. We retry indefinitely
+  // here, never destructively. Server identity registration is gated on
+  // the DB being writable so a hung browser cannot leave a partial
+  // account on the network.
+  try {
+    await waitForLocalDbWritable((attempt) => {
+      // Attempt 1 keeps the calm "creating account..." copy. Subsequent
+      // attempts move into the explicit waiting state with an attempt
+      // counter and the advanced-recovery disclosure.
+      if (attempt > 1) setSignupState({ status: "waiting_for_local_data", attempt: attempt - 1 });
+    });
+  } catch (error) {
+    setSignupState({ status: "error", message: describeAuthFailure(error) });
+    signupBusy = false;
+    return;
+  }
+
+  setSignupState({ status: "loading" });
+
   try {
     await withFlowTimeout(() => doSignup(handle, password));
   } catch (error) {
@@ -893,11 +913,6 @@ async function runSignup(
 }
 
 async function doSignup(handle: string, password: string): Promise<void> {
-  // Verify the local IndexedDB is open and writable BEFORE we ever ask the
-  // server to register an identity. If the DB is poisoned (locked by
-  // another tab, mid-migration, quota etc.) we surface a clear local-DB
-  // error instead of leaving a partially-provisioned account on the server.
-  await withStep("local-db-preflight", () => probeLocalDbWritable(), 22000);
 
   const nodeDocument = await withStep(
     "node-document",
@@ -978,6 +993,21 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
   signinBusy = true;
   setSigninState({ status: "loading" });
 
+  // Wait for local data to open before we ever say "wrong passphrase" or
+  // "account not on this device". This loop is non-destructive: if the DB
+  // is busy in another tab we ask it to release and retry indefinitely.
+  try {
+    await waitForLocalDbWritable((attempt) => {
+      if (attempt > 1) setSigninState({ status: "waiting_for_local_data", attempt: attempt - 1 });
+    });
+  } catch (error) {
+    setSigninState({ status: "error", message: describeAuthFailure(error) });
+    signinBusy = false;
+    return;
+  }
+
+  setSigninState({ status: "loading" });
+
   try {
     await withFlowTimeout(() => doSignin(handle, password));
   } catch (error) {
@@ -988,10 +1018,6 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
 }
 
 async function doSignin(handle: string, password: string): Promise<void> {
-  // Same pre-flight as signup: surface a clear local-database error
-  // before we look up an unlocked crypto account, so a poisoned IndexedDB
-  // never gets reported as "wrong passphrase".
-  await withStep("local-db-preflight", () => probeLocalDbWritable(), 6000);
 
   let localUnlockError: unknown = null;
   try {
@@ -1153,39 +1179,131 @@ function setSigninState(nextState: SigninState): void {
   decorateAuthStateWithDbRecovery(signinStateRoot, nextState);
 }
 
-// When an auth state shows the local-database error, append a small
-// recovery panel offering "reset this device". Other error variants do
-// not get the action so we never tempt users into wiping their browser
-// for an ordinary wrong-passphrase mistake.
-function decorateAuthStateWithDbRecovery(root: HTMLElement, state: { status: string; message?: string }): void {
-  if (state.status !== "error") return;
-  if (typeof state.message !== "string") return;
-  if (!state.message.includes(LOCAL_DB_USER_MESSAGE)) return;
+// Append a calm, non-destructive recovery panel underneath the rendered
+// auth state when we're waiting on the local database. Local-first data
+// is treated as durable: the panel only offers "retry now" / "reload",
+// and the destructive reset action is hidden behind an "advanced
+// recovery" disclosure so it can never be the easy first answer.
+function decorateAuthStateWithDbRecovery(
+  root: HTMLElement,
+  state: { status: string; message?: string; attempt?: number }
+): void {
+  const isWaiting = state.status === "waiting_for_local_data";
+  if (!isWaiting) return;
 
   const panel = document.createElement("div");
-  panel.className = "auth-recovery";
+  panel.className = "auth-recovery auth-recovery--waiting";
 
-  const help = document.createElement("div");
-  help.className = "auth-recovery__hint";
-  help.textContent = "close other sudo tabs, hard-refresh, then try again. if it's still broken, you can reset this browser's local sudo data.";
-  panel.append(help);
+  if (typeof state.attempt === "number" && state.attempt > 1) {
+    const hint = document.createElement("div");
+    hint.className = "auth-recovery__hint";
+    hint.textContent = `still opening local data (attempt ${state.attempt}). nothing on this device is being deleted.`;
+    panel.append(hint);
+  }
 
   const actions = document.createElement("div");
   actions.className = "auth-recovery__actions";
+
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "text-button";
+  retry.textContent = "retry now";
+  retry.addEventListener("click", () => {
+    releaseLocalDbConnection("user-retry");
+    triggerLocalDbRetryNow();
+  });
+
   const reload = document.createElement("button");
   reload.type = "button";
   reload.className = "text-button";
   reload.textContent = "reload page";
   reload.addEventListener("click", () => window.location.reload());
-  const reset = document.createElement("button");
-  reset.type = "button";
-  reset.className = "text-button text-button--danger";
-  reset.textContent = "reset this device";
-  reset.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
-  actions.append(reload, reset);
+
+  actions.append(retry, reload);
   panel.append(actions);
 
+  // ---- advanced recovery (collapsed by default) ----
+  // Reset is intentionally NOT a peer of "retry now". Users have to
+  // open this disclosure on purpose before they can wipe local state,
+  // matching the principle that local data is valuable.
+  const advanced = document.createElement("details");
+  advanced.className = "auth-recovery__advanced";
+  const summary = document.createElement("summary");
+  summary.textContent = "advanced recovery";
+  advanced.append(summary);
+
+  const advancedHint = document.createElement("div");
+  advancedHint.className = "auth-recovery__hint";
+  advancedHint.textContent = "if everything else fails, you can clear this browser's local sudo data. your server identity, feed posts, and backups are not deleted. use this only as a last resort.";
+  advanced.append(advancedHint);
+
+  const advancedActions = document.createElement("div");
+  advancedActions.className = "auth-recovery__actions";
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "text-button text-button--danger auth-recovery__reset";
+  reset.textContent = "reset this device";
+  reset.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
+  advancedActions.append(reset);
+  advanced.append(advancedActions);
+
+  panel.append(advanced);
   root.append(panel);
+}
+
+// ---- DB retry coordination shared by signup + signin ----
+// The retry loops park on a sleep that listens for an external "retry
+// now" wake-up. The button installs the waker; clicking it pulls every
+// active loop out of its current backoff immediately.
+const localDbRetryWakers = new Set<() => void>();
+function triggerLocalDbRetryNow(): void {
+  for (const wake of [...localDbRetryWakers]) {
+    try { wake(); } catch { /* ignore */ }
+  }
+}
+
+async function waitWithRetryWaker(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(); return; }
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      localDbRetryWakers.delete(finish);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    localDbRetryWakers.add(finish);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
+}
+
+// Indefinitely retry the local-DB pre-flight. Reports each attempt via
+// onAttempt so the UI can show the calm waiting state. Resolves only on
+// success or when the signal aborts.
+async function waitForLocalDbWritable(
+  onAttempt: (attempt: number) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const delays = [0, 1000, 3000, 5000, 5000, 5000];
+  let attempt = 0;
+  while (true) {
+    if (signal?.aborted) throw new LocalDatabaseError("retry cancelled", "open_failed");
+    attempt += 1;
+    onAttempt(attempt);
+    try {
+      await probeLocalDbWritable(5000);
+      return;
+    } catch (error) {
+      if (!isLocalDatabaseError(error)) throw error;
+      // Ask peer tabs to release their connection before we sleep.
+      releaseLocalDbConnection("retry");
+      const delay = delays[Math.min(attempt - 1, delays.length - 1)] ?? 5000;
+      if (delay > 0) await waitWithRetryWaker(delay, signal);
+    }
+  }
 }
 
 async function resetThisDeviceWithConfirm(): Promise<void> {

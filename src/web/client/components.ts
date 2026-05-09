@@ -84,6 +84,11 @@ export function renderSignupState(root: HTMLElement, state: SignupState): void {
     return;
   }
 
+  if (state.status === "waiting_for_local_data") {
+    root.replaceChildren(...renderWaitingForLocalData());
+    return;
+  }
+
   if (state.status === "error") {
     root.replaceChildren(line(state.message, "is-danger"));
     return;
@@ -115,12 +120,28 @@ export function renderSigninState(root: HTMLElement, state: SigninState): void {
     return;
   }
 
+  if (state.status === "waiting_for_local_data") {
+    root.replaceChildren(...renderWaitingForLocalData());
+    return;
+  }
+
   if (state.status === "error") {
     root.replaceChildren(line(state.message, "is-danger"));
     return;
   }
 
   root.replaceChildren(line(`signed in as ${state.identity.handle}`, "signup-result__label"));
+}
+
+function renderWaitingForLocalData(): HTMLElement[] {
+  // Calm, non-destructive copy. Local-first state is durable: we keep
+  // retrying, we never wipe anything, and we don't dangle a scary reset
+  // button in front of the user.
+  return [
+    line("opening local data...", "is-muted"),
+    line("this can happen if sudo is open in another tab.", "is-muted"),
+    line("retrying automatically.", "is-muted")
+  ];
 }
 
 export function renderStream(root: HTMLElement, feedPosts: FeedPost[] = []): void {
