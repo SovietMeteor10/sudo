@@ -9,6 +9,7 @@ import type {
   IdentityDocument,
   NodeCapabilityDocument,
   SignedDeviceMembership,
+  SignedSyncEvent,
   TrustedDevice,
   SearchResult
 } from "./types.js";
@@ -79,6 +80,65 @@ export async function registerTrustedDevice(
   }
 
   throw new Error(body.error ?? `device registration failed: ${response.status}`);
+}
+
+export async function postSyncEvent(
+  ownerCanonicalId: string,
+  signedEvent: SignedSyncEvent
+): Promise<{ ok: true; created: boolean; server_seq: number; event_id: string }> {
+  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ signed_event: signedEvent })
+  });
+  const body = await response.json() as { ok?: boolean; created?: boolean; server_seq?: number; event_id?: string; error?: string };
+  if (response.ok && body.ok && typeof body.server_seq === "number" && typeof body.event_id === "string") {
+    return { ok: true, created: body.created === true, server_seq: body.server_seq, event_id: body.event_id };
+  }
+  throw new Error(body.error ?? `sync post failed: ${response.status}`);
+}
+
+export async function listSyncEvents(
+  ownerCanonicalId: string,
+  recipientDeviceId: string,
+  sinceCursor: number,
+  limit = 50
+): Promise<{ events: { server_seq: number; signed_event: SignedSyncEvent }[]; next_cursor: number }> {
+  const url = new URL(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync`, window.location.origin);
+  url.searchParams.set("device_id", recipientDeviceId);
+  url.searchParams.set("since", String(sinceCursor));
+  url.searchParams.set("limit", String(limit));
+  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `sync list failed: ${response.status}`);
+  }
+  const body = await response.json() as { events?: { server_seq: number; signed_event: SignedSyncEvent }[]; next_cursor?: number };
+  return {
+    events: Array.isArray(body.events) ? body.events : [],
+    next_cursor: typeof body.next_cursor === "number" ? body.next_cursor : sinceCursor
+  };
+}
+
+export async function ackSyncCursor(
+  ownerCanonicalId: string,
+  recipientDeviceId: string,
+  lastServerSeq: number
+): Promise<number> {
+  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/ack`, {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ recipient_device_id: recipientDeviceId, last_server_seq: lastServerSeq })
+  });
+  const body = await response.json() as { ok?: boolean; last_server_seq?: number; error?: string };
+  if (response.ok && body.ok && typeof body.last_server_seq === "number") return body.last_server_seq;
+  throw new Error(body.error ?? `sync ack failed: ${response.status}`);
 }
 
 export async function startDevicePairing(ownerCanonicalId: string): Promise<{ pairing_code: string; pairing_token: string; expires_at: string }> {

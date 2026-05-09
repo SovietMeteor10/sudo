@@ -168,6 +168,40 @@ export const schemaSql = `
   CREATE INDEX IF NOT EXISTS device_memberships_device_idx
     ON device_memberships(device_id, sequence);
 
+  -- Encrypted-only relay queue for SignedSyncEvent. The server stores
+  -- ciphertext + signed envelope, never plaintext. server_seq is the
+  -- monotonic cursor; (owner, origin_device, origin_device_seq) is
+  -- unique to enforce per-device replay protection. This is a relay
+  -- queue, not canonical storage — IndexedDB on each device remains
+  -- the source of truth for the projected state.
+  CREATE TABLE IF NOT EXISTS device_sync_log (
+    server_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL UNIQUE,
+    owner_canonical_id TEXT NOT NULL,
+    origin_device_id TEXT NOT NULL,
+    origin_device_seq INTEGER NOT NULL,
+    slice TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    server_received_at TEXT NOT NULL,
+    signed_event_json TEXT NOT NULL,
+    UNIQUE (owner_canonical_id, origin_device_id, origin_device_seq)
+  );
+
+  CREATE INDEX IF NOT EXISTS device_sync_log_owner_seq_idx
+    ON device_sync_log(owner_canonical_id, server_seq);
+
+  CREATE INDEX IF NOT EXISTS device_sync_log_origin_seq_idx
+    ON device_sync_log(owner_canonical_id, origin_device_id, origin_device_seq);
+
+  CREATE TABLE IF NOT EXISTS device_sync_cursors (
+    owner_canonical_id TEXT NOT NULL,
+    recipient_device_id TEXT NOT NULL,
+    last_server_seq INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_canonical_id, recipient_device_id)
+  );
+
   CREATE TABLE IF NOT EXISTS feed_posts (
     post_id TEXT PRIMARY KEY,
     author_canonical_id TEXT NOT NULL,

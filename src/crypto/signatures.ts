@@ -4,7 +4,9 @@ import type {
   SignableDeviceMembership,
   SignableFeedPost,
   SignableIdentityDocument,
+  SignableSyncEvent,
   SignedDeviceMembership,
+  SignedSyncEvent,
   SigningKeyType
 } from "../protocol/types.js";
 import { base64Url, base64UrlToBuffer } from "./hash.js";
@@ -42,6 +44,22 @@ export function verifyDeviceMembership(
 ): boolean {
   const { signature, ...signable } = membership;
   return verifyCanonicalSignature(signable, signature, ownerIdentityPublicKey, keyType);
+}
+
+export function signSyncEvent(
+  event: SignableSyncEvent,
+  originDevicePrivateKey: string
+): string {
+  return base64Url(sign(null, Buffer.from(canonicalJson(event)), originDevicePrivateKey));
+}
+
+export function verifySyncEvent(
+  event: SignedSyncEvent,
+  originDevicePublicKey: string,
+  keyType: SigningKeyType = "ed25519"
+): boolean {
+  const { signature, ...signable } = event;
+  return verifyCanonicalSignature(signable, signature, originDevicePublicKey, keyType);
 }
 
 export function verifyIdentityDocument(document: IdentityDocument): boolean {

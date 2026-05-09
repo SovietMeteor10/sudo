@@ -45,6 +45,15 @@ import {
 } from "./crypto/key-storage.js";
 import { signDeviceMembership, signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
+  clearActiveCoordinator,
+  setActiveCoordinator,
+  startPolling as startContactSyncPolling
+} from "./sync/coordinator.js";
+import {
+  applyContactDeleteWithBroadcast,
+  applyContactUpsertWithBroadcast
+} from "./sync/contactSync.js";
+import {
   feedPostToUnifiedItem,
   formatPostTimestamp,
   renderChatList,
@@ -815,7 +824,7 @@ async function onIncomingMessages(messages: import("./local/local-types.js").Loc
     const handle = message.sender_handle ?? "";
     if (handle.length > 0) {
       try {
-        await upsertContact(ownerCanonicalId, {
+        await applyContactUpsertWithBroadcast(ownerCanonicalId, {
           canonical_id: message.sender_canonical_id,
           handle,
           tier: "unknown",
@@ -1176,6 +1185,8 @@ async function doSignup(handle: string, password: string): Promise<void> {
     console.warn("[auth] device sync after signup failed", error instanceof Error ? error.message : error);
     devicePanelFeedback.textContent = "device sync delayed; account created";
   });
+  setActiveCoordinator(draft.account, trustedDevice.device_id);
+  startContactSyncPolling();
 }
 
 async function resolveDeviceIdNonBlocking(): Promise<string> {
@@ -1262,6 +1273,8 @@ async function doSignin(handle: string, password: string): Promise<void> {
     void syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId!)).catch((error) => {
       console.warn("[auth] device sync after signin failed", error instanceof Error ? error.message : error);
     });
+    setActiveCoordinator(account, currentDeviceId!);
+    startContactSyncPolling();
     return;
   } catch (error) {
     localUnlockError = error;
@@ -2474,7 +2487,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
       // Mirror the relationship in local contacts so the directory
       // search row's add/remove state matches what the user actually
       // chose in the lookup pane.
-      await upsertContact(ownerCanonicalId, {
+      await applyContactUpsertWithBroadcast(ownerCanonicalId, {
         canonical_id: subjectCanonicalId,
         handle,
         tier,
@@ -2494,7 +2507,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
       // skips blocked) which lets the search row return to "+" when
       // appropriate. The contact row is kept (with tier=blocked) so
       // we can show "blocked" state if needed.
-      await upsertContact(ownerCanonicalId, {
+      await applyContactUpsertWithBroadcast(ownerCanonicalId, {
         canonical_id: subjectCanonicalId,
         handle,
         tier: "blocked",
@@ -2507,7 +2520,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
       // Drop the local contact entirely — the user is back to
       // "unknown" relationship, the chat row should disappear, and
       // the directory "+" should return.
-      await deleteLocalContact(ownerCanonicalId, subjectCanonicalId);
+      await applyContactDeleteWithBroadcast(ownerCanonicalId, subjectCanonicalId);
     } else if (action === "set-subscribe") {
       await upsertFeedSubscription({
         owner_canonical_id: ownerCanonicalId,
@@ -2635,6 +2648,7 @@ async function submitFeedPost(): Promise<void> {
 async function lockLocalKeysFlow(): Promise<void> {
   lockBrowserCryptoAccount();
   currentCryptoAccount = null;
+  clearActiveCoordinator();
   flashFeedback("account locked");
   if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
     setCurrentIdentity(currentIdentityDocument, currentIdentityFingerprint);
@@ -2806,7 +2820,7 @@ async function addChatTarget(result: SearchResult): Promise<void> {
     include_close: false,
     muted: false
   });
-  await upsertContact(ownerCanonicalId, {
+  await applyContactUpsertWithBroadcast(ownerCanonicalId, {
     canonical_id: result.canonical,
     handle: result.handle,
     tier: "known",
@@ -2842,7 +2856,7 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
     // Removing a connection should also drop the local contact so the
     // chat list / search row re-renders the "+" button. Without this
     // the row shows a stale "remove" and the user can't re-add.
-    await deleteLocalContact(currentIdentityDocument.canonical_id, canonical);
+    await applyContactDeleteWithBroadcast(currentIdentityDocument.canonical_id, canonical);
   }
   await refreshLocalChats();
   // Drop the removed author's posts from the personal feed.
@@ -3075,6 +3089,7 @@ function buildAnonymousIdentityView(): LocalIdentity {
 function logout(): void {
   lockBrowserCryptoAccount();
   currentCryptoAccount = null;
+  clearActiveCoordinator();
   void clearDevSessionToken().then(refreshLocalStorageStatus);
   clearSignupForm();
   clearSigninForm();

@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import { verifyDeviceMembership } from "../crypto/signatures.js";
+import { verifyDeviceMembership, verifySyncEvent } from "../crypto/signatures.js";
 import { getIdentityByCanonicalId } from "../identity/registry.js";
 import type {
   DeviceSyncEvent,
   SignedDeviceMembership,
+  SignedSyncEvent,
   TrustedDevice
 } from "../protocol/types.js";
 import {
@@ -18,6 +19,12 @@ import {
   upsertDeviceMembership,
   upsertTrustedDevice
 } from "./devices.store.js";
+import {
+  getRecipientCursor,
+  insertSyncEvent,
+  listSyncEventsSince,
+  setRecipientCursor
+} from "./syncStore.js";
 
 export const devicesRouter = Router();
 
@@ -251,6 +258,156 @@ devicesRouter.post("/:deviceId/revoke", (request, response) => {
 
   response.json({ ok: true, device, membership: acceptedMembership });
 });
+
+// Resolves a device's active SignedDeviceMembership for an owner.
+// Returns null if no membership exists or the latest is not "active".
+// Used both as the source of truth for sync-event signature
+// verification (origin device) and as the gate for sync delivery
+// (recipient device).
+function resolveActiveMembership(
+  ownerCanonicalId: string,
+  deviceId: string
+): SignedDeviceMembership | null {
+  const latest = getLatestDeviceMembership(deviceId);
+  if (latest === null) return null;
+  if (latest.owner_canonical_id !== ownerCanonicalId) return null;
+  if (latest.trust_state !== "active") return null;
+  return latest;
+}
+
+// POST /api/devices/:ownerCanonicalId/sync
+// Body: { signed_event: SignedSyncEvent }
+// Verifies that:
+//   - event.owner_canonical_id matches the route owner
+//   - origin_device has a non-revoked SignedDeviceMembership
+//   - signature verifies against the origin device key
+//   - sequence is strictly increasing per (owner, origin_device)
+// Idempotent on event_id: a retry returns 200 with `created: false`.
+devicesRouter.post("/:ownerCanonicalId/sync", (request, response) => {
+  const ownerCanonicalId = request.params.ownerCanonicalId;
+  const body = request.body as { signed_event?: unknown };
+  if (typeof body.signed_event !== "object" || body.signed_event === null) {
+    response.status(400).json({ ok: false, error: "invalid_sync_event" });
+    return;
+  }
+  const event = body.signed_event as SignedSyncEvent;
+  if (
+    event.type !== "sudo_sync_event"
+    || typeof event.event_id !== "string"
+    || typeof event.origin_device_id !== "string"
+    || typeof event.signature !== "string"
+    || typeof event.encrypted_payload !== "string"
+    || typeof event.sequence !== "number"
+    || !isKnownSliceKind(event.slice, event.kind)
+  ) {
+    response.status(400).json({ ok: false, error: "invalid_sync_event" });
+    return;
+  }
+  if (event.owner_canonical_id !== ownerCanonicalId) {
+    response.status(400).json({ ok: false, error: "owner_mismatch" });
+    return;
+  }
+
+  const originMembership = resolveActiveMembership(ownerCanonicalId, event.origin_device_id);
+  if (originMembership === null) {
+    response.status(403).json({ ok: false, error: "origin_not_authorized" });
+    return;
+  }
+
+  if (!verifySyncEvent(event, originMembership.device_public_key, originMembership.device_key_type ?? "ed25519")) {
+    response.status(400).json({ ok: false, error: "invalid_sync_signature" });
+    return;
+  }
+
+  const result = insertSyncEvent(event);
+  if (!result.ok) {
+    response.status(409).json({ ok: false, error: result.error });
+    return;
+  }
+
+  response.status(result.created ? 201 : 200).json({
+    ok: true,
+    created: result.created,
+    server_seq: result.server_seq,
+    event_id: event.event_id
+  });
+});
+
+// GET /api/devices/:ownerCanonicalId/sync?device_id=<recipient>&since=<cursor>&limit=N
+// The recipient device must have a non-revoked SignedDeviceMembership;
+// revocation enforcement happens here, so a revoked device gets 403
+// regardless of any cursor it remembers. This is best-effort gating —
+// the encrypted_payload remains the durable secrecy boundary.
+devicesRouter.get("/:ownerCanonicalId/sync", (request, response) => {
+  const ownerCanonicalId = request.params.ownerCanonicalId;
+  const recipientDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
+  if (recipientDeviceId === null || recipientDeviceId.length === 0) {
+    response.status(400).json({ ok: false, error: "missing_device_id" });
+    return;
+  }
+
+  if (resolveActiveMembership(ownerCanonicalId, recipientDeviceId) === null) {
+    response.status(403).json({ ok: false, error: "recipient_not_authorized" });
+    return;
+  }
+
+  const since = Number(request.query.since ?? 0);
+  const sinceCursor = Number.isFinite(since) && since >= 0 ? since : 0;
+  const limitRaw = Number(request.query.limit ?? 50);
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.trunc(limitRaw))) : 50;
+
+  const events = listSyncEventsSince(ownerCanonicalId, sinceCursor, limit);
+  const nextCursor = events.length > 0 ? events[events.length - 1]!.server_seq : sinceCursor;
+  response.json({ events, next_cursor: nextCursor });
+});
+
+// POST /api/devices/:ownerCanonicalId/sync/ack
+// Body: { recipient_device_id, last_server_seq }
+// Records that the recipient device has durably stored events up to
+// last_server_seq. The cursor is monotonic: a stale ack does not
+// regress the recorded value.
+devicesRouter.post("/:ownerCanonicalId/sync/ack", (request, response) => {
+  const ownerCanonicalId = request.params.ownerCanonicalId;
+  const body = request.body as { recipient_device_id?: unknown; last_server_seq?: unknown };
+  if (typeof body.recipient_device_id !== "string" || typeof body.last_server_seq !== "number") {
+    response.status(400).json({ ok: false, error: "invalid_ack" });
+    return;
+  }
+  if (resolveActiveMembership(ownerCanonicalId, body.recipient_device_id) === null) {
+    response.status(403).json({ ok: false, error: "recipient_not_authorized" });
+    return;
+  }
+  const stored = setRecipientCursor(ownerCanonicalId, body.recipient_device_id, body.last_server_seq);
+  response.json({ ok: true, last_server_seq: stored });
+});
+
+// GET /api/devices/:ownerCanonicalId/sync/cursor?device_id=<recipient>
+// Convenience for clients that lost their local cursor and want to
+// resume from the last server-acknowledged position.
+devicesRouter.get("/:ownerCanonicalId/sync/cursor", (request, response) => {
+  const ownerCanonicalId = request.params.ownerCanonicalId;
+  const recipientDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
+  if (recipientDeviceId === null || recipientDeviceId.length === 0) {
+    response.status(400).json({ ok: false, error: "missing_device_id" });
+    return;
+  }
+  if (resolveActiveMembership(ownerCanonicalId, recipientDeviceId) === null) {
+    response.status(403).json({ ok: false, error: "recipient_not_authorized" });
+    return;
+  }
+  response.json({
+    ok: true,
+    last_server_seq: getRecipientCursor(ownerCanonicalId, recipientDeviceId)
+  });
+});
+
+// Known sync slice/kind pairs accepted on POST /:owner/sync. New
+// slices register here as they come online so unknown payloads are
+// rejected at the edge instead of silently relayed.
+function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
+  if (slice === "contact") return kind === "contact.upsert" || kind === "contact.delete";
+  return false;
+}
 
 function normalizeCapabilities(value: unknown): TrustedDevice["capabilities"] {
   if (typeof value === "object" && value !== null) {

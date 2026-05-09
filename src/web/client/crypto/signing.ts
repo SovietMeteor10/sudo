@@ -5,6 +5,7 @@ import type {
   SignableDeviceMembership,
   SignableIdentityDocument,
   SignableFeedPost,
+  SignableSyncEvent,
   SigningKeyType
 } from "../../../protocol/types.js";
 import { base64Url } from "../local/crypto.js";
@@ -51,6 +52,14 @@ export async function signDeviceMembership(
   keyType: SigningKeyType
 ): Promise<string> {
   return signCanonicalPayload(membership, ownerIdentityPrivateKey, keyType);
+}
+
+export async function signSyncEvent(
+  event: SignableSyncEvent,
+  originDevicePrivateKey: CryptoKey,
+  keyType: SigningKeyType
+): Promise<string> {
+  return signCanonicalPayload(event, originDevicePrivateKey, keyType);
 }
 
 async function signCanonicalPayload(payload: unknown, privateKey: CryptoKey, keyType: SigningKeyType): Promise<string> {

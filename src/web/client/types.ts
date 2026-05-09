@@ -14,6 +14,9 @@ import type {
   SearchResult as ProtocolSearchResult,
   SignableDeviceMembership as ProtocolSignableDeviceMembership,
   SignedDeviceMembership as ProtocolSignedDeviceMembership,
+  SignableSyncEvent as ProtocolSignableSyncEvent,
+  SignedSyncEvent as ProtocolSignedSyncEvent,
+  SyncEventKind as ProtocolSyncEventKind,
   StreamPost as ProtocolStreamPost
 } from "../../protocol/types.js";
 
@@ -29,6 +32,9 @@ export type TrustedDevice = ProtocolTrustedDevice;
 export type DeviceSyncEvent = ProtocolDeviceSyncEvent;
 export type SignableDeviceMembership = ProtocolSignableDeviceMembership;
 export type SignedDeviceMembership = ProtocolSignedDeviceMembership;
+export type SignableSyncEvent = ProtocolSignableSyncEvent;
+export type SignedSyncEvent = ProtocolSignedSyncEvent;
+export type SyncEventKind = ProtocolSyncEventKind;
 
 export type LocalIdentity = {
   handle: string;

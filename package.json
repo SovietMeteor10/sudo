@@ -21,6 +21,7 @@
     "smoke:multi-tab-local-state": "node scripts/multi-tab-local-state-smoke.cjs",
     "smoke:feed-interactions": "node scripts/feed-interactions-smoke.cjs",
     "smoke:device-pairing": "node scripts/device-pairing-smoke.cjs",
+    "smoke:contact-sync": "node scripts/contact-sync-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

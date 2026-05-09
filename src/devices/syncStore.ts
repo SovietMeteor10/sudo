@@ -1,0 +1,207 @@
+// Server-side relay queue for SignedSyncEvent. Stores ciphertext-only
+// envelopes; the server never decrypts the payload. Backed by
+// device_sync_log + device_sync_cursors. The canonical projected state
+// lives in each device's IndexedDB — this table is just a transport.
+
+import { db } from "../storage/db.js";
+import type { SignedSyncEvent } from "../protocol/types.js";
+
+type SyncLogRow = {
+  server_seq: number;
+  event_id: string;
+  owner_canonical_id: string;
+  origin_device_id: string;
+  origin_device_seq: number;
+  slice: string;
+  kind: string;
+  created_at: string;
+  server_received_at: string;
+  signed_event_json: string;
+};
+
+export type StoredSyncEvent = {
+  server_seq: number;
+  signed_event: SignedSyncEvent;
+};
+
+export type InsertSyncResult =
+  | { ok: true; created: true; server_seq: number; event: SignedSyncEvent }
+  | { ok: true; created: false; server_seq: number; event: SignedSyncEvent }
+  | { ok: false; error: "sequence_regression" };
+
+export function insertSyncEvent(event: SignedSyncEvent): InsertSyncResult {
+  // Idempotent on event_id: a retried POST with the same event_id
+  // returns the existing row instead of creating a duplicate.
+  const existing = db
+    .prepare("SELECT * FROM device_sync_log WHERE event_id = ?")
+    .get(event.event_id) as SyncLogRow | undefined;
+  if (existing !== undefined) {
+    return {
+      ok: true,
+      created: false,
+      server_seq: existing.server_seq,
+      event: JSON.parse(existing.signed_event_json) as SignedSyncEvent
+    };
+  }
+
+  const maxSeq = getMaxOriginSequence(event.owner_canonical_id, event.origin_device_id);
+  if (event.sequence <= maxSeq) {
+    return { ok: false, error: "sequence_regression" };
+  }
+
+  const result = db.prepare(`
+    INSERT INTO device_sync_log (
+      event_id,
+      owner_canonical_id,
+      origin_device_id,
+      origin_device_seq,
+      slice,
+      kind,
+      created_at,
+      server_received_at,
+      signed_event_json
+    ) VALUES (
+      @event_id,
+      @owner_canonical_id,
+      @origin_device_id,
+      @origin_device_seq,
+      @slice,
+      @kind,
+      @created_at,
+      @server_received_at,
+      @signed_event_json
+    )
+  `).run({
+    event_id: event.event_id,
+    owner_canonical_id: event.owner_canonical_id,
+    origin_device_id: event.origin_device_id,
+    origin_device_seq: event.sequence,
+    slice: event.slice,
+    kind: event.kind,
+    created_at: event.created_at,
+    server_received_at: new Date().toISOString(),
+    signed_event_json: JSON.stringify(event)
+  });
+
+  return {
+    ok: true,
+    created: true,
+    server_seq: Number(result.lastInsertRowid),
+    event
+  };
+}
+
+export function getMaxOriginSequence(ownerCanonicalId: string, originDeviceId: string): number {
+  const row = db
+    .prepare(`
+      SELECT MAX(origin_device_seq) AS max_seq
+      FROM device_sync_log
+      WHERE owner_canonical_id = ? AND origin_device_id = ?
+    `)
+    .get(ownerCanonicalId, originDeviceId) as { max_seq: number | null };
+  return row.max_seq ?? 0;
+}
+
+export function listSyncEventsSince(
+  ownerCanonicalId: string,
+  sinceServerSeq: number,
+  limit: number
+): StoredSyncEvent[] {
+  const rows = db
+    .prepare(`
+      SELECT * FROM device_sync_log
+      WHERE owner_canonical_id = ? AND server_seq > ?
+      ORDER BY server_seq ASC
+      LIMIT ?
+    `)
+    .all(ownerCanonicalId, sinceServerSeq, limit) as SyncLogRow[];
+  return rows.map((row) => ({
+    server_seq: row.server_seq,
+    signed_event: JSON.parse(row.signed_event_json) as SignedSyncEvent
+  }));
+}
+
+export function setRecipientCursor(
+  ownerCanonicalId: string,
+  recipientDeviceId: string,
+  lastServerSeq: number
+): number {
+  const now = new Date().toISOString();
+  const existing = db
+    .prepare(`
+      SELECT last_server_seq FROM device_sync_cursors
+      WHERE owner_canonical_id = ? AND recipient_device_id = ?
+    `)
+    .get(ownerCanonicalId, recipientDeviceId) as { last_server_seq: number } | undefined;
+
+  // Cursors only move forward. A retry with a lower seq is a no-op.
+  const next = existing === undefined ? lastServerSeq : Math.max(existing.last_server_seq, lastServerSeq);
+
+  db.prepare(`
+    INSERT INTO device_sync_cursors (
+      owner_canonical_id,
+      recipient_device_id,
+      last_server_seq,
+      updated_at
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(owner_canonical_id, recipient_device_id) DO UPDATE SET
+      last_server_seq = excluded.last_server_seq,
+      updated_at = excluded.updated_at
+  `).run(ownerCanonicalId, recipientDeviceId, next, now);
+
+  return next;
+}
+
+export function getRecipientCursor(
+  ownerCanonicalId: string,
+  recipientDeviceId: string
+): number {
+  const row = db
+    .prepare(`
+      SELECT last_server_seq FROM device_sync_cursors
+      WHERE owner_canonical_id = ? AND recipient_device_id = ?
+    `)
+    .get(ownerCanonicalId, recipientDeviceId) as { last_server_seq: number } | undefined;
+  return row?.last_server_seq ?? 0;
+}
+
+// Operator/dev diagnostic: counts of stored sync events grouped by
+// (owner, slice, kind) plus the latest server_seq and the latest
+// server_received_at. This deliberately exposes ONLY plaintext
+// metadata fields — never event_id (UUIDs are sensitive linkability
+// material to a third party who later learns who an owner is) and
+// never the encrypted_payload. Callers should still gate the route
+// to operator/dev-only contexts.
+export type SyncCountsRow = {
+  owner_canonical_id: string;
+  slice: string;
+  kind: string;
+  count: number;
+  latest_server_seq: number;
+  latest_server_received_at: string;
+};
+
+export function listSyncCounts(): SyncCountsRow[] {
+  const rows = db
+    .prepare(`
+      SELECT
+        owner_canonical_id,
+        slice,
+        kind,
+        COUNT(*) AS count,
+        MAX(server_seq) AS latest_server_seq,
+        MAX(server_received_at) AS latest_server_received_at
+      FROM device_sync_log
+      GROUP BY owner_canonical_id, slice, kind
+      ORDER BY owner_canonical_id, slice, kind
+    `)
+    .all() as Array<{
+      owner_canonical_id: string;
+      slice: string;
+      kind: string;
+      count: number;
+      latest_server_seq: number;
+      latest_server_received_at: string;
+    }>;
+  return rows;
+}

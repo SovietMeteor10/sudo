@@ -271,6 +271,35 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
   signature: Signature;
 };
 
+// First sync slice covers contacts only. The slice tag is plaintext so
+// the server (and any other relay) can route events without learning
+// who the contact is. The actual contact body lives inside
+// encrypted_payload, sealed under the account-shared sync key.
+export type SyncEventSlice = "contact";
+export type SyncEventKind = "contact.upsert" | "contact.delete";
+
+export type SignableSyncEvent = {
+  type: "sudo_sync_event";
+  protocol_version: string;
+  event_id: string;
+  owner_canonical_id: CanonicalId;
+  origin_device_id: string;
+  slice: SyncEventSlice;
+  kind: SyncEventKind;
+  // Per-origin-device monotonic counter. The server enforces strictly
+  // increasing sequences per (owner, origin_device) for replay
+  // protection; idempotent retries reuse event_id, not sequence.
+  sequence: number;
+  created_at: string;
+  // base64url(AES-GCM ciphertext envelope) over the canonical
+  // contact-shaped payload. The server never decrypts this field.
+  encrypted_payload: string;
+};
+
+export type SignedSyncEvent = SignableSyncEvent & {
+  signature: Signature;
+};
+
 export type StreamPost = {
   id: string;
   handle: Handle;

@@ -8,8 +8,10 @@ export {
   canonicalJson,
   signDeviceMembership,
   signIdentityDocument,
+  signSyncEvent,
   verifyDeviceMembership,
-  verifyIdentityDocument
+  verifyIdentityDocument,
+  verifySyncEvent
 } from "./signatures.js";
 
 export {
