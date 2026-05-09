@@ -77,9 +77,14 @@ export function listConnections(ownerCanonicalId: string, tier?: ConnectionTier)
 }
 
 export function removeConnection(ownerCanonicalId: string, subjectCanonicalId: string): boolean {
-  const removed = deleteConnectionRelationship(ownerCanonicalId, subjectCanonicalId);
-  deleteFeedSubscription(ownerCanonicalId, subjectCanonicalId);
-  return removed;
+  // Removing a connection is intentionally NOT destructive to a
+  // separately-held feed subscription. The connection axis (trust
+  // tier) and the follow axis (subscription) are independent in the
+  // UI, so dropping a connection must not silently unfollow the
+  // subject. If the user wants to fully cut ties they unfollow
+  // explicitly. block/unblock still clears the subscription via
+  // upsertConnection's tier="blocked" branch — that path is unchanged.
+  return deleteConnectionRelationship(ownerCanonicalId, subjectCanonicalId);
 }
 
 export function getSubscription(ownerCanonicalId: string, authorCanonicalId: string): FeedSubscription | null {

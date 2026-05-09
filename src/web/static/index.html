@@ -163,6 +163,17 @@
     </form>
   </section>
 
+  <dialog class="signup-dialog signup-dialog--confirm" id="remove-connection-dialog" aria-labelledby="remove-connection-title" aria-describedby="remove-connection-body">
+    <form class="signup-dialog__panel" id="remove-connection-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="remove-connection-title">Remove connection?</div>
+      <p class="signup-dialog__warning" id="remove-connection-body">They will no longer be marked as connected.</p>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="remove-connection-cancel" type="button">cancel</button>
+        <button class="text-button text-button--danger" id="remove-connection-confirm" type="button">remove</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="signup-dialog signup-dialog--devices" id="devices-dialog" aria-labelledby="devices-dialog-title">
     <form class="signup-dialog__panel" id="devices-form" method="dialog" autocomplete="off">
       <div class="signup-dialog__title" id="devices-dialog-title">linked devices</div>

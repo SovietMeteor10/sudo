@@ -146,6 +146,9 @@ const accountMenuLock = getRequiredButton("account-menu-lock");
 const accountMenuLogout = getRequiredButton("account-menu-logout");
 const devicesDialog = getRequiredDialog("devices-dialog");
 const devicesCancel = getRequiredButton("devices-cancel");
+const removeConnectionDialog = getRequiredDialog("remove-connection-dialog");
+const removeConnectionCancel = getRequiredButton("remove-connection-cancel");
+const removeConnectionConfirm = getRequiredButton("remove-connection-confirm");
 const chatPopup = getRequiredElement("chat-popup");
 const chatPopupHeader = getRequiredElement("chat-popup-header");
 const chatPopupHandle = getRequiredElement("chat-popup-handle");
@@ -303,7 +306,7 @@ lookupRoot.addEventListener("click", (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   const action = target.dataset["relationshipAction"];
   if (action === undefined) return;
-  void handleLookupRelationshipAction(action);
+  void handleLookupRelationshipAction(action, target);
 });
 
 // Both the personal feed and the discover feed render through the same
@@ -2667,7 +2670,10 @@ function cssEscape(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, (match) => `\\${match}`);
 }
 
-async function handleLookupRelationshipAction(action: string): Promise<void> {
+async function handleLookupRelationshipAction(
+  action: string,
+  trigger?: HTMLElement
+): Promise<void> {
   if (currentIdentityDocument === null || lookupState.status !== "resolved") {
     return;
   }
@@ -2675,6 +2681,18 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
   const ownerCanonicalId = currentIdentityDocument.canonical_id;
   const subjectCanonicalId = lookupState.identity.canonical_id;
   const handle = lookupState.identity.handle;
+
+  // Removing a connection is destructive enough to warrant a quick
+  // confirm step. Block/unblock has its own clear "block" semantics
+  // and skips the prompt; set-unknown when the prior state was
+  // already "unknown" (no row) is a no-op so we skip there too.
+  if (action === "set-unknown") {
+    const priorTier = currentLookupRelationship?.tier;
+    if (priorTier === "known" || priorTier === "close") {
+      const confirmed = await confirmRemoveConnection(trigger);
+      if (!confirmed) return;
+    }
+  }
 
   try {
     if (action === "set-known" || action === "set-close") {
@@ -3090,6 +3108,56 @@ function openSignupDialog(): void {
   signupDialog.showModal();
   signupInput.focus();
 }
+
+// Native <dialog>-backed confirm. Returns true if the user clicks
+// "remove", false on cancel/Escape/click-outside. Restores focus to
+// the triggering element so keyboard users don't lose their place.
+let removeConnectionResolver: ((confirmed: boolean) => void) | null = null;
+let removeConnectionTrigger: HTMLElement | null = null;
+function confirmRemoveConnection(trigger?: HTMLElement): Promise<boolean> {
+  if (removeConnectionResolver !== null) {
+    // Modal already open — treat the new request as a cancel of
+    // the previous one and chain in the new prompt.
+    removeConnectionResolver(false);
+    removeConnectionResolver = null;
+  }
+  removeConnectionTrigger = trigger ?? null;
+  removeConnectionDialog.showModal();
+  // Default focus on "remove" so Enter confirms when the user
+  // tabs in or activates via keyboard. Escape always cancels via
+  // the native <dialog> handler.
+  removeConnectionConfirm.focus();
+  return new Promise<boolean>((resolve) => {
+    removeConnectionResolver = resolve;
+  });
+}
+
+function settleRemoveConnection(confirmed: boolean): void {
+  if (removeConnectionResolver !== null) {
+    removeConnectionResolver(confirmed);
+    removeConnectionResolver = null;
+  }
+  if (removeConnectionDialog.open) removeConnectionDialog.close();
+  if (removeConnectionTrigger !== null) {
+    try { removeConnectionTrigger.focus(); } catch { /* element gone, fine */ }
+    removeConnectionTrigger = null;
+  }
+}
+
+removeConnectionCancel.addEventListener("click", () => settleRemoveConnection(false));
+removeConnectionConfirm.addEventListener("click", () => settleRemoveConnection(true));
+// Native <dialog> fires "close" on Escape and on .close(). Make sure
+// any escape path resolves the promise so callers don't hang.
+removeConnectionDialog.addEventListener("close", () => {
+  if (removeConnectionResolver !== null) {
+    removeConnectionResolver(false);
+    removeConnectionResolver = null;
+  }
+  if (removeConnectionTrigger !== null) {
+    try { removeConnectionTrigger.focus(); } catch { /* ignore */ }
+    removeConnectionTrigger = null;
+  }
+});
 
 function openSigninDialog(): void {
   setAuthView("signin");

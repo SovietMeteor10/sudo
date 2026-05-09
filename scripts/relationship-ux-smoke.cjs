@@ -138,6 +138,24 @@ async function clickLookupAction(page, action) {
     return true;
   }, action);
   if (!clicked) throw new Error(`lookup action ${action} not present`);
+  // set-unknown opens a confirm modal when the prior tier was
+  // known/close. Auto-confirm here so the existing toggle-graph
+  // tests keep exercising the full action; dedicated subtests
+  // below verify the cancel / Escape paths explicitly.
+  if (action === "set-unknown") {
+    for (let i = 0; i < 20; i++) {
+      const open = await page.evaluate(() => document.getElementById("remove-connection-dialog")?.open === true);
+      if (open) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    await page.evaluate(() => {
+      const dialog = document.getElementById("remove-connection-dialog");
+      if (dialog instanceof HTMLDialogElement && dialog.open) {
+        const confirm = document.getElementById("remove-connection-confirm");
+        if (confirm instanceof HTMLButtonElement) confirm.click();
+      }
+    });
+  }
   // Give the handler a beat to refresh the lookup card.
   await new Promise((r) => setTimeout(r, 700));
 }
@@ -318,6 +336,125 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
     } else {
       ok(`after unblock: ${actions.join(", ")}`);
     }
+
+    // ===== Confirm-modal subtests for the destructive remove path.
+    //   The clickLookupAction helper auto-confirms the modal so the
+    //   toggle-graph above keeps working; here we drive the modal
+    //   explicitly to verify cancel and Escape actually keep the
+    //   connection. Also asserts follow state is independent —
+    //   removing a connection should not silently un-follow. =====
+    //
+    // Connect to set up a "something to lose" state. The server's
+    // upsertConnection auto-creates a feed_subscription for known
+    // tiers, so set-known is already enough to give the lookup card
+    // both an active connection and an active follow.
+    await clickLookupAction(pageB, "set-known");
+    let preState = (await lookupActions(pageB)).map((a) => a.action);
+    if (!preState.includes("set-unknown") || !preState.includes("set-unsubscribe")) {
+      fail("confirm-precondition", `expected connected + following; got ${preState.join("/")}`);
+    } else {
+      ok(`confirm-modal precondition: ${preState.join(", ")}`);
+    }
+
+    // Click remove → modal opens. Don't auto-confirm.
+    await pageB.evaluate(() => {
+      const btn = document.querySelector("[data-relationship-action='set-unknown']");
+      if (btn instanceof HTMLButtonElement) btn.click();
+    });
+    let dialogOpen = false;
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      dialogOpen = await pageB.evaluate(() => document.getElementById("remove-connection-dialog")?.open === true);
+      if (dialogOpen) break;
+    }
+    if (!dialogOpen) {
+      fail("confirm-modal-open", "remove-connection dialog did not open");
+    } else {
+      ok("confirm-modal-open: dialog visible after clicking remove");
+    }
+
+    // Verify the modal copy.
+    const modalShape = await pageB.evaluate(() => {
+      const title = document.getElementById("remove-connection-title")?.textContent?.trim() ?? "";
+      const body = document.getElementById("remove-connection-body")?.textContent?.trim() ?? "";
+      const cancelLabel = document.getElementById("remove-connection-cancel")?.textContent?.trim() ?? "";
+      const confirmLabel = document.getElementById("remove-connection-confirm")?.textContent?.trim() ?? "";
+      return { title, body, cancelLabel, confirmLabel };
+    });
+    if (modalShape.title !== "Remove connection?") fail("confirm-modal-title", `got '${modalShape.title}'`);
+    else if (!/no longer be marked as connected/i.test(modalShape.body)) fail("confirm-modal-body", `got '${modalShape.body}'`);
+    else if (modalShape.cancelLabel !== "cancel" || modalShape.confirmLabel !== "remove") {
+      fail("confirm-modal-buttons", `expected cancel/remove, got ${modalShape.cancelLabel}/${modalShape.confirmLabel}`);
+    } else {
+      ok(`confirm-modal copy: '${modalShape.title}' + '${modalShape.body}'`);
+    }
+
+    // Click cancel → connection survives.
+    await pageB.evaluate(() => {
+      const btn = document.getElementById("remove-connection-cancel");
+      if (btn instanceof HTMLButtonElement) btn.click();
+    });
+    await new Promise((r) => setTimeout(r, 500));
+    let afterCancel = (await lookupActions(pageB)).map((a) => a.action);
+    if (!afterCancel.includes("set-unknown") || !afterCancel.includes("set-unsubscribe")) {
+      fail("confirm-cancel", `cancel should keep connection + follow; got ${afterCancel.join("/")}`);
+    } else {
+      ok(`cancel keeps connection + follow: ${afterCancel.join(", ")}`);
+    }
+
+    // Click remove again → modal opens → press Escape → connection survives.
+    await pageB.evaluate(() => {
+      const btn = document.querySelector("[data-relationship-action='set-unknown']");
+      if (btn instanceof HTMLButtonElement) btn.click();
+    });
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const open = await pageB.evaluate(() => document.getElementById("remove-connection-dialog")?.open === true);
+      if (open) break;
+    }
+    await pageB.keyboard.press("Escape");
+    await new Promise((r) => setTimeout(r, 500));
+    const afterEscape = (await lookupActions(pageB)).map((a) => a.action);
+    const dialogClosedAfterEscape = await pageB.evaluate(() =>
+      document.getElementById("remove-connection-dialog")?.open === false
+    );
+    if (!dialogClosedAfterEscape) fail("confirm-escape-close", "dialog still open after Escape");
+    else if (!afterEscape.includes("set-unknown") || !afterEscape.includes("set-unsubscribe")) {
+      fail("confirm-escape", `Escape should keep connection + follow; got ${afterEscape.join("/")}`);
+    } else {
+      ok(`Escape closes modal and keeps connection + follow: ${afterEscape.join(", ")}`);
+    }
+
+    // Click remove a third time → modal opens → click confirm →
+    // connection removed + card immediately shows connect.
+    // Follow state must survive (independent axes).
+    await pageB.evaluate(() => {
+      const btn = document.querySelector("[data-relationship-action='set-unknown']");
+      if (btn instanceof HTMLButtonElement) btn.click();
+    });
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      const open = await pageB.evaluate(() => document.getElementById("remove-connection-dialog")?.open === true);
+      if (open) break;
+    }
+    await pageB.evaluate(() => {
+      const btn = document.getElementById("remove-connection-confirm");
+      if (btn instanceof HTMLButtonElement) btn.click();
+    });
+    await new Promise((r) => setTimeout(r, 700));
+    const afterConfirm = (await lookupActions(pageB)).map((a) => a.action);
+    if (!afterConfirm.includes("set-known") || afterConfirm.includes("set-unknown")) {
+      fail("confirm-confirm", `confirm should remove connection; got ${afterConfirm.join("/")}`);
+    } else if (!afterConfirm.includes("set-unsubscribe")) {
+      fail("confirm-follow-survives", `confirm should NOT touch follow; got ${afterConfirm.join("/")}`);
+    } else {
+      ok(`confirm removes connection and preserves follow: ${afterConfirm.join(", ")}`);
+    }
+
+    // Reset to a clean baseline before the notifications subtests:
+    // unfollow + (no connection already) so the rest of the smoke
+    // operates on the documented initial state.
+    await clickLookupAction(pageB, "set-unsubscribe");
 
     // ===== Notifications: A follows B → B sees follow notification =====
     await resolveLookup(pageA, `@${handleB}`);
