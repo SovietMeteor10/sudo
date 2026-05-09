@@ -114,8 +114,13 @@ import type {
 } from "./types.js";
 import { describePortalTransport, selectRelayForRecipient } from "./transport/relay-transport.js";
 
-const notificationsList = getRequiredElement("notifications-list");
-const notificationsEmpty = getRequiredElement("notifications-empty");
+// Notifications panel is a non-critical UI surface — keep the
+// lookups optional so a missing or future-shape index.html cannot
+// kill module init and strand the landing auth buttons. If either
+// element is absent the start/stop helpers below short-circuit; the
+// rest of the app keeps working.
+const notificationsList = document.getElementById("notifications-list");
+const notificationsEmpty = document.getElementById("notifications-empty");
 const streamRoot = getRequiredElement("stream-list");
 const feedComposer = getRequiredForm("feed-composer");
 const feedBodyInput = getRequiredTextArea("feed-body");
@@ -3100,7 +3105,9 @@ function setSignedIn(handle: string): void {
     void refreshFeedPosts();
     startInboxPolling(currentIdentityDocument.canonical_id);
     startFeedPolling(currentIdentityDocument.canonical_id);
-    startNotificationsPolling(currentIdentityDocument.canonical_id, notificationsList, notificationsEmpty);
+    if (notificationsList !== null && notificationsEmpty !== null) {
+      startNotificationsPolling(currentIdentityDocument.canonical_id, notificationsList, notificationsEmpty);
+    }
   }
 }
 

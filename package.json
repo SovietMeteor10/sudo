@@ -27,6 +27,7 @@
     "smoke:feed-live-refresh": "node scripts/feed-live-refresh-smoke.cjs",
     "smoke:feed-poller-regression": "node scripts/feed-poller-regression-smoke.cjs",
     "smoke:relationship-ux": "node scripts/relationship-ux-smoke.cjs",
+    "smoke:auth-buttons-clickable": "node scripts/auth-buttons-clickable-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
