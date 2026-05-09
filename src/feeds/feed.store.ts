@@ -172,11 +172,16 @@ export function getFeedPost(postId: string): FeedPost | null {
 }
 
 export function listFeedPosts(): FeedPost[] {
+  // Top-level feed listings exclude replies. Replies are reachable
+  // via /api/feeds/posts/:postId/replies and are rendered nested
+  // under their parent post; surfacing them as standalone top-level
+  // cards would just look like duplicate noise to other viewers.
   const rows = db
     .prepare(`
       SELECT * FROM feed_posts
       WHERE deleted_at IS NULL
         AND visibility IN ('public', 'unlisted')
+        AND reply_to IS NULL
       ORDER BY created_at DESC
       LIMIT 100
     `)
@@ -191,6 +196,7 @@ export function listFeedPostsByAuthor(canonicalId: string): FeedPost[] {
       SELECT * FROM feed_posts
       WHERE author_canonical_id = @canonicalId
         AND deleted_at IS NULL
+        AND reply_to IS NULL
       ORDER BY created_at DESC
       LIMIT 100
     `)
@@ -206,6 +212,7 @@ export function listRssFeedPostsByAuthor(canonicalId: string): FeedPost[] {
       WHERE author_canonical_id = ?
         AND deleted_at IS NULL
         AND visibility IN ('public', 'unlisted')
+        AND reply_to IS NULL
         AND body IS NOT NULL
         AND body != ''
       ORDER BY created_at DESC

@@ -31,8 +31,13 @@ type FeedPostRow = {
   deleted_at: string | null;
   sequence: number;
   signature: string | null;
+  reply_to: string | null;
   post_json: string;
 };
+
+function isReplyRow(row: FeedPostRow): boolean {
+  return typeof row.reply_to === "string" && row.reply_to.length > 0;
+}
 
 type DiscoveryPostIndexRow = {
   post_id: string;
@@ -73,7 +78,11 @@ export function listSearchableIdentities(): SearchableIdentityRow[] {
 }
 
 export function upsertDiscoveryPostIndexFromFeedPost(post: FeedPost): DiscoveryPostIndex | null {
-  if (!isDiscoverableVisibility(post.visibility) || post.deleted_at !== null) {
+  // Replies are not top-level discoverable items; they live under
+  // their parent post via /api/feeds/posts/:postId/replies. Indexing
+  // them would surface them as standalone cards in discover.
+  const isReply = typeof post.reply_to === "string" && post.reply_to.length > 0;
+  if (!isDiscoverableVisibility(post.visibility) || post.deleted_at !== null || isReply) {
     db.prepare("DELETE FROM discovery_post_index WHERE post_id = ?").run(post.post_id);
     return null;
   }
@@ -219,7 +228,10 @@ export function refreshDiscoveryPostIndex(postId: string): DiscoveryPostIndex | 
     WHERE post_id = ?
   `).get(postId) as FeedPostRow | undefined;
 
-  if (post === undefined || post.deleted_at !== null || !isDiscoverableVisibility(post.visibility)) {
+  if (post === undefined
+    || post.deleted_at !== null
+    || !isDiscoverableVisibility(post.visibility)
+    || isReplyRow(post)) {
     db.prepare("DELETE FROM discovery_post_index WHERE post_id = ?").run(postId);
     return null;
   }
@@ -341,6 +353,7 @@ export function listDiscoverableFeedPosts(): FeedPost[] {
     FROM feed_posts
     WHERE deleted_at IS NULL
       AND visibility IN ('public', 'public_metadata_encrypted_body')
+      AND reply_to IS NULL
     ORDER BY created_at DESC
   `).all() as FeedPostRow[];
 

@@ -1737,6 +1737,10 @@ async function refreshFeedPosts(): Promise<void> {
     for (const posts of fetched) {
       for (const post of posts) {
         if (blocked.has(post.author_canonical_id)) continue;
+        // Replies are not top-level feed cards — they render nested
+        // under their parent post. Skip any reply that slips through
+        // (legacy server caches, races during the rollout).
+        if (typeof post.reply_to === "string" && post.reply_to.length > 0) continue;
         if (!merged.has(post.post_id)) merged.set(post.post_id, post);
       }
     }
@@ -1770,6 +1774,7 @@ async function refreshFeedPosts(): Promise<void> {
         });
       });
     renderStream(streamRoot, items);
+    void hydrateAutoReplies(streamRoot);
   } catch {
     renderStream(streamRoot, []);
   }
@@ -1792,6 +1797,24 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
   }
 
   renderDiscoveryPanel(discoveryRoot, discoveryState);
+  void hydrateAutoReplies(discoveryRoot);
+}
+
+// After the stream/discover renderer marks panels with
+// data-needs-replies (because reply_count > 0), this fills each one
+// with the threaded reply subtree so all viewers — not just the
+// author — see replies nested under the parent.
+async function hydrateAutoReplies(root: HTMLElement): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const panels = Array.from(
+    root.querySelectorAll<HTMLElement>(".stream-post__replies[data-needs-replies='true']")
+  );
+  await Promise.all(panels.map(async (panel) => {
+    const postId = panel.dataset["repliesPanel"];
+    if (typeof postId !== "string") return;
+    delete panel.dataset["needsReplies"];
+    await renderRepliesUnder(postId, panel);
+  }));
 }
 
 async function postDiscoveryReaction(

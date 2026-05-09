@@ -335,12 +335,20 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
   article.append(actions);
 
-  // Container for the inline reply composer / expanded replies list,
-  // populated lazily by the controller when the user clicks ↩.
+  // Container for the inline reply composer / expanded replies list.
+  // For posts that already have replies we surface the panel in
+  // "list" mode immediately so all viewers — not just the post's
+  // author — see the threaded conversation under the parent.
   const repliesPanel = document.createElement("div");
   repliesPanel.className = "stream-post__replies";
   repliesPanel.dataset["repliesPanel"] = item.post_id;
-  repliesPanel.hidden = true;
+  if (item.counts.reply > 0) {
+    repliesPanel.hidden = false;
+    repliesPanel.dataset["mode"] = "list";
+    repliesPanel.dataset["needsReplies"] = "true";
+  } else {
+    repliesPanel.hidden = true;
+  }
   article.append(repliesPanel);
 
   return article;

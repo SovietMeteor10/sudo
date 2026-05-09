@@ -647,6 +647,86 @@ async function postBody(page, postId) {
         else ok("nested-reply: A's reply to B's reply renders under the parent reply");
       }
     }
+
+    // ===== Fresh viewer: replies nested-only, never top-level =====
+    // The reported bug was that another account saw replies as
+    // standalone top-level feed cards ("@user replied / replying to
+    // @user / ..."). Verify with a brand-new viewer D who has no
+    // prior history with these posts and just adds A as a friend.
+    const handleD = "delta" + Date.now().toString().slice(-6);
+    const { page: pageD } = await newSignedInContext(browser, handleD);
+    // Connect D to A via the lookup pane (same path the user takes).
+    await pageD.type("#lookup-input", `@${handleA}`);
+    await pageD.evaluate(() => {
+      document.getElementById("lookup-form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    let dResolved = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      dResolved = await pageD.evaluate(() =>
+        document.querySelector("[data-relationship-action='set-known']") !== null
+      );
+      if (dResolved) break;
+    }
+    if (!dResolved) fail("nested-only-lookup", "D could not resolve A in the lookup pane");
+    await pageD.evaluate(() => {
+      document.querySelector("[data-relationship-action='set-known']")?.click();
+    });
+    // Wait for D's personal feed to backfill A's top-level posts.
+    let dTopLevelIds = [];
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      dTopLevelIds = await feedPostIds(pageD);
+      if (dTopLevelIds.includes(postOne) && dTopLevelIds.includes(postTwo)) break;
+    }
+    if (!dTopLevelIds.includes(postOne) || !dTopLevelIds.includes(postTwo)) {
+      fail("nested-only-backfill", `D did not see A's top-level posts; visible=${dTopLevelIds.join(", ")}`);
+    } else ok("nested-only: D's personal feed shows A's top-level posts");
+
+    // Top-level feed must contain ONLY non-reply posts. Walk every
+    // .stream-post and assert none of them have a handle ending in
+    // "replied" (which would be the reply-card meta text we used to
+    // render at top level).
+    const topLevelMeta = await pageD.evaluate(() => {
+      const articles = Array.from(document.querySelectorAll("#stream-list .stream-post"));
+      return articles.map((a) => ({
+        postId: a.dataset.postId,
+        kind: a.dataset.postKind ?? "post",
+        handle: a.querySelector(".stream-post__handle")?.textContent ?? ""
+      }));
+    });
+    const replyTopLevel = topLevelMeta.filter((m) => /\breplied\b$/i.test(m.handle));
+    if (replyTopLevel.length > 0) {
+      fail("nested-only-toplevel", `top-level feed contains reply cards: ${JSON.stringify(replyTopLevel)}`);
+    } else ok(`nested-only: no top-level "@X replied" cards in D's feed (top-level=${topLevelMeta.length})`);
+
+    // Replies should auto-render under the parent without the viewer
+    // having to click ↩. Verify B's reply is visible under postOne.
+    let dSeesNestedReply = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      dSeesNestedReply = await pageD.evaluate((rootId, expected) => {
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+        const list = article?.querySelector(".stream-post__reply-list");
+        if (!list) return false;
+        const arrow = list.querySelector(".stream-post__reply-arrow")?.textContent ?? "";
+        return arrow === "↳" && (list.textContent || "").includes(expected);
+      }, postOne, replyText);
+      if (dSeesNestedReply) break;
+    }
+    if (!dSeesNestedReply) fail("nested-only-render", "D did not see B's reply nested under postOne (no click)");
+    else ok("nested-only: D sees B's reply nested under postOne automatically");
+
+    // Discover should also exclude replies — only top-level
+    // discoverable posts surface. The reply post id from B should
+    // never be a top-level data-post-id in #discovery-list.
+    const discoverIds = await pageD.evaluate(() =>
+      Array.from(document.querySelectorAll("#discovery-list .stream-post[data-post-id]"))
+        .map((a) => a.dataset.postId)
+    );
+    if (discoverIds.includes(bReplyId)) {
+      fail("discover-no-replies", `discover contains reply id at top level: ${bReplyId}`);
+    } else ok("nested-only: discover feed has no reply post at top level");
   } finally {
     await browser.close();
   }

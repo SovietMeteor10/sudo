@@ -40,6 +40,16 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "feed_posts", "repost_of", "TEXT");
   db.exec("CREATE INDEX IF NOT EXISTS feed_posts_reply_to_idx ON feed_posts(reply_to)");
   db.exec("CREATE INDEX IF NOT EXISTS feed_posts_repost_of_idx ON feed_posts(repost_of)");
+  // Replies are top-level-feed-excluded as of this fix; older
+  // databases may still hold reply rows in discovery_post_index.
+  // Drop them so discover doesn't surface stale standalone reply
+  // cards.
+  db.exec(`
+    DELETE FROM discovery_post_index
+    WHERE post_id IN (
+      SELECT post_id FROM feed_posts WHERE reply_to IS NOT NULL
+    )
+  `);
 
   addColumnIfMissing(db, "discovery_reactions", "actor_handle", "TEXT");
   addColumnIfMissing(db, "discovery_reactions", "signature", "TEXT");
