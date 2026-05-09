@@ -406,6 +406,7 @@ devicesRouter.get("/:ownerCanonicalId/sync/cursor", (request, response) => {
 // rejected at the edge instead of silently relayed.
 function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "contact") return kind === "contact.upsert" || kind === "contact.delete";
+  if (slice === "subscription") return kind === "subscription.upsert" || kind === "subscription.delete";
   return false;
 }
 

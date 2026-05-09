@@ -271,12 +271,16 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
   signature: Signature;
 };
 
-// First sync slice covers contacts only. The slice tag is plaintext so
-// the server (and any other relay) can route events without learning
-// who the contact is. The actual contact body lives inside
-// encrypted_payload, sealed under the account-shared sync key.
-export type SyncEventSlice = "contact";
-export type SyncEventKind = "contact.upsert" | "contact.delete";
+// Sync slices live in plaintext on the envelope so the server (and any
+// other relay) can route events without learning the slice's body —
+// the actual subject material is sealed inside encrypted_payload under
+// the account-shared sync key.
+export type SyncEventSlice = "contact" | "subscription";
+export type SyncEventKind =
+  | "contact.upsert"
+  | "contact.delete"
+  | "subscription.upsert"
+  | "subscription.delete";
 
 export type SignableSyncEvent = {
   type: "sudo_sync_event";

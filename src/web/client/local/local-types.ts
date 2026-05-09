@@ -66,6 +66,15 @@ export type LocalSubscription = {
   owner_canonical_id: string;
   source: string;
   created_at: string;
+  // Optional richer fields populated when the subscription arrives via
+  // the encrypted sync slice. Older legacy rows that only carry
+  // `source` remain valid; these fields fill in when sync events
+  // project author / visibility flags onto the row.
+  author_canonical_id?: string;
+  include_public?: boolean;
+  include_connections?: boolean;
+  include_close?: boolean;
+  updated_at?: string;
 };
 
 export type LocalDraft = {

@@ -6,7 +6,6 @@ import {
   createDiscoveryReaction,
   completeDevicePairing,
   deleteConnectionRelationship,
-  deleteFeedSubscription,
   createFeedPost,
   FeedPostError,
   getDiscoveryPost,
@@ -32,7 +31,6 @@ import {
   signinDevHandle,
   signupDevHandle,
   upsertConnectionRelationship,
-  upsertFeedSubscription,
   type FeedEngagement
 } from "./api.js";
 import {
@@ -53,6 +51,10 @@ import {
   applyContactDeleteWithBroadcast,
   applyContactUpsertWithBroadcast
 } from "./sync/contactSync.js";
+import {
+  applySubscriptionDeleteWithBroadcast,
+  applySubscriptionUpsertWithBroadcast
+} from "./sync/subscriptionSync.js";
 import {
   feedPostToUnifiedItem,
   formatPostTimestamp,
@@ -2522,8 +2524,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
       // the directory "+" should return.
       await applyContactDeleteWithBroadcast(ownerCanonicalId, subjectCanonicalId);
     } else if (action === "set-subscribe") {
-      await upsertFeedSubscription({
-        owner_canonical_id: ownerCanonicalId,
+      await applySubscriptionUpsertWithBroadcast(ownerCanonicalId, {
         author_canonical_id: subjectCanonicalId,
         author_handle: handle,
         include_public: true,
@@ -2532,7 +2533,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
         muted: false
       });
     } else if (action === "set-unsubscribe") {
-      await deleteFeedSubscription(ownerCanonicalId, subjectCanonicalId);
+      await applySubscriptionDeleteWithBroadcast(ownerCanonicalId, subjectCanonicalId);
     }
 
     await refreshLookupRelationship();
@@ -2811,8 +2812,7 @@ async function addChatTarget(result: SearchResult): Promise<void> {
     tier: "known",
     subscribed: true
   });
-  await upsertFeedSubscription({
-    owner_canonical_id: ownerCanonicalId,
+  await applySubscriptionUpsertWithBroadcast(ownerCanonicalId, {
     author_canonical_id: result.canonical,
     author_handle: result.handle,
     include_public: true,
@@ -2852,7 +2852,7 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
   pendingAddedCanonicals.delete(canonical);
   if (currentIdentityDocument !== null) {
     await deleteConnectionRelationship(currentIdentityDocument.canonical_id, canonical);
-    await deleteFeedSubscription(currentIdentityDocument.canonical_id, canonical);
+    await applySubscriptionDeleteWithBroadcast(currentIdentityDocument.canonical_id, canonical);
     // Removing a connection should also drop the local contact so the
     // chat list / search row re-renders the "+" button. Without this
     // the row shows a stale "remove" and the user can't re-add.

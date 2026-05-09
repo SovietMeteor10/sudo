@@ -264,6 +264,77 @@ export async function listLocalSubscriptions(ownerCanonicalId: string): Promise<
   return getAllByIndex<LocalSubscription>("subscriptions", "by_owner", ownerCanonicalId);
 }
 
+// Composite-style key used by the sync slice so per-(owner, author)
+// subscriptions stay unique across browser profiles. The legacy
+// `subscription_id`/`source` fields are still populated for
+// compatibility with older code paths that only read those.
+function subscriptionRowId(ownerCanonicalId: string, authorCanonicalId: string): string {
+  return `sync:${ownerCanonicalId}:${authorCanonicalId}`;
+}
+
+export type ProjectedSubscriptionInput = {
+  author_canonical_id: string;
+  include_public?: boolean;
+  include_connections?: boolean;
+  include_close?: boolean;
+  updated_at?: string;
+};
+
+export async function upsertProjectedSubscription(
+  ownerCanonicalId: string,
+  input: ProjectedSubscriptionInput
+): Promise<void> {
+  const subscriptionId = subscriptionRowId(ownerCanonicalId, input.author_canonical_id);
+  const updatedAt = input.updated_at ?? new Date().toISOString();
+  const existing = await getRecord<LocalSubscription>("subscriptions", subscriptionId);
+  const record: LocalSubscription = {
+    subscription_id: subscriptionId,
+    owner_canonical_id: ownerCanonicalId,
+    source: input.author_canonical_id,
+    created_at: existing?.created_at ?? updatedAt,
+    author_canonical_id: input.author_canonical_id,
+    include_public: input.include_public !== false,
+    include_connections: input.include_connections !== false,
+    include_close: input.include_close === true,
+    updated_at: updatedAt
+  };
+  await putRecord("subscriptions", record);
+  await appendLocalEvent(ownerCanonicalId, {
+    event_id: crypto.randomUUID(),
+    type: "subscription.added",
+    created_at: updatedAt,
+    subject_id: input.author_canonical_id,
+    data: { include_public: record.include_public, include_connections: record.include_connections, include_close: record.include_close }
+  });
+}
+
+export async function deleteProjectedSubscription(
+  ownerCanonicalId: string,
+  authorCanonicalId: string
+): Promise<void> {
+  const subscriptionId = subscriptionRowId(ownerCanonicalId, authorCanonicalId);
+  const db = await openLocalDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("subscriptions", "readwrite");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("failed to delete subscription"));
+    tx.objectStore("subscriptions").delete(subscriptionId);
+  });
+  await appendLocalEvent(ownerCanonicalId, {
+    event_id: crypto.randomUUID(),
+    type: "subscription.removed",
+    created_at: new Date().toISOString(),
+    subject_id: authorCanonicalId
+  });
+}
+
+export async function getProjectedSubscription(
+  ownerCanonicalId: string,
+  authorCanonicalId: string
+): Promise<LocalSubscription | null> {
+  return getRecord<LocalSubscription>("subscriptions", subscriptionRowId(ownerCanonicalId, authorCanonicalId));
+}
+
 export async function listLocalDrafts(ownerCanonicalId: string): Promise<LocalDraft[]> {
   return getAllByIndex<LocalDraft>("drafts", "by_owner", ownerCanonicalId);
 }
