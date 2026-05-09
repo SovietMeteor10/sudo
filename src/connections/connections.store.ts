@@ -251,6 +251,75 @@ export function listFeedSubscriptions(ownerCanonicalId: string): FeedSubscriptio
   return rows.map(rowToSubscription);
 }
 
+// "Who is following me / connected to me" — derived from the
+// existing rows. The connections subject_canonical_id and
+// feed_subscriptions author_canonical_id columns are both indexed
+// so these stay cheap. Used by the notifications surface.
+export type IncomingFollower = {
+  actor_canonical_id: string;
+  actor_handle?: string;
+  created_at: string;
+  updated_at: string;
+  muted: boolean;
+};
+
+export function listIncomingFollowers(authorCanonicalId: string, limit = 50): IncomingFollower[] {
+  const rows = db.prepare(`
+    SELECT owner_canonical_id, author_handle, created_at, updated_at, muted
+    FROM feed_subscriptions
+    WHERE author_canonical_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(authorCanonicalId, limit) as Array<{
+    owner_canonical_id: string;
+    author_handle: string | null;
+    created_at: string;
+    updated_at: string;
+    muted: number;
+  }>;
+  return rows.map((row) => ({
+    actor_canonical_id: row.owner_canonical_id,
+    actor_handle: row.author_handle ?? undefined,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    muted: row.muted !== 0
+  }));
+}
+
+export type IncomingConnection = {
+  actor_canonical_id: string;
+  actor_handle?: string;
+  tier: ConnectionTier;
+  created_at: string;
+  updated_at: string;
+};
+
+export function listIncomingConnections(subjectCanonicalId: string, limit = 50): IncomingConnection[] {
+  // Only surface known/close — blocked connections are private to
+  // the owner and not a notification.
+  const rows = db.prepare(`
+    SELECT owner_canonical_id, subject_handle, tier, created_at, updated_at
+    FROM connections
+    WHERE subject_canonical_id = ?
+      AND tier IN ('known', 'close')
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(subjectCanonicalId, limit) as Array<{
+    owner_canonical_id: string;
+    subject_handle: string | null;
+    tier: ConnectionTier;
+    created_at: string;
+    updated_at: string;
+  }>;
+  return rows.map((row) => ({
+    actor_canonical_id: row.owner_canonical_id,
+    actor_handle: row.subject_handle ?? undefined,
+    tier: row.tier,
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  }));
+}
+
 export function connectionTierToRelayTier(tier: ConnectionTier): RelayTier {
   if (tier === "blocked") return "blocked";
   if (tier === "known" || tier === "close") return "known";

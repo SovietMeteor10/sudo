@@ -56,12 +56,15 @@ import {
   applySubscriptionUpsertWithBroadcast
 } from "./sync/subscriptionSync.js";
 import {
+  startNotificationsPolling,
+  stopNotificationsPolling
+} from "./notifications/notificationsClient.js";
+import {
   feedPostToUnifiedItem,
   formatPostTimestamp,
   renderChatList,
   renderDiscoveryPanel,
   renderDevicePanel,
-  renderIdentityPane,
   renderLookupResult,
   renderSearchResults,
   renderSigninState,
@@ -111,7 +114,8 @@ import type {
 } from "./types.js";
 import { describePortalTransport, selectRelayForRecipient } from "./transport/relay-transport.js";
 
-const identityRoot = getRequiredElement("identity-pane-body");
+const notificationsList = getRequiredElement("notifications-list");
+const notificationsEmpty = getRequiredElement("notifications-empty");
 const streamRoot = getRequiredElement("stream-list");
 const feedComposer = getRequiredForm("feed-composer");
 const feedBodyInput = getRequiredTextArea("feed-body");
@@ -229,7 +233,6 @@ const brandLabel = "sudo";
 const brandFlickerPool = ["σ", "δ", "с", "д", "す", "ド", "س", "ו", "द", "ο", "そ", "ス", "ا", "א"];
 const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
-renderIdentityPane(identityRoot, currentIdentity);
 renderLookupResult(lookupRoot, lookupState);
 renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
@@ -2877,8 +2880,11 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
   currentIdentityDocument = identity;
   currentIdentityFingerprint = fingerprint;
+  // currentIdentity / currentIdentityFingerprint feed the top-right
+  // account menu (handle + fingerprint). The lower-left identity
+  // panel was removed in favor of notifications, so there is no
+  // separate identity render call here.
   currentIdentity = buildIdentityView(identity, fingerprint);
-  renderIdentityPane(identityRoot, currentIdentity);
   void refreshDevicePanel();
   void refreshLookupRelationship();
   void refreshFeedPosts();
@@ -3094,6 +3100,7 @@ function setSignedIn(handle: string): void {
     void refreshFeedPosts();
     startInboxPolling(currentIdentityDocument.canonical_id);
     startFeedPolling(currentIdentityDocument.canonical_id);
+    startNotificationsPolling(currentIdentityDocument.canonical_id, notificationsList, notificationsEmpty);
   }
 }
 
@@ -3156,6 +3163,7 @@ function setSignedOut(): void {
   authSequence++;
   stopInboxPolling();
   stopFeedPolling();
+  stopNotificationsPolling();
   currentIdentityDocument = null;
   currentIdentityFingerprint = null;
   currentCryptoAccount = null;
@@ -3163,7 +3171,6 @@ function setSignedOut(): void {
   currentLookupSubscription = null;
   setAuthView("menu");
   currentIdentity = buildAnonymousIdentityView();
-  renderIdentityPane(identityRoot, currentIdentity);
   // Drop any in-memory rendered private state from the previous account so
   // the next user never briefly sees the prior user's UI.
   localChats = [];
@@ -3206,13 +3213,14 @@ async function ensureNodeDocument(): Promise<NodeCapabilityDocument> {
 }
 
 function refreshIdentityPane(): void {
+  // The lower-left identity panel was removed in favor of
+  // notifications. We still keep currentIdentity in sync because the
+  // top-right account menu reads handle/fingerprint from it.
   if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
     currentIdentity = buildIdentityView(currentIdentityDocument, currentIdentityFingerprint);
   } else {
     currentIdentity = buildAnonymousIdentityView();
   }
-
-  renderIdentityPane(identityRoot, currentIdentity);
 }
 
 function buildIdentityView(identity: IdentityDocument, fingerprint: string): LocalIdentity {

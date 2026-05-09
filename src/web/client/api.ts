@@ -10,6 +10,7 @@ import type {
   NodeCapabilityDocument,
   SignedDeviceMembership,
   SignedSyncEvent,
+  SocialNotification,
   TrustedDevice,
   SearchResult
 } from "./types.js";
@@ -418,6 +419,18 @@ export async function listConnections(ownerCanonicalId: string): Promise<Connect
 
   const body = await response.json() as { relationships?: ConnectionRelationship[] };
   return Array.isArray(body.relationships) ? body.relationships : [];
+}
+
+export async function listIncomingSocialNotifications(
+  recipientCanonicalId: string,
+  limit = 100
+): Promise<SocialNotification[]> {
+  const url = new URL(`/api/notifications/incoming/${encodeURIComponent(recipientCanonicalId)}`, window.location.origin);
+  url.searchParams.set("limit", String(limit));
+  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } });
+  if (!response.ok) throw new Error(`notifications list failed: ${response.status}`);
+  const body = await response.json() as { notifications?: SocialNotification[] };
+  return Array.isArray(body.notifications) ? body.notifications : [];
 }
 
 export async function upsertFeedSubscription(input: {

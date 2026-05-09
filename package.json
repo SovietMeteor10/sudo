@@ -26,6 +26,7 @@
     "smoke:message-sync": "node scripts/message-sync-smoke.cjs",
     "smoke:feed-live-refresh": "node scripts/feed-live-refresh-smoke.cjs",
     "smoke:feed-poller-regression": "node scripts/feed-poller-regression-smoke.cjs",
+    "smoke:relationship-ux": "node scripts/relationship-ux-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

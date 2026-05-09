@@ -16,6 +16,7 @@ import type {
   SearchState,
   SignupState,
   SigninState,
+  SocialNotification,
 } from "./types.js";
 
 // Unified feed item used by both the personal stream and the discover
@@ -79,6 +80,108 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
       line(`fingerprint ${identity.fingerprintSnippet}`, "is-muted"),
     ]),
   );
+}
+
+// Notifications panel — lower-left of the shell. Renders incoming
+// follow / connect notifications with state-aware action buttons.
+// `dismissed` is the local-only set of notification ids the user has
+// already dismissed, kept in IndexedDB by the coordinator.
+export type NotificationActionKind = "follow-back" | "connect-back" | "dismiss" | "block";
+
+export function renderNotificationsPanel(
+  list: HTMLElement,
+  empty: HTMLElement,
+  notifications: SocialNotification[],
+  ownConnections: Map<string, ConnectionRelationship["tier"]>,
+  ownSubscriptions: Set<string>,
+  onAction: (notification: SocialNotification, action: NotificationActionKind) => void
+): void {
+  if (notifications.length === 0) {
+    list.replaceChildren();
+    list.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+
+  empty.hidden = true;
+  list.hidden = false;
+
+  const fragment = document.createDocumentFragment();
+  for (const notification of notifications) {
+    fragment.append(renderNotificationRow(notification, ownConnections, ownSubscriptions, onAction));
+  }
+  list.replaceChildren(fragment);
+}
+
+function renderNotificationRow(
+  notification: SocialNotification,
+  ownConnections: Map<string, ConnectionRelationship["tier"]>,
+  ownSubscriptions: Set<string>,
+  onAction: (notification: SocialNotification, action: NotificationActionKind) => void
+): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "notification-row";
+  row.dataset["notificationId"] = notification.id;
+
+  const actorHandle = notification.actor_handle ?? notification.actor_canonical_id;
+  const verb = notification.kind === "follow"
+    ? "follows you"
+    : notification.tier === "close"
+      ? "wants to be a close friend"
+      : "wants to connect";
+  const lead = document.createElement("div");
+  lead.className = "notification-row__line";
+  lead.textContent = `${actorHandle} ${verb}`;
+  row.append(lead);
+
+  const actorTier = ownConnections.get(notification.actor_canonical_id);
+  const reciprocallyFollowing = ownSubscriptions.has(notification.actor_canonical_id);
+  const reciprocallyConnected = actorTier === "known" || actorTier === "close";
+
+  const sub = document.createElement("div");
+  sub.className = "notification-row__sub notification-row__line";
+  sub.textContent = describeReciprocal(notification.kind, reciprocallyFollowing, reciprocallyConnected);
+  row.append(sub);
+
+  const actions = document.createElement("div");
+  actions.className = "notification-row__actions";
+
+  if (notification.kind === "follow" && !reciprocallyFollowing && !reciprocallyConnected) {
+    actions.append(notificationButton("follow back", () => onAction(notification, "follow-back")));
+  }
+  if (notification.kind === "connect" && !reciprocallyConnected) {
+    actions.append(notificationButton("connect back", () => onAction(notification, "connect-back")));
+  }
+  actions.append(notificationButton("dismiss", () => onAction(notification, "dismiss")));
+  if (actorTier !== "blocked") {
+    actions.append(notificationButton("block", () => onAction(notification, "block")));
+  }
+  row.append(actions);
+  return row;
+}
+
+function notificationButton(label: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "notification-row__action";
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function describeReciprocal(
+  kind: SocialNotification["kind"],
+  reciprocallyFollowing: boolean,
+  reciprocallyConnected: boolean
+): string {
+  if (kind === "follow") {
+    if (reciprocallyFollowing) return "you follow them too";
+    if (reciprocallyConnected) return "you are connected";
+    return "follow back, dismiss, or block";
+  }
+  if (reciprocallyConnected) return "you are connected";
+  if (reciprocallyFollowing) return "you follow them";
+  return "connect back, dismiss, or block";
 }
 
 export function renderDevicePanel(
@@ -626,37 +729,55 @@ function renderResolvedIdentity(
   subscription?: FeedSubscription | null
 ): HTMLElement {
   const shortFingerprint = `${fingerprint.slice(0, 12)}...`;
+  const isFollowing = subscription !== null && subscription !== undefined && subscription.muted !== true;
+  const tier = relationship?.tier ?? "unknown";
   const card = block("lookup-card", [
     line(identity.handle, "lookup-card__handle"),
     line(`canonical: ${shortCanonical(identity.canonical_id)}`),
     line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? shortFingerprint}`),
     line(`connection: ${describeConnection(relationship)}`, "is-muted"),
-    line(`follow: ${subscription === null ? "no" : subscription?.muted ? "muted" : "yes"}`, "is-muted"),
+    line(`follow: ${isFollowing ? "yes" : subscription?.muted ? "muted" : "no"}`, "is-muted"),
     line("trust: unverified", "is-muted"),
     line("onion: unknown", "is-muted"),
     line(`updated: ${formatTimestamp(identity.updated_at)}`, "is-muted"),
   ]);
 
-  // Two distinct concepts on this card:
-  //   - "follow" toggles whether the viewer's personal feed shows
-  //     this author's posts (server-canonical subscription row).
-  //   - "connect" / "close friend" set the trust tier (known | close)
-  //     used by relay policy and higher-trust visibility. A connection
-  //     also pulls the subject into the personal feed via the
-  //     known/close branch of listPersonalFeedForApi, so connecting
-  //     implies seeing posts even without a separate follow.
-  // "block" and "unblock" sit on the connection model (tier=blocked
-  // suppresses both feed and relay).
+  // State-aware action row. Each axis (follow, connect, close-friend,
+  // block) renders as a SINGLE toggle showing the action available
+  // from the current state — never the past tense of what already
+  // happened. When blocked, no other actions surface; the user must
+  // unblock first to re-engage.
+  //
+  // Semantics:
+  //   - follow      : subscription on/off (independent of tier).
+  //   - connect     : tier=known on/off. Per listPersonalFeedForApi a
+  //                   known connection pulls the subject's posts into
+  //                   the viewer's personal feed, so connecting
+  //                   implies feed visibility even without follow.
+  //   - close friend: tier=close on/off (only meaningful when
+  //                   connected — otherwise hidden).
+  //   - block       : tier=blocked on/off (hard deny that suppresses
+  //                   feed + relay).
   const actions = document.createElement("div");
   actions.className = "lookup-card__actions";
-  actions.append(
-    button("follow", "set-subscribe"),
-    button("unfollow", "set-unsubscribe"),
-    button("connect", "set-known"),
-    button("close friend", "set-close"),
-    button("block", "set-block"),
-    button("unblock", "set-unblock"),
-  );
+
+  if (tier === "blocked") {
+    actions.append(button("unblock", "set-unblock"));
+  } else {
+    if (isFollowing) actions.append(button("unfollow", "set-unsubscribe"));
+    else actions.append(button("follow", "set-subscribe"));
+
+    if (tier === "known" || tier === "close") {
+      actions.append(button("remove", "set-unknown"));
+      if (tier === "close") actions.append(button("remove close", "set-known"));
+      else actions.append(button("close friend", "set-close"));
+    } else {
+      actions.append(button("connect", "set-known"));
+    }
+
+    actions.append(button("block", "set-block"));
+  }
+
   card.append(actions);
 
   if (identity.visual_fingerprint !== undefined) {

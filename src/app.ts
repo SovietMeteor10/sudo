@@ -6,6 +6,7 @@ import { discoveryRouter } from "./discovery/discovery.routes.js";
 import { feedRouter } from "./feeds/feed.routes.js";
 import { identityRouter } from "./identity/identity.routes.js";
 import { mountStaticClientPortal } from "./portal/clientPortal.js";
+import { notificationsRouter } from "./notifications/notifications.routes.js";
 import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
 import { relayRouter } from "./relay/relay.routes.js";
 import { devRouter } from "./routes/dev.js";
@@ -35,6 +36,7 @@ export function createApp() {
   app.use("/api/relay", relayRouter);
   app.use("/api/feeds", feedRouter);
   app.use("/api/discovery", discoveryRouter);
+  app.use("/api/notifications", notificationsRouter);
 
   mountStaticClientPortal(app);
 

@@ -797,20 +797,30 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .thread-view {
-  padding: 6px 0 40px;
+  padding: 0 0 40px;
 }
 
 .thread-view__back {
-  display: inline-flex;
+  /* Match the .column__title row in the left column so the
+     horizontal divider lines up across columns. Same height, same
+     border-bottom, same horizontal rhythm; back arrow is vertically
+     centered. */
+  display: flex;
   align-items: center;
+  width: 100%;
+  height: 34px;
   background: transparent;
   border: 0;
-  padding: 8px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 0 16px;
   margin: 0;
   color: var(--muted);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: left;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .thread-view__back:hover,
@@ -1021,6 +1031,64 @@ body[data-auth-state="auth-restore"] .landing {
 .identity-card__handle {
   color: var(--text);
   font-size: 13px;
+}
+
+/* Notifications panel — lower-left column. Sparse terminal style
+   matching the rest of the column. */
+.notifications {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.notifications__empty {
+  color: var(--muted);
+  padding: 6px 0;
+}
+
+.notifications__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notification-row {
+  border-top: 1px solid var(--line-soft);
+  padding: 8px 0 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.notification-row__line {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.notification-row__sub {
+  color: var(--muted);
+}
+
+.notification-row__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.notification-row__action {
+  background: transparent;
+  border: 1px solid var(--line-soft);
+  color: var(--text);
+  font: inherit;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.notification-row__action:hover,
+.notification-row__action:focus-visible {
+  background: var(--panel-soft);
+  outline: none;
 }
 
 /* Chat rows */
