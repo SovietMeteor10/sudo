@@ -5,13 +5,14 @@ import { signFeedPost, verifyCanonicalSignature } from "../crypto/signatures.js"
 import { SUDO_PROTOCOL_VERSION, DEFAULT_MAX_TEXT_FEED_POST_BYTES } from "../protocol/constants.js";
 import { getConnectionRelationship } from "../connections/connections.store.js";
 import { getIdentityByCanonicalId } from "../identity/identity.store.js";
-import type { FeedPost, FeedVisibility, SignableFeedPost } from "./feed.types.js";
+import type { FeedPost, FeedPostKind, FeedVisibility, SignableFeedPost } from "./feed.types.js";
 import { FeedError, type CreateFeedPostInput } from "./feed.types.js";
 import {
   getFeedPost,
   listFeedPosts as listStoredFeedPosts,
   listFeedPostsByAuthor,
   listLocalFeedPosts,
+  listRepliesForPost,
   listRssFeedPostsByAuthor,
   saveFeedPost,
   softDeleteFeedPost
@@ -49,8 +50,11 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
     tags: normalizeTags(input.public_metadata?.tags)
   };
   const allowedRecipients = normalizeRecipients(input.allowed_recipients);
+  const kind = normalizeKind(input.kind);
+  const replyTo = normalizePostRef(input.reply_to);
+  const repostOf = normalizePostRef(input.repost_of);
 
-  validatePostContent(input.visibility, body, encryptedBody, metadata, allowedRecipients);
+  validatePostContent(input.visibility, body, encryptedBody, metadata, allowedRecipients, kind, replyTo, repostOf);
 
   const createdAt = normalizeTimestamp(input.created_at) ?? new Date().toISOString();
   const updatedAt = normalizeTimestamp(input.updated_at) ?? createdAt;
@@ -68,7 +72,10 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
     created_at: createdAt,
     updated_at: updatedAt,
     deleted_at: normalizeNullableTimestamp(input.deleted_at),
-    sequence: normalizeSequence(input.sequence)
+    sequence: normalizeSequence(input.sequence),
+    ...(kind === undefined ? {} : { kind }),
+    ...(replyTo === undefined ? {} : { reply_to: replyTo }),
+    ...(repostOf === undefined ? {} : { repost_of: repostOf })
   };
   const signature = resolveFeedPostSignature(author, signable, input.signature);
   const post: FeedPost = {
@@ -78,6 +85,17 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
 
   saveFeedPost(post);
   return post;
+}
+
+export function listRepliesForApi(
+  postId: string,
+  viewerCanonicalId: string | undefined
+): { posts: FeedPost[] } {
+  const replies = listRepliesForPost(postId)
+    .map((post) => filterPostForViewer(post, viewerCanonicalId))
+    .filter((post): post is FeedPost => post !== null)
+    .map((post) => decorateRefs(post));
+  return { posts: replies };
 }
 
 export function getPostForApi(postId: string): { post: FeedPost; warning?: string } {
@@ -109,7 +127,7 @@ export function getPostForApiWithViewer(
     throw new FeedError("not_feed_post", "post not visible to this viewer", 404);
   }
 
-  return { post: visible };
+  return { post: decorateRefs(visible, viewerCanonicalId) };
 }
 
 export function listUserPostsForApi(
@@ -119,12 +137,35 @@ export function listUserPostsForApi(
   const posts = listFeedPostsByAuthor(canonicalId);
   const filtered = posts
     .map((post) => filterPostForViewer(post, viewerCanonicalId))
-    .filter((post): post is FeedPost => post !== null);
+    .filter((post): post is FeedPost => post !== null)
+    .map((post) => decorateRefs(post, viewerCanonicalId));
 
   return {
     posts: filtered,
     warning: viewerCanonicalId === undefined ? undefined : "unsafe_dev_only_viewer_filter_applied"
   };
+}
+
+function decorateRefs(post: FeedPost, viewerCanonicalId?: string | undefined): FeedPost {
+  // Hydrate the embedded original post for reposts/replies so the
+  // client can render them inline without extra round-trips. We
+  // intentionally only hydrate one level (no recursion).
+  let decorated = post;
+  if (post.repost_of !== undefined && post.repost_of !== null) {
+    const original = getFeedPost(post.repost_of);
+    const visibleOriginal = original === null || original.deleted_at !== null
+      ? null
+      : filterPostForViewer(original, viewerCanonicalId);
+    decorated = { ...decorated, repost_of_post: visibleOriginal };
+  }
+  if (post.reply_to !== undefined && post.reply_to !== null) {
+    const parent = getFeedPost(post.reply_to);
+    const visibleParent = parent === null || parent.deleted_at !== null
+      ? null
+      : filterPostForViewer(parent, viewerCanonicalId);
+    decorated = { ...decorated, reply_to_post: visibleParent };
+  }
+  return decorated;
 }
 
 export function getUserRssFeed(canonicalId: string, baseUrl: string): string {
@@ -173,7 +214,10 @@ function validatePostContent(
   body: string | undefined,
   encryptedBody: string | undefined,
   metadata: { title?: string; summary?: string; tags: string[] },
-  allowedRecipients: string[]
+  allowedRecipients: string[],
+  kind: FeedPostKind | undefined,
+  replyTo: string | undefined,
+  repostOf: string | undefined
 ): void {
   if (visibility === "close_connections" && allowedRecipients.length === 0) {
     throw new FeedError(
@@ -189,7 +233,18 @@ function validatePostContent(
     );
   }
 
-  if (body === undefined && encryptedBody === undefined && metadata.title === undefined) {
+  if (kind === "repost") {
+    if (repostOf === undefined) {
+      throw new FeedError("missing_repost_of", "repost requires repost_of");
+    }
+  } else if (kind === "reply") {
+    if (replyTo === undefined) {
+      throw new FeedError("missing_reply_to", "reply requires reply_to");
+    }
+    if (body === undefined && encryptedBody === undefined) {
+      throw new FeedError("invalid_post", "reply requires body or encrypted_body");
+    }
+  } else if (body === undefined && encryptedBody === undefined && metadata.title === undefined) {
     throw new FeedError("invalid_post", "feed post requires body, encrypted_body, or public title");
   }
 
@@ -200,6 +255,18 @@ function validatePostContent(
   if (size > DEFAULT_MAX_TEXT_FEED_POST_BYTES) {
     throw new FeedError("post_too_large", "feed post is too large", 413);
   }
+}
+
+function normalizeKind(value: unknown): FeedPostKind | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "post" || value === "repost" || value === "reply") return value;
+  throw new FeedError("invalid_kind", `unknown feed post kind: ${String(value)}`);
+}
+
+function normalizePostRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 }
 
 function filterPostForViewer(post: FeedPost, viewerCanonicalId: string | undefined): FeedPost | null {

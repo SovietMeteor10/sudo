@@ -1,5 +1,6 @@
 import { Router } from "express";
 import {
+  clearDiscoveryVote,
   createDiscoveryReaction,
   getDiscoveryPost,
   listDiscoveryHot,
@@ -54,13 +55,21 @@ discoveryRouter.post("/reactions", (request, response) => {
 });
 
 discoveryRouter.get("/posts/:postId", (request, response) => {
-  const index = getDiscoveryPost(request.params.postId);
+  const index = getDiscoveryPost(request.params.postId, parseViewer(request.query["viewer"]));
   if (index === null) {
     response.status(404).json({ ok: false, error: "post_not_found" });
     return;
   }
 
   response.json({ index });
+});
+
+discoveryRouter.delete("/reactions/:postId/:actorCanonicalId/vote", (request, response) => {
+  // Clears the actor's recommend/downrank vote on this post. We expose
+  // a "vote" pseudo-reaction so the client can clear without specifying
+  // direction; the server simply removes both vote types if present.
+  const result = clearDiscoveryVote(request.params.postId, request.params.actorCanonicalId);
+  response.json({ ok: true, cleared: result.cleared, index: result.index });
 });
 
 discoveryRouter.get("/hot", (request, response) => {
@@ -72,7 +81,13 @@ discoveryRouter.get("/rising", (request, response) => {
 });
 
 discoveryRouter.get("/recent", (request, response) => {
-  response.json({ posts: listDiscoveryRecent(parseLimit(request.query["limit"]), parseOffset(request.query["offset"])) });
+  response.json({
+    posts: listDiscoveryRecent(
+      parseLimit(request.query["limit"]),
+      parseOffset(request.query["offset"]),
+      parseViewer(request.query["viewer"])
+    )
+  });
 });
 
 discoveryRouter.post("/reindex", (_request, response) => {
@@ -85,9 +100,14 @@ function listDiscoveryByQuery(
 ) {
   const limit = parseLimit(request.query["limit"]);
   const offset = parseOffset(request.query["offset"]);
+  const viewer = parseViewer(request.query["viewer"]);
   return mode === "hot"
-    ? listDiscoveryHot(limit, offset)
-    : listDiscoveryRising(limit, offset);
+    ? listDiscoveryHot(limit, offset, viewer)
+    : listDiscoveryRising(limit, offset, viewer);
+}
+
+function parseViewer(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function parseLimit(value: unknown): number {

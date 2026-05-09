@@ -2,15 +2,18 @@ import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
   registerIdentityDocument,
+  clearDiscoveryVote,
   createDiscoveryReaction,
   completeDevicePairing,
   deleteConnectionRelationship,
   deleteFeedSubscription,
   createFeedPost,
+  getDiscoveryPost,
   listDiscoveryPosts,
   getConnectionRelationship,
   fingerprintPublicKey,
   listConnections,
+  listFeedPostReplies,
   listFeedSubscriptions,
   listUserFeedPosts,
   lookupHandle,
@@ -78,6 +81,7 @@ import type {
   ConnectionRelationship,
   DiscoveryMode,
   DiscoveryState,
+  FeedPost,
   FeedSubscription,
   IdentityDocument,
   NodeCapabilityDocument,
@@ -278,28 +282,44 @@ lookupRoot.addEventListener("click", (event) => {
 });
 
 // Both the personal feed and the discover feed render through the same
-// .stream-post component, so reaction clicks are delegated identically
-// from either root. The reply icon is currently a placeholder (no
-// thread UI yet) and is intentionally a no-op.
+// .stream-post component, so action clicks are delegated identically
+// from either root. The vote button cycles neutral → like → dislike →
+// neutral; reply opens an inline composer; repost creates a new feed
+// post that quotes the original.
 const handleFeedClick = (event: Event): void => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
+  const article = target.closest<HTMLElement>("[data-post-id]");
+  const postId = article?.dataset["postId"];
+  if (typeof postId !== "string") return;
+
+  const voteButton = target.closest<HTMLButtonElement>(".stream-post__action--vote");
+  if (voteButton !== null) {
+    const state = voteButton.dataset["voteState"] ?? "neutral";
+    void handleVoteCycle(postId, state);
+    return;
+  }
+
+  const submit = target.closest<HTMLButtonElement>(".stream-post__reply-submit");
+  if (submit !== null && article !== null) {
+    void handleReplySubmit(postId, article);
+    return;
+  }
+
   const button = target.closest<HTMLButtonElement>(".stream-post__action[data-reaction]");
   if (button === null) return;
   const reaction = button.dataset["reaction"];
-  const article = button.closest<HTMLElement>("[data-post-id]");
-  const postId = article?.dataset["postId"];
-  if (typeof reaction !== "string" || typeof postId !== "string") return;
-  if (reaction === "reply") return;
-  if (!isReactionKind(reaction)) return;
-  void handleFeedReaction(postId, reaction);
+  if (reaction === "reply") {
+    if (article !== null) toggleReplyComposer(postId, article);
+    return;
+  }
+  if (reaction === "repost") {
+    void handleRepost(postId);
+    return;
+  }
 };
 streamRoot.addEventListener("click", handleFeedClick);
 discoveryRoot.addEventListener("click", handleFeedClick);
-
-function isReactionKind(value: string): value is ReactionKind {
-  return value === "recommend" || value === "downrank" || value === "reply" || value === "repost";
-}
 
 deviceList.addEventListener("click", (event) => {
   const target = event.target;
@@ -1656,7 +1676,9 @@ async function refreshFeedPosts(): Promise<void> {
   const ownerCanonicalId = currentIdentityDocument.canonical_id;
   // Personal feed = own posts + posts from known/close connections +
   // subscribed authors. Each fetch is best-effort; one failure does not
-  // sink the rest.
+  // sink the rest. Posts that are publicly indexed get enriched with
+  // discovery reaction counts and the viewer's vote so the action row
+  // doesn't read as "0 0 0" for posts that have actual engagement.
   try {
     const [connections, subscriptions] = await Promise.all([
       listConnections(ownerCanonicalId).catch(() => []),
@@ -1664,28 +1686,59 @@ async function refreshFeedPosts(): Promise<void> {
     ]);
 
     const authors = new Set<string>([ownerCanonicalId]);
+    const blocked = new Set<string>();
     for (const connection of connections) {
       if (connection.tier === "known" || connection.tier === "close") {
         authors.add(connection.subject_canonical_id);
+      }
+      if (connection.tier === "blocked") {
+        blocked.add(connection.subject_canonical_id);
       }
     }
     for (const subscription of subscriptions) {
       if (subscription.muted) continue;
       authors.add(subscription.author_canonical_id);
     }
+    for (const blockedId of blocked) authors.delete(blockedId);
 
     const fetched = await Promise.all([...authors].map((author) =>
       listUserFeedPosts(author, ownerCanonicalId).catch(() => [])
     ));
-    const merged = new Map<string, ReturnType<typeof feedPostToUnifiedItem>>();
+    const merged = new Map<string, FeedPost>();
     for (const posts of fetched) {
       for (const post of posts) {
-        if (!merged.has(post.post_id)) merged.set(post.post_id, feedPostToUnifiedItem(post));
+        if (blocked.has(post.author_canonical_id)) continue;
+        if (!merged.has(post.post_id)) merged.set(post.post_id, post);
       }
     }
-    const items = [...merged.values()].sort((left, right) =>
-      right.created_at.localeCompare(left.created_at)
-    );
+
+    const enrichments = await Promise.all([...merged.values()].map(async (post) => {
+      try {
+        const index = await getDiscoveryPost(post.post_id, ownerCanonicalId);
+        return [post.post_id, index] as const;
+      } catch {
+        return [post.post_id, null] as const;
+      }
+    }));
+    const enrichmentMap = new Map(enrichments);
+
+    const items = [...merged.values()]
+      .sort((left, right) => right.created_at.localeCompare(left.created_at))
+      .map((post) => {
+        const index = enrichmentMap.get(post.post_id);
+        if (index === null || index === undefined) return feedPostToUnifiedItem(post);
+        return feedPostToUnifiedItem(post, {
+          counts: {
+            recommend: index.recommend_count ?? 0,
+            downrank: index.downrank_count ?? 0,
+            reply: index.reply_count ?? 0,
+            repost: index.repost_count ?? 0
+          },
+          vote: index.viewer_reaction === "recommend" ? "like"
+            : index.viewer_reaction === "downrank" ? "dislike"
+            : null
+        });
+      });
     renderStream(streamRoot, items);
   } catch {
     renderStream(streamRoot, []);
@@ -1696,8 +1749,9 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
   discoveryState = { status: "loading", mode };
   renderDiscoveryPanel(discoveryRoot, discoveryState);
 
+  const viewer = currentIdentityDocument?.canonical_id;
   try {
-    const posts = await listDiscoveryPosts(mode, 20, 0);
+    const posts = await listDiscoveryPosts(mode, 20, 0, viewer);
     discoveryState = { status: "loaded", mode, posts };
   } catch (error) {
     discoveryState = {
@@ -1710,55 +1764,262 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
   renderDiscoveryPanel(discoveryRoot, discoveryState);
 }
 
-async function handleFeedReaction(postId: string, reaction: ReactionKind): Promise<void> {
+async function postDiscoveryReaction(
+  postId: string,
+  reaction: ReactionKind
+): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const reactionId = crypto.randomUUID();
+  const createdAt = new Date().toISOString();
+  const signature = currentCryptoAccount === null
+    ? undefined
+    : await signDiscoveryReaction(
+        {
+          type: "sudo_discovery_reaction",
+          protocol_version: "0.1.0",
+          reaction_id: reactionId,
+          post_id: postId,
+          actor_canonical_id: currentIdentityDocument.canonical_id,
+          actor_handle: currentIdentityDocument.handle,
+          reaction,
+          created_at: createdAt
+        },
+        currentCryptoAccount.identity_key,
+        currentCryptoAccount.identity_key_type
+      );
+
+  await createDiscoveryReaction({
+    reaction_id: reactionId,
+    post_id: postId,
+    actor_canonical_id: currentIdentityDocument.canonical_id,
+    actor_handle: currentIdentityDocument.handle,
+    reaction,
+    created_at: createdAt,
+    signature
+  });
+}
+
+async function handleVoteCycle(postId: string, currentState: string): Promise<void> {
   if (currentIdentityDocument === null) {
-    flashFeedback("sign in to react");
+    flashFeedback("sign in to vote");
     return;
   }
-  // Reply has no thread UI yet — wired buttons are recommend/downrank/repost.
-  if (reaction === "reply") return;
-
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  // neutral → like → dislike → neutral
   try {
-    const reactionId = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
-    const signature = currentCryptoAccount === null
-      ? undefined
-      : await signDiscoveryReaction(
-          {
-            type: "sudo_discovery_reaction",
-            protocol_version: "0.1.0",
-            reaction_id: reactionId,
-            post_id: postId,
-            actor_canonical_id: currentIdentityDocument.canonical_id,
-            actor_handle: currentIdentityDocument.handle,
-            reaction,
-            created_at: createdAt
-          },
-          currentCryptoAccount.identity_key,
-          currentCryptoAccount.identity_key_type
-        );
-
-    await createDiscoveryReaction({
-      reaction_id: reactionId,
-      post_id: postId,
-      actor_canonical_id: currentIdentityDocument.canonical_id,
-      actor_handle: currentIdentityDocument.handle,
-      reaction,
-      created_at: createdAt,
-      signature
-    });
+    if (currentState === "neutral") {
+      await postDiscoveryReaction(postId, "recommend");
+    } else if (currentState === "liked") {
+      // Switching to dislike: backend will replace recommend with downrank.
+      await postDiscoveryReaction(postId, "downrank");
+    } else {
+      // disliked → clear
+      await clearDiscoveryVote(postId, ownerCanonicalId);
+    }
   } catch (error) {
-    // Backend rejects duplicate reactions; surface nothing for the
-    // common case so the UI doesn't yell at users for double-clicking.
     const message = error instanceof Error ? error.message : "";
     if (!/duplicate|already|conflict/i.test(message)) {
-      console.warn("[feed] reaction failed", message);
+      console.warn("[feed] vote failed", message);
     }
   }
-  // Refresh whichever feed is currently visible. Discover always shows
-  // counts; personal will pick up the post if it's the user's own.
   await refreshDiscoveryPosts();
   await refreshFeedPosts();
+}
+
+async function handleRepost(postId: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    flashFeedback("sign in to repost");
+    return;
+  }
+  // Subtle confirmation: a single click reposts immediately. We don't
+  // open a quote composer for MVP — quote-less reposts only.
+  try {
+    const newPostId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const signablePost = {
+      type: "sudo_feed_post" as const,
+      protocol_version: "0.1.0",
+      post_id: newPostId,
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility: "public" as const,
+      public_metadata: { tags: [] as string[] },
+      allowed_recipients: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1,
+      kind: "repost" as const,
+      repost_of: postId
+    };
+    const signature = currentCryptoAccount === null
+      ? undefined
+      : await signFeedPost(signablePost, currentCryptoAccount.feed_key, currentCryptoAccount.identity_key_type);
+    await createFeedPost({
+      post_id: newPostId,
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility: "public",
+      public_metadata: { tags: [] },
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1,
+      signature,
+      kind: "repost",
+      repost_of: postId
+    });
+    flashFeedback("reposted");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "repost failed";
+    flashFeedback(message);
+  }
+  await refreshDiscoveryPosts();
+  await refreshFeedPosts();
+}
+
+function toggleReplyComposer(postId: string, article: HTMLElement): void {
+  const panel = article.querySelector<HTMLElement>(`[data-replies-panel="${cssEscape(postId)}"]`);
+  if (panel === null) return;
+  if (!panel.hidden && panel.dataset["mode"] === "compose") {
+    panel.hidden = true;
+    panel.replaceChildren();
+    panel.dataset["mode"] = "";
+    return;
+  }
+  panel.hidden = false;
+  panel.dataset["mode"] = "compose";
+  const form = document.createElement("div");
+  form.className = "stream-post__reply-form";
+  const textarea = document.createElement("textarea");
+  textarea.className = "stream-post__reply-input";
+  textarea.placeholder = "write a reply...";
+  textarea.rows = 2;
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "stream-post__reply-submit";
+  submit.textContent = "reply";
+  form.append(textarea, submit);
+  panel.replaceChildren(form);
+
+  // Pre-fetch the existing replies so the user sees prior context.
+  void renderRepliesUnder(postId, panel);
+  textarea.focus();
+}
+
+async function renderRepliesUnder(postId: string, panel: HTMLElement): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  let replies: FeedPost[] = [];
+  try {
+    replies = await listFeedPostReplies(postId, currentIdentityDocument.canonical_id);
+  } catch {
+    return;
+  }
+  // Find/insert the list inside the panel under the form.
+  let list = panel.querySelector<HTMLElement>(".stream-post__reply-list");
+  if (list === null) {
+    list = document.createElement("ul");
+    list.className = "stream-post__reply-list";
+    panel.append(list);
+  }
+  list.replaceChildren();
+  if (replies.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "stream-post__reply-empty";
+    empty.textContent = "no replies yet";
+    list.append(empty);
+    return;
+  }
+  for (const reply of replies) {
+    const item = document.createElement("li");
+    item.className = "stream-post__reply-item";
+    const handle = document.createElement("span");
+    handle.className = "stream-post__reply-handle";
+    handle.textContent = reply.author_handle ?? reply.author_canonical_id;
+    const body = document.createElement("span");
+    body.className = "stream-post__reply-body";
+    body.textContent = reply.body ?? "";
+    item.append(handle, document.createTextNode(" "), body);
+    list.append(item);
+  }
+}
+
+async function handleReplySubmit(postId: string, article: HTMLElement): Promise<void> {
+  if (currentIdentityDocument === null) {
+    flashFeedback("sign in to reply");
+    return;
+  }
+  const panel = article.querySelector<HTMLElement>(`[data-replies-panel="${cssEscape(postId)}"]`);
+  const textarea = panel?.querySelector<HTMLTextAreaElement>(".stream-post__reply-input");
+  if (panel === null || panel === undefined || textarea === null || textarea === undefined) return;
+  const body = textarea.value.trim();
+  if (body.length === 0) return;
+  textarea.disabled = true;
+  try {
+    const newPostId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const signablePost = {
+      type: "sudo_feed_post" as const,
+      protocol_version: "0.1.0",
+      post_id: newPostId,
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility: "public" as const,
+      body,
+      public_metadata: { tags: [] as string[] },
+      allowed_recipients: [],
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1,
+      kind: "reply" as const,
+      reply_to: postId
+    };
+    const signature = currentCryptoAccount === null
+      ? undefined
+      : await signFeedPost(signablePost, currentCryptoAccount.feed_key, currentCryptoAccount.identity_key_type);
+    await createFeedPost({
+      post_id: newPostId,
+      author_canonical_id: currentIdentityDocument.canonical_id,
+      author_handle: currentIdentityDocument.handle,
+      visibility: "public",
+      body,
+      public_metadata: { tags: [] },
+      created_at: createdAt,
+      updated_at: createdAt,
+      deleted_at: null,
+      sequence: 1,
+      signature,
+      kind: "reply",
+      reply_to: postId
+    });
+    textarea.value = "";
+    // Keep the composer open; refresh just the replies list and the
+    // parent post's reply count. Re-rendering the whole feed would
+    // close this panel and lose the user's place.
+    await renderRepliesUnder(postId, panel);
+    try {
+      const updated = await getDiscoveryPost(postId, currentIdentityDocument.canonical_id);
+      const counter = article.querySelector<HTMLElement>(
+        ".stream-post__action[data-reaction='reply'] .stream-post__action-count"
+      );
+      if (counter !== null) counter.textContent = String(updated.reply_count ?? 0);
+    } catch {
+      // Discovery index may not exist for non-public parents — that's
+      // fine; the reply still posted and the list shows it.
+    }
+  } catch (error) {
+    flashFeedback(error instanceof Error ? error.message : "reply failed");
+  } finally {
+    textarea.disabled = false;
+  }
+}
+
+function cssEscape(value: string): string {
+  // CSS.escape isn't typed in older lib.dom but is widely available.
+  const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+  if (cssApi !== undefined && typeof cssApi.escape === "function") return cssApi.escape(value);
+  return value.replace(/[^a-zA-Z0-9_-]/g, (match) => `\\${match}`);
 }
 
 async function handleLookupRelationshipAction(action: string): Promise<void> {
@@ -1815,6 +2076,16 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
     if (searchState.status === "results") {
       await runSearch(searchState.query);
     }
+    // Adding a connection should backfill the new author's posts;
+    // removing one should drop them. Refreshing the personal feed
+    // immediately reflects the change without a manual reload.
+    await refreshFeedPosts();
+    // Tell sibling tabs to refresh their feed too. We deliberately
+    // don't broadcast "contacts" here — that fires for chat-partner
+    // writes and would pile feed refreshes onto every incoming
+    // message. "feed" is the right channel for relationship-driven
+    // backfill across tabs.
+    broadcastLocalStateChange("feed", ownerCanonicalId);
   } catch (error) {
     flashFeedback(error instanceof Error ? error.message : "relationship update failed");
   }

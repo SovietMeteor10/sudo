@@ -424,6 +424,9 @@ export type CreateFeedPostRequest = {
   deleted_at?: string | null;
   sequence?: number;
   signature?: string;
+  kind?: "post" | "repost" | "reply";
+  reply_to?: string;
+  repost_of?: string;
 };
 
 export async function createFeedPost(input: CreateFeedPostRequest): Promise<FeedPost> {
@@ -479,8 +482,10 @@ export async function createDiscoveryReaction(input: {
   throw new Error(body.message ?? `discovery reaction failed: ${response.status}`);
 }
 
-export async function getDiscoveryPost(postId: string): Promise<DiscoveryPostIndex> {
-  const response = await fetchWithTimeout(`/api/discovery/posts/${encodeURIComponent(postId)}`, {
+export async function getDiscoveryPost(postId: string, viewerCanonicalId?: string): Promise<DiscoveryPostIndex> {
+  const url = new URL(`/api/discovery/posts/${encodeURIComponent(postId)}`, window.location.origin);
+  if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
+  const response = await fetchWithTimeout(url.toString(), {
     headers: { accept: "application/json" }
   });
 
@@ -496,8 +501,17 @@ export async function getDiscoveryPost(postId: string): Promise<DiscoveryPostInd
   return body.index;
 }
 
-export async function listDiscoveryPosts(mode: DiscoveryMode, limit = 20, offset = 0): Promise<DiscoveryPostIndex[]> {
-  const response = await fetchWithTimeout(`/api/discovery/${mode}?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`, {
+export async function listDiscoveryPosts(
+  mode: DiscoveryMode,
+  limit = 20,
+  offset = 0,
+  viewerCanonicalId?: string
+): Promise<DiscoveryPostIndex[]> {
+  const url = new URL(`/api/discovery/${mode}`, window.location.origin);
+  url.searchParams.set("limit", String(limit));
+  url.searchParams.set("offset", String(offset));
+  if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
+  const response = await fetchWithTimeout(url.toString(), {
     headers: { accept: "application/json" }
   });
 
@@ -506,6 +520,37 @@ export async function listDiscoveryPosts(mode: DiscoveryMode, limit = 20, offset
   }
 
   const body = await response.json() as { posts?: DiscoveryPostIndex[] };
+  return Array.isArray(body.posts) ? body.posts : [];
+}
+
+export async function clearDiscoveryVote(
+  postId: string,
+  actorCanonicalId: string
+): Promise<DiscoveryPostIndex | null> {
+  const response = await fetchWithTimeout(
+    `/api/discovery/reactions/${encodeURIComponent(postId)}/${encodeURIComponent(actorCanonicalId)}/vote`,
+    { method: "DELETE", headers: { accept: "application/json" } }
+  );
+  if (!response.ok) {
+    throw new Error(`vote clear failed: ${response.status}`);
+  }
+  const body = await response.json() as { index?: DiscoveryPostIndex | null };
+  return body.index ?? null;
+}
+
+export async function listFeedPostReplies(
+  postId: string,
+  viewerCanonicalId?: string
+): Promise<FeedPost[]> {
+  const url = new URL(`/api/feeds/posts/${encodeURIComponent(postId)}/replies`, window.location.origin);
+  if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: { accept: "application/json" }
+  });
+  if (!response.ok) {
+    throw new Error(`replies load failed: ${response.status}`);
+  }
+  const body = await response.json() as { posts?: FeedPost[] };
   return Array.isArray(body.posts) ? body.posts : [];
 }
 

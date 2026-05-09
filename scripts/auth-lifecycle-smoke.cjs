@@ -210,20 +210,31 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
       fail("post-header", `expected 'HH:MM DD MMM' (with optional YY), got '${postShape.time}'`);
     } else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
 
-    // 3k. Personal feed posts expose the unified reaction action row
-    // (↑ ↓ ↩ ↻) — both tabs render through the same component now.
+    // 3k. Personal feed posts expose the unified action row: vote
+    // control (single button) + reply ↩ + repost ↻.
     const actionShape = await page.evaluate(() => {
       const post = document.querySelector(".stream-post");
       if (!post) return { ok: false, reason: "no post rendered" };
-      const buttons = Array.from(post.querySelectorAll(".stream-post__action[data-reaction]"));
-      const reactions = buttons.map((b) => b.getAttribute("data-reaction"));
-      return { ok: true, reactions };
+      const vote = post.querySelector(".stream-post__action--vote");
+      const reply = post.querySelector(".stream-post__action[data-reaction='reply']");
+      const repost = post.querySelector(".stream-post__action[data-reaction='repost']");
+      const upDown = post.querySelector("[data-reaction='recommend'], [data-reaction='downrank']");
+      return {
+        ok: true,
+        hasVote: vote !== null,
+        hasReply: reply !== null,
+        hasRepost: repost !== null,
+        hasLegacyUpDown: upDown !== null,
+        voteState: vote?.getAttribute("data-vote-state") ?? ""
+      };
     });
     if (!actionShape.ok) fail("post-actions", actionShape.reason);
-    else if (actionShape.reactions.length !== 4) fail("post-actions", `expected 4 reaction buttons, got ${actionShape.reactions.length}`);
-    else if (actionShape.reactions.join(",") !== "recommend,downrank,reply,repost") {
-      fail("post-actions", `unexpected reaction order: ${actionShape.reactions.join(",")}`);
-    } else ok("3k. post exposes ↑ ↓ ↩ ↻ action row");
+    else if (!actionShape.hasVote) fail("post-actions", "missing vote control");
+    else if (!actionShape.hasReply) fail("post-actions", "missing reply button");
+    else if (!actionShape.hasRepost) fail("post-actions", "missing repost button");
+    else if (actionShape.hasLegacyUpDown) fail("post-actions", "legacy up/down buttons still present");
+    else if (actionShape.voteState !== "neutral") fail("post-actions", `vote starts in '${actionShape.voteState}', expected 'neutral'`);
+    else ok("3k. post exposes vote + reply + repost action row");
 
     // 3l. Discover tab renders through .stream-post (unified card),
     // does not expose recent/rising/hot toggle buttons, and does not

@@ -1,8 +1,9 @@
-import type { FeedPublicMetadata, FeedVisibility } from "../protocol/types.js";
+import type { FeedPostKind, FeedPublicMetadata, FeedVisibility } from "../protocol/types.js";
 
 export type {
   CanonicalId,
   FeedPost,
+  FeedPostKind,
   FeedPublicMetadata,
   FeedVisibility,
   Handle,
@@ -24,6 +25,9 @@ export type CreateFeedPostInput = {
   deleted_at?: string | null;
   sequence?: number;
   signature?: string;
+  kind?: FeedPostKind;
+  reply_to?: string;
+  repost_of?: string;
 };
 
 export class FeedError extends Error {
@@ -36,7 +40,10 @@ export class FeedError extends Error {
       | "close_connections_requires_recipients"
       | "invalid_signature"
       | "not_feed_post"
-      | "post_not_found",
+      | "post_not_found"
+      | "missing_repost_of"
+      | "missing_reply_to"
+      | "invalid_kind",
     message: string,
     readonly status = 400
   ) {

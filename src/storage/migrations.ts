@@ -35,6 +35,12 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "device_sync_events", "created_at", "TEXT");
   addColumnIfMissing(db, "device_sync_events", "encrypted_payload", "TEXT");
 
+  addColumnIfMissing(db, "feed_posts", "kind", "TEXT");
+  addColumnIfMissing(db, "feed_posts", "reply_to", "TEXT");
+  addColumnIfMissing(db, "feed_posts", "repost_of", "TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS feed_posts_reply_to_idx ON feed_posts(reply_to)");
+  db.exec("CREATE INDEX IF NOT EXISTS feed_posts_repost_of_idx ON feed_posts(repost_of)");
+
   addColumnIfMissing(db, "discovery_reactions", "actor_handle", "TEXT");
   addColumnIfMissing(db, "discovery_reactions", "signature", "TEXT");
   addColumnIfMissing(db, "discovery_post_index", "public_metadata_json", "TEXT");

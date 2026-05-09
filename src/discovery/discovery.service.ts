@@ -12,6 +12,8 @@ import type {
 } from "../protocol/types.js";
 import { scoreHandle } from "./ranking.js";
 import {
+  deleteDiscoveryReaction,
+  getViewerReaction,
   insertDiscoveryReaction,
   listDiscoveryPostIndex,
   listSearchableIdentities,
@@ -72,6 +74,15 @@ export function createDiscoveryReaction(input: {
     throw new DiscoveryError("not_discoverable", "post is not discoverable", 404);
   }
 
+  // Single active vote per (actor, post): a recommend supersedes a
+  // downrank from the same actor and vice versa. For non-vote
+  // reactions we keep the original duplicate-reaction guard.
+  if (input.reaction === "recommend") {
+    deleteDiscoveryReaction(input.post_id, input.actor_canonical_id, "downrank");
+  } else if (input.reaction === "downrank") {
+    deleteDiscoveryReaction(input.post_id, input.actor_canonical_id, "recommend");
+  }
+
   if (reactionExists(input.post_id, input.actor_canonical_id, input.reaction)) {
     throw new DiscoveryError("duplicate_reaction", "duplicate reaction for this post", 409);
   }
@@ -106,25 +117,37 @@ export function createDiscoveryReaction(input: {
 
   return {
     reaction,
-    index: decorateIndex(index)
+    index: decorateIndex(index, input.actor_canonical_id)
   };
 }
 
-export function getDiscoveryPost(postId: string): DiscoveryPostIndex | null {
+export function getDiscoveryPost(postId: string, viewerCanonicalId?: string): DiscoveryPostIndex | null {
   const index = getDiscoveryPostIndex(postId);
-  return index === null ? null : decorateIndex(index);
+  if (index === null) return null;
+  return decorateIndex(index, viewerCanonicalId);
 }
 
-export function listDiscoveryRecent(limit = 20, offset = 0): DiscoveryPostIndex[] {
-  return listDiscoveryPostIndex("recent", limit, offset).map(decorateIndex);
+export function clearDiscoveryVote(
+  postId: string,
+  actorCanonicalId: string
+): { cleared: number; index: DiscoveryPostIndex | null } {
+  const removedRecommend = deleteDiscoveryReaction(postId, actorCanonicalId, "recommend");
+  const removedDownrank = deleteDiscoveryReaction(postId, actorCanonicalId, "downrank");
+  const cleared = (removedRecommend ? 1 : 0) + (removedDownrank ? 1 : 0);
+  const index = refreshDiscoveryPostIndex(postId);
+  return { cleared, index: index === null ? null : decorateIndex(index, actorCanonicalId) };
 }
 
-export function listDiscoveryHot(limit = 20, offset = 0): DiscoveryPostIndex[] {
-  return listDiscoveryPostIndex("hot", limit, offset).map(decorateIndex);
+export function listDiscoveryRecent(limit = 20, offset = 0, viewerCanonicalId?: string): DiscoveryPostIndex[] {
+  return listDiscoveryPostIndex("recent", limit, offset).map((index) => decorateIndex(index, viewerCanonicalId));
 }
 
-export function listDiscoveryRising(limit = 20, offset = 0): DiscoveryPostIndex[] {
-  return listDiscoveryPostIndex("rising", limit, offset).map(decorateIndex);
+export function listDiscoveryHot(limit = 20, offset = 0, viewerCanonicalId?: string): DiscoveryPostIndex[] {
+  return listDiscoveryPostIndex("hot", limit, offset).map((index) => decorateIndex(index, viewerCanonicalId));
+}
+
+export function listDiscoveryRising(limit = 20, offset = 0, viewerCanonicalId?: string): DiscoveryPostIndex[] {
+  return listDiscoveryPostIndex("rising", limit, offset).map((index) => decorateIndex(index, viewerCanonicalId));
 }
 
 export function reindexDiscovery(): number {
@@ -139,15 +162,20 @@ export function upsertDiscoveryFromFeedPost(post: FeedPost): DiscoveryPostIndex 
   return upsertDiscoveryPostIndexFromFeedPost(post);
 }
 
-function decorateIndex(index: DiscoveryPostIndex): DiscoveryPostIndex {
+function decorateIndex(index: DiscoveryPostIndex, viewerCanonicalId?: string): DiscoveryPostIndex {
   const identity = getIdentityByCanonicalId(index.author_canonical_id);
-  if (identity === null) return index;
+  let decorated: DiscoveryPostIndex = index;
 
-  const fingerprint = identity.document.visual_fingerprint ?? generateIdentityGrid(getIdentityPublicKey(identity));
-  return {
-    ...index,
-    author_fingerprint_grid: fingerprint
-  };
+  if (identity !== null) {
+    const fingerprint = identity.document.visual_fingerprint ?? generateIdentityGrid(getIdentityPublicKey(identity));
+    decorated = { ...decorated, author_fingerprint_grid: fingerprint };
+  }
+
+  if (viewerCanonicalId !== undefined && viewerCanonicalId.length > 0) {
+    decorated = { ...decorated, viewer_reaction: getViewerReaction(index.post_id, viewerCanonicalId) };
+  }
+
+  return decorated;
 }
 
 function isDiscoverableVisibility(visibility: string): visibility is "public" | "public_metadata_encrypted_body" {

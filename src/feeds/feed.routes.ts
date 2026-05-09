@@ -5,6 +5,7 @@ import {
   getPostForApiWithViewer,
   getUserRssFeed,
   listFeedPosts,
+  listRepliesForApi,
   listUserPostsForApi
 } from "./feed.service.js";
 import { FeedError, type CreateFeedPostInput } from "./feed.types.js";
@@ -30,6 +31,14 @@ feedRouter.get("/posts/:postId", (request, response) => {
     response.json(result.warning === undefined
       ? { post: result.post }
       : { warning: result.warning, post: result.post });
+  } catch (error) {
+    sendFeedError(response, error);
+  }
+});
+
+feedRouter.get("/posts/:postId/replies", (request, response) => {
+  try {
+    response.json(listRepliesForApi(request.params.postId, getViewer(request)));
   } catch (error) {
     sendFeedError(response, error);
   }

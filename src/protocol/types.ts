@@ -159,6 +159,8 @@ export type FeedPublicMetadata = {
   tags: string[];
 };
 
+export type FeedPostKind = "post" | "repost" | "reply";
+
 export type SignableFeedPost = {
   type: "sudo_feed_post";
   protocol_version: string;
@@ -174,10 +176,18 @@ export type SignableFeedPost = {
   updated_at: string;
   deleted_at: string | null;
   sequence: number;
+  kind?: FeedPostKind;
+  reply_to?: string;
+  repost_of?: string;
 };
 
 export type FeedPost = SignableFeedPost & {
   signature: Signature;
+  // Populated server-side when the FeedPost is sent to clients so they
+  // can render reposts/replies without a second round-trip. These
+  // fields are NOT part of the signed canonical payload.
+  repost_of_post?: FeedPost | null;
+  reply_to_post?: FeedPost | null;
 };
 
 export type ConnectionTier = "unknown" | "known" | "close" | "blocked";
@@ -269,6 +279,10 @@ export type DiscoveryPostIndex = {
   rising_score: number;
   explanation: string;
   author_fingerprint_grid?: IdentityFingerprint;
+  // Populated when the index is fetched with a viewer canonical id so
+  // the client can render the user's vote state. Not part of the
+  // ranking model — purely a UX read-through.
+  viewer_reaction?: "recommend" | "downrank" | "reply" | "repost" | "report" | null;
 };
 
 export type ChatSummary = {

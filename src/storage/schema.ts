@@ -161,6 +161,9 @@ export const schemaSql = `
     deleted_at TEXT,
     sequence INTEGER NOT NULL,
     signature TEXT,
+    kind TEXT,
+    reply_to TEXT,
+    repost_of TEXT,
     post_json TEXT NOT NULL
   );
 
@@ -175,6 +178,10 @@ export const schemaSql = `
 
   CREATE INDEX IF NOT EXISTS feed_posts_deleted_at_idx
     ON feed_posts(deleted_at);
+
+  -- feed_posts_reply_to_idx and feed_posts_repost_of_idx are created in
+  -- runMigrations() after addColumnIfMissing() guarantees the columns
+  -- exist on legacy databases.
 
   CREATE TABLE IF NOT EXISTS discovery_reactions (
     reaction_id TEXT PRIMARY KEY,

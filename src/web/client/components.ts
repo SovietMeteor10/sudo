@@ -22,12 +22,21 @@ import type {
 // stream. Either source produces this shape and the same renderer
 // draws it, so the two tabs feel like one feed with different sources.
 export type ReactionKind = "recommend" | "downrank" | "reply" | "repost";
+export type VoteKind = "like" | "dislike" | null;
 export type ReactionCounts = {
   recommend: number;
   downrank: number;
   reply: number;
   repost: number;
 };
+export type EmbeddedFeedItem = {
+  post_id: string;
+  author_canonical_id: string;
+  author_handle?: string;
+  body: string;
+  created_at: string;
+  unavailable?: false;
+} | { unavailable: true };
 export type UnifiedFeedItem = {
   post_id: string;
   author_canonical_id: string;
@@ -35,6 +44,14 @@ export type UnifiedFeedItem = {
   body: string;
   created_at: string;
   counts: ReactionCounts;
+  vote: VoteKind;
+  // For kind="repost", the original post body/author are rendered
+  // inside the card so the repost reads as "@me reposted @them: ...".
+  repost_of?: EmbeddedFeedItem;
+  // For kind="reply" we tag the parent post inline so the reply makes
+  // sense in a chronological feed.
+  reply_to?: EmbeddedFeedItem;
+  kind?: "post" | "repost" | "reply";
 };
 
 export type ReactionHandler = (postId: string, kind: ReactionKind) => void;
@@ -201,7 +218,10 @@ export function renderDiscoveryPanel(root: HTMLElement, state: DiscoveryState): 
   root.replaceChildren(fragment);
 }
 
-export function feedPostToUnifiedItem(post: FeedPost): UnifiedFeedItem {
+export function feedPostToUnifiedItem(
+  post: FeedPost,
+  enrichment: { counts?: ReactionCounts; vote?: VoteKind } = {}
+): UnifiedFeedItem {
   const text = post.body
     ?? post.public_metadata?.summary
     ?? post.public_metadata?.title
@@ -212,9 +232,28 @@ export function feedPostToUnifiedItem(post: FeedPost): UnifiedFeedItem {
     author_handle: post.author_handle,
     body: text,
     created_at: post.created_at,
-    // Personal feed posts don't carry reaction counts in their backend
-    // shape; render zeros so the action row stays visually consistent.
-    counts: { ...ZERO_COUNTS }
+    counts: enrichment.counts ?? { ...ZERO_COUNTS },
+    vote: enrichment.vote ?? null,
+    kind: post.kind ?? "post",
+    repost_of: post.repost_of === undefined ? undefined
+      : embeddedFromMaybe(post.repost_of_post),
+    reply_to: post.reply_to === undefined ? undefined
+      : embeddedFromMaybe(post.reply_to_post)
+  };
+}
+
+function embeddedFromMaybe(post: FeedPost | null | undefined): EmbeddedFeedItem {
+  if (post === null || post === undefined) return { unavailable: true };
+  const body = post.body
+    ?? post.public_metadata?.summary
+    ?? post.public_metadata?.title
+    ?? "[encrypted body]";
+  return {
+    post_id: post.post_id,
+    author_canonical_id: post.author_canonical_id,
+    author_handle: post.author_handle,
+    body,
+    created_at: post.created_at
   };
 }
 
@@ -233,68 +272,144 @@ function discoveryToUnifiedItem(post: DiscoveryPostIndex): UnifiedFeedItem {
       downrank: post.downrank_count ?? 0,
       reply: post.reply_count ?? 0,
       repost: post.repost_count ?? 0
-    }
+    },
+    vote: post.viewer_reaction === "recommend" ? "like"
+      : post.viewer_reaction === "downrank" ? "dislike"
+      : null,
+    kind: "post"
   };
 }
 
-const REACTION_GLYPHS: Record<ReactionKind, string> = {
-  recommend: "↑",
-  downrank: "↓",
-  reply: "↩",
-  repost: "↻"
-};
-
-const REACTION_LABELS: Record<ReactionKind, string> = {
-  recommend: "recommend",
-  downrank: "downrank",
-  reply: "reply",
-  repost: "repost"
-};
-
 function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   const article = document.createElement("article");
-  article.className = "stream-post";
+  article.className = `stream-post stream-post--${item.kind ?? "post"}`;
   article.dataset["postId"] = item.post_id;
+  if (item.kind !== undefined) article.dataset["postKind"] = item.kind;
 
   const meta = document.createElement("div");
   meta.className = "stream-post__meta";
 
   const author = document.createElement("span");
   author.className = "stream-post__handle";
-  author.textContent = item.author_handle ?? shortCanonical(item.author_canonical_id);
+  const authorLabel = item.author_handle ?? shortCanonical(item.author_canonical_id);
+  author.textContent = item.kind === "repost"
+    ? `${authorLabel} reposted`
+    : item.kind === "reply"
+      ? `${authorLabel} replied`
+      : authorLabel;
 
   const time = document.createElement("span");
   time.className = "stream-post__time";
   time.textContent = formatPostTimestamp(item.created_at);
 
   meta.append(author, time);
+  article.append(meta);
 
-  const body = document.createElement("div");
-  body.className = "stream-post__body";
-  mountTextSurface(body, item.body, { font: BODY_FONT, lineHeight: 23 });
+  // For replies, show parent context as a small "replying to @author"
+  // line so the reply makes sense inline.
+  if (item.kind === "reply" && item.reply_to !== undefined) {
+    article.append(renderEmbeddedRef(item.reply_to, "replying to"));
+  }
+
+  // Reply body: render the user's own reply text (their commentary)
+  // unless this is a quote-less repost.
+  if (item.kind !== "repost" || item.body.length > 0 && item.body !== "[encrypted body]") {
+    const body = document.createElement("div");
+    body.className = "stream-post__body";
+    mountTextSurface(body, item.body, { font: BODY_FONT, lineHeight: 23 });
+    article.append(body);
+  }
+
+  // Repost: show the embedded original card.
+  if (item.kind === "repost" && item.repost_of !== undefined) {
+    article.append(renderEmbeddedOriginal(item.repost_of));
+  }
 
   const actions = document.createElement("div");
   actions.className = "stream-post__actions";
-  const order: ReactionKind[] = ["recommend", "downrank", "reply", "repost"];
-  for (const kind of order) {
-    actions.append(renderReactionButton(kind, item.counts[kind]));
-  }
+  actions.append(renderVoteButton(item.counts, item.vote));
+  actions.append(renderActionButton("reply", "↩", item.counts.reply));
+  actions.append(renderActionButton("repost", "↻", item.counts.repost));
+  article.append(actions);
 
-  article.append(meta, body, actions);
+  // Container for the inline reply composer / expanded replies list,
+  // populated lazily by the controller when the user clicks ↩.
+  const repliesPanel = document.createElement("div");
+  repliesPanel.className = "stream-post__replies";
+  repliesPanel.dataset["repliesPanel"] = item.post_id;
+  repliesPanel.hidden = true;
+  article.append(repliesPanel);
+
   return article;
 }
 
-function renderReactionButton(kind: ReactionKind, count: number): HTMLButtonElement {
+function renderEmbeddedRef(ref: EmbeddedFeedItem, prefix: string): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "stream-post__ref";
+  if (ref.unavailable === true) {
+    wrapper.textContent = `${prefix} (original post unavailable)`;
+    return wrapper;
+  }
+  const handle = ref.author_handle ?? shortCanonical(ref.author_canonical_id);
+  wrapper.textContent = `${prefix} ${handle}`;
+  return wrapper;
+}
+
+function renderEmbeddedOriginal(ref: EmbeddedFeedItem): HTMLElement {
+  const card = document.createElement("blockquote");
+  card.className = "stream-post__embed";
+  if (ref.unavailable === true) {
+    card.textContent = "original post unavailable";
+    return card;
+  }
+  const handle = document.createElement("div");
+  handle.className = "stream-post__embed-handle";
+  handle.textContent = ref.author_handle ?? shortCanonical(ref.author_canonical_id);
+  const body = document.createElement("div");
+  body.className = "stream-post__embed-body";
+  body.textContent = ref.body;
+  card.append(handle, body);
+  return card;
+}
+
+function renderVoteButton(counts: ReactionCounts, vote: VoteKind): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  const state = vote === "like" ? "liked" : vote === "dislike" ? "disliked" : "neutral";
+  button.className = `stream-post__action stream-post__action--vote stream-post__action--vote-${state}`;
+  button.dataset["voteState"] = state;
+  // Net score is the user-facing number; the popover/cycle is what
+  // changes the user's own vote, but the count reflects the post's
+  // overall sentiment.
+  const net = (counts.recommend ?? 0) - (counts.downrank ?? 0);
+  const glyph = document.createElement("span");
+  glyph.className = "stream-post__action-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = vote === "like" ? "△" : vote === "dislike" ? "▽" : "◇";
+
+  const counter = document.createElement("span");
+  counter.className = "stream-post__action-count";
+  counter.textContent = String(net);
+
+  button.setAttribute("aria-label",
+    vote === "like" ? "you voted up; click to change vote"
+      : vote === "dislike" ? "you voted down; click to change vote"
+      : "vote on this post");
+  button.append(glyph, counter);
+  return button;
+}
+
+function renderActionButton(kind: "reply" | "repost", glyphChar: string, count: number): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = `stream-post__action stream-post__action--${kind}`;
   button.dataset["reaction"] = kind;
-  button.setAttribute("aria-label", REACTION_LABELS[kind]);
+  button.setAttribute("aria-label", kind);
 
   const glyph = document.createElement("span");
   glyph.className = "stream-post__action-glyph";
   glyph.setAttribute("aria-hidden", "true");
-  glyph.textContent = REACTION_GLYPHS[kind];
+  glyph.textContent = glyphChar;
 
   const counter = document.createElement("span");
   counter.className = "stream-post__action-count";

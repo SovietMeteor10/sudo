@@ -1,6 +1,6 @@
 import { db } from "../storage/db.js";
-import { removeDiscoveryPostIndex, upsertDiscoveryPostIndexFromFeedPost } from "../discovery/discovery.store.js";
-import type { FeedPost, FeedVisibility } from "./feed.types.js";
+import { removeDiscoveryPostIndex, upsertDiscoveryPostIndexFromFeedPost, refreshDiscoveryPostIndex } from "../discovery/discovery.store.js";
+import type { FeedPost, FeedPostKind, FeedVisibility } from "./feed.types.js";
 import { localStreamPosts } from "./localFeed.js";
 
 type FeedPostRow = {
@@ -17,6 +17,9 @@ type FeedPostRow = {
   deleted_at: string | null;
   sequence: number;
   signature: string | null;
+  kind: string | null;
+  reply_to: string | null;
+  repost_of: string | null;
   post_json: string;
 };
 
@@ -36,6 +39,9 @@ export function saveFeedPost(post: FeedPost): void {
       deleted_at,
       sequence,
       signature,
+      kind,
+      reply_to,
+      repost_of,
       post_json
     ) VALUES (
       @postId,
@@ -51,15 +57,54 @@ export function saveFeedPost(post: FeedPost): void {
       @deletedAt,
       @sequence,
       @signature,
+      @kind,
+      @replyTo,
+      @repostOf,
       @postJson
     )
   `).run(rowParams(post));
 
   try {
     upsertDiscoveryPostIndexFromFeedPost(post);
+    // Reply/repost feed posts don't index themselves, but they do
+    // mutate the parent post's reply/repost counts.
+    if (post.reply_to !== undefined && post.reply_to !== null) {
+      refreshDiscoveryPostIndex(post.reply_to);
+    }
+    if (post.repost_of !== undefined && post.repost_of !== null) {
+      refreshDiscoveryPostIndex(post.repost_of);
+    }
   } catch {
     // Discovery is optional indexing. Feed writes remain the source of truth.
   }
+}
+
+export function listRepliesForPost(postId: string): FeedPost[] {
+  const rows = db
+    .prepare(`
+      SELECT * FROM feed_posts
+      WHERE reply_to = ?
+        AND deleted_at IS NULL
+      ORDER BY created_at ASC
+      LIMIT 200
+    `)
+    .all(postId) as FeedPostRow[];
+
+  return rows.map(rowToPost);
+}
+
+export function countRepliesForPost(postId: string): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM feed_posts WHERE reply_to = ? AND deleted_at IS NULL`)
+    .get(postId) as { count: number } | undefined;
+  return row?.count ?? 0;
+}
+
+export function countRepostsForPost(postId: string): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM feed_posts WHERE repost_of = ? AND deleted_at IS NULL`)
+    .get(postId) as { count: number } | undefined;
+  return row?.count ?? 0;
 }
 
 export function getFeedPost(postId: string): FeedPost | null {
@@ -170,13 +215,31 @@ function rowParams(post: FeedPost): Record<string, unknown> {
     deletedAt: post.deleted_at,
     sequence: post.sequence,
     signature: post.signature,
-    postJson: JSON.stringify(post)
+    kind: post.kind ?? null,
+    replyTo: post.reply_to ?? null,
+    repostOf: post.repost_of ?? null,
+    postJson: JSON.stringify(stripDecorators(post))
   };
+}
+
+function stripDecorators(post: FeedPost): FeedPost {
+  // repost_of_post / reply_to_post are server-decorated for client
+  // rendering and must not be persisted (or they'd recursively bloat
+  // post_json on every save).
+  const { repost_of_post: _r, reply_to_post: _y, ...rest } = post;
+  return rest as FeedPost;
 }
 
 function rowToPost(row: FeedPostRow): FeedPost {
   const parsed = parseJson<FeedPost>(row.post_json);
-  if (parsed !== null) return parsed;
+  if (parsed !== null) {
+    // Older rows may have been written before kind/reply_to/repost_of
+    // existed. Backfill from row columns so callers always see them.
+    if (parsed.kind === undefined && row.kind !== null) parsed.kind = row.kind as FeedPostKind;
+    if (parsed.reply_to === undefined && row.reply_to !== null) parsed.reply_to = row.reply_to;
+    if (parsed.repost_of === undefined && row.repost_of !== null) parsed.repost_of = row.repost_of;
+    return parsed;
+  }
 
   return {
     type: "sudo_feed_post",
@@ -193,7 +256,10 @@ function rowToPost(row: FeedPostRow): FeedPost {
     updated_at: row.updated_at,
     deleted_at: row.deleted_at,
     sequence: row.sequence,
-    signature: row.signature ?? "dev-placeholder"
+    signature: row.signature ?? "dev-placeholder",
+    kind: (row.kind ?? undefined) as FeedPostKind | undefined,
+    reply_to: row.reply_to ?? undefined,
+    repost_of: row.repost_of ?? undefined
   };
 }
 

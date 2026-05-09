@@ -387,7 +387,56 @@ function countDiscoveryReactions(postId: string): DiscoveryRankingCounts {
     GROUP BY reaction
   `).all(postId, recentCutoff) as Array<{ reaction: DiscoveryReaction["reaction"]; count: number }>;
 
-  return buildCounts(totalRows, recentRows);
+  const counts = buildCounts(totalRows, recentRows);
+
+  // reply_count and repost_count are sourced from real feed posts, not
+  // from "reply"/"repost" reactions, because replies/reposts are now
+  // first-class feed posts with their own bodies. The discovery
+  // reactions of those types stay around for ranking signal but the
+  // displayed counts come from the feed_posts table.
+  const replyRow = db.prepare(`
+    SELECT COUNT(*) AS count FROM feed_posts WHERE reply_to = ? AND deleted_at IS NULL
+  `).get(postId) as { count: number } | undefined;
+  const repostRow = db.prepare(`
+    SELECT COUNT(*) AS count FROM feed_posts WHERE repost_of = ? AND deleted_at IS NULL
+  `).get(postId) as { count: number } | undefined;
+  const recentReplyRow = db.prepare(`
+    SELECT COUNT(*) AS count FROM feed_posts WHERE reply_to = ? AND deleted_at IS NULL AND created_at >= ?
+  `).get(postId, recentCutoff) as { count: number } | undefined;
+  const recentRepostRow = db.prepare(`
+    SELECT COUNT(*) AS count FROM feed_posts WHERE repost_of = ? AND deleted_at IS NULL AND created_at >= ?
+  `).get(postId, recentCutoff) as { count: number } | undefined;
+
+  counts.reply_count = replyRow?.count ?? 0;
+  counts.repost_count = repostRow?.count ?? 0;
+  counts.recent_reply_count_24h = recentReplyRow?.count ?? 0;
+  counts.recent_repost_count_24h = recentRepostRow?.count ?? 0;
+  return counts;
+}
+
+export function deleteDiscoveryReaction(
+  postId: string,
+  actorCanonicalId: string,
+  reaction: DiscoveryReaction["reaction"]
+): boolean {
+  const result = db.prepare(`
+    DELETE FROM discovery_reactions
+    WHERE post_id = ? AND actor_canonical_id = ? AND reaction = ?
+  `).run(postId, actorCanonicalId, reaction);
+  return result.changes > 0;
+}
+
+export function getViewerReaction(
+  postId: string,
+  viewerCanonicalId: string
+): DiscoveryReaction["reaction"] | null {
+  const row = db.prepare(`
+    SELECT reaction FROM discovery_reactions
+    WHERE post_id = ? AND actor_canonical_id = ?
+      AND reaction IN ('recommend', 'downrank')
+    LIMIT 1
+  `).get(postId, viewerCanonicalId) as { reaction: DiscoveryReaction["reaction"] } | undefined;
+  return row?.reaction ?? null;
 }
 
 function buildCounts(

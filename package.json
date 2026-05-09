@@ -19,6 +19,7 @@
     "smoke:account-isolation": "node scripts/account-isolation-smoke.cjs",
     "smoke:local-db-recovery": "node scripts/local-db-recovery-smoke.cjs",
     "smoke:multi-tab-local-state": "node scripts/multi-tab-local-state-smoke.cjs",
+    "smoke:feed-interactions": "node scripts/feed-interactions-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
