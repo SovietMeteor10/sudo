@@ -807,6 +807,160 @@ async function postBody(page, postId) {
     if (!backRestored) fail("thread-back", "back button did not restore feed");
     else ok("thread-view: back button returns to feed");
 
+    // ===== Repost navigation =====
+    // Open the repost B made earlier of postTwo. Three target surfaces
+    // share the same article and must dispatch differently:
+    //   1. clicking the repost wrapper → opens B's repost thread
+    //   2. clicking the embedded original block → opens A's original thread
+    //   3. clicking action buttons (vote/repost/reply) → must NOT navigate
+    // The renderer marks the embed with data-thread-open-embed and stamps
+    // its target post id on data-embed-post-id.
+    const repostCard = await pageB.evaluate(() => {
+      const article = document.querySelector("#stream-list .stream-post[data-post-kind='repost']");
+      if (!article) return null;
+      const embed = article.querySelector(".stream-post__embed[data-thread-open-embed='true']");
+      return {
+        repostId: article.dataset.postId ?? "",
+        embedTarget: embed?.dataset.embedPostId ?? ""
+      };
+    });
+    if (repostCard === null) fail("repost-nav-find", "no repost article found in B's feed");
+    else {
+      // 1. Wrapper click → repost thread.
+      await pageB.evaluate((id) => {
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+        article?.querySelector(".stream-post__main")?.click();
+      }, repostCard.repostId);
+      let inRepostThread = false;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        inRepostThread = await pageB.evaluate((id) =>
+          document.querySelector(`.thread-view[data-thread-view="${id}"]`) !== null,
+          repostCard.repostId);
+        if (inRepostThread) break;
+      }
+      if (!inRepostThread) fail("repost-nav-wrapper", "clicking repost card did not open repost thread");
+      else ok("repost-nav: clicking repost wrapper opens B's repost thread");
+
+      // 2. Inside the repost thread, click the embedded original →
+      //    navigates to A's original thread (replaces the current thread).
+      await pageB.evaluate(() => {
+        const embed = document.querySelector(".thread-view .stream-post__embed[data-thread-open-embed='true']");
+        embed?.click();
+      });
+      let inOriginalThread = false;
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        inOriginalThread = await pageB.evaluate((id) =>
+          document.querySelector(`.thread-view[data-thread-view="${id}"]`) !== null,
+          repostCard.embedTarget);
+        if (inOriginalThread) break;
+      }
+      if (!inOriginalThread) fail("repost-nav-embed", "clicking embedded original did not open the original's thread");
+      else ok("repost-nav: clicking embedded original opens A's original thread");
+
+      // Back to feed.
+      await pageB.evaluate(() => {
+        document.querySelector("[data-thread-action='back']")?.click();
+      });
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        const restored = await pageB.evaluate(() => document.querySelector(".thread-view") === null);
+        if (restored) break;
+      }
+
+      // 3. Click an action button on the repost — vote — and confirm we
+      //    stay in the feed list, no thread view opened.
+      await pageB.evaluate((id) => {
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+        article?.querySelector(".stream-post__action--vote")?.click();
+      }, repostCard.repostId);
+      await new Promise((r) => setTimeout(r, 400));
+      const afterAction = await pageB.evaluate(() => document.querySelector(".thread-view") === null);
+      if (!afterAction) fail("repost-nav-action", "vote click navigated into thread view");
+      else ok("repost-nav: action button clicks do not navigate");
+    }
+
+    // ===== Collapsible nested replies in thread view =====
+    // Open postOne in thread view from D's tab and verify the [-]/[+]
+    // toggle on B's reply (which has a nested child by now) hides and
+    // reveals the descendant without removing B's reply itself.
+    await pageD.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      article?.querySelector(".stream-post__main")?.click();
+    }, postOne);
+    let dInThread = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      dInThread = await pageD.evaluate((rootId) =>
+        document.querySelector(`.thread-view[data-thread-view="${rootId}"]`) !== null,
+        postOne);
+      if (dInThread) break;
+    }
+    if (typeof bReplyId === "string" && bReplyId.length > 0 && dInThread) {
+      const collapseProbe = await pageD.evaluate((replyId) => {
+        const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+        const collapse = item?.querySelector(".stream-post__reply-collapse");
+        const sublist = item?.querySelector(".stream-post__reply-list--nested");
+        return {
+          hasCollapse: collapse !== null && collapse !== undefined,
+          collapseGlyph: collapse?.textContent ?? "",
+          sublistHidden: sublist === null ? null : sublist.hidden
+        };
+      }, bReplyId);
+      if (!collapseProbe.hasCollapse) fail("collapse-control", "no [-]/[+] control on parent reply in thread view");
+      else if (collapseProbe.collapseGlyph !== "[-]") fail("collapse-control", `expected [-] glyph, got '${collapseProbe.collapseGlyph}'`);
+      else if (collapseProbe.sublistHidden !== false) fail("collapse-control", "child sublist not visible by default");
+      else {
+        await pageD.evaluate((replyId) => {
+          const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+          item?.querySelector(".stream-post__reply-collapse")?.click();
+        }, bReplyId);
+        await new Promise((r) => setTimeout(r, 200));
+        const afterCollapse = await pageD.evaluate((replyId) => {
+          const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+          const collapse = item?.querySelector(".stream-post__reply-collapse");
+          const sublist = item?.querySelector(".stream-post__reply-list--nested");
+          return {
+            collapseGlyph: collapse?.textContent ?? "",
+            sublistHidden: sublist?.hidden ?? null,
+            parentStillVisible: item !== null
+          };
+        }, bReplyId);
+        if (!afterCollapse.parentStillVisible) fail("collapse-control", "parent reply removed when collapsing");
+        else if (afterCollapse.collapseGlyph !== "[+]") fail("collapse-control", `expected [+] after collapse, got '${afterCollapse.collapseGlyph}'`);
+        else if (afterCollapse.sublistHidden !== true) fail("collapse-control", "child sublist still visible after collapse");
+        else {
+          await pageD.evaluate((replyId) => {
+            const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+            item?.querySelector(".stream-post__reply-collapse")?.click();
+          }, bReplyId);
+          await new Promise((r) => setTimeout(r, 200));
+          const afterExpand = await pageD.evaluate((replyId) => {
+            const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+            const collapse = item?.querySelector(".stream-post__reply-collapse");
+            const sublist = item?.querySelector(".stream-post__reply-list--nested");
+            return {
+              collapseGlyph: collapse?.textContent ?? "",
+              sublistHidden: sublist?.hidden ?? null
+            };
+          }, bReplyId);
+          if (afterExpand.collapseGlyph !== "[-]" || afterExpand.sublistHidden !== false) {
+            fail("collapse-control", `expand failed: glyph='${afterExpand.collapseGlyph}', hidden=${afterExpand.sublistHidden}`);
+          } else ok("collapse: [-]/[+] toggle hides and restores descendant replies in thread view");
+        }
+      }
+      // Back to feed for the discover assertion.
+      await pageD.evaluate(() => {
+        document.querySelector("[data-thread-action='back']")?.click();
+      });
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        const restored = await pageD.evaluate(() => document.querySelector(".thread-view") === null);
+        if (restored) break;
+      }
+    }
+
     // Discover should also exclude replies — only top-level
     // discoverable posts surface. The reply post id from B should
     // never be a top-level data-post-id in #discovery-list.

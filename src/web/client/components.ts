@@ -29,14 +29,19 @@ export type ReactionCounts = {
   reply: number;
   repost: number;
 };
-export type EmbeddedFeedItem = {
-  post_id: string;
-  author_canonical_id: string;
-  author_handle?: string;
-  body: string;
-  created_at: string;
-  unavailable?: false;
-} | { unavailable: true };
+export type EmbeddedFeedItem =
+  | {
+      unavailable?: false;
+      post_id: string;
+      author_canonical_id: string;
+      author_handle?: string;
+      body: string;
+      created_at: string;
+      // Reposts can wrap reposts. The renderer draws up to 2 visible
+      // levels and shows a "view original post" link beyond that.
+      embedded_repost?: EmbeddedFeedItem;
+    }
+  | { unavailable: true };
 export type UnifiedFeedItem = {
   post_id: string;
   author_canonical_id: string;
@@ -250,12 +255,21 @@ function embeddedFromMaybe(post: FeedPost | null | undefined): EmbeddedFeedItem 
     ?? post.public_metadata?.summary
     ?? post.public_metadata?.title
     ?? "[encrypted body]";
+  // Recursively materialize a nested embedded repost so the card can
+  // render up to 2 visible levels (handled by the renderer's depth
+  // bound). embeddedFromMaybe runs once per server-decorated layer; the
+  // server hydrates `repost_of_post` two levels deep, so deeper chains
+  // resolve to "view original post" at render time.
+  const nested = post.repost_of_post === undefined
+    ? undefined
+    : embeddedFromMaybe(post.repost_of_post);
   return {
     post_id: post.post_id,
     author_canonical_id: post.author_canonical_id,
     author_handle: post.author_handle,
     body,
-    created_at: post.created_at
+    created_at: post.created_at,
+    ...(nested === undefined ? {} : { embedded_repost: nested })
   };
 }
 
@@ -327,7 +341,7 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   // Repost: show the embedded original card outside the main click
   // surface so clicking the embed doesn't open the wrong thread.
   if (item.kind === "repost" && item.repost_of !== undefined) {
-    article.append(renderEmbeddedOriginal(item.repost_of));
+    article.append(renderEmbeddedPost(item.repost_of, 1));
   }
 
   const actions = document.createElement("div");
@@ -349,20 +363,57 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   return article;
 }
 
-function renderEmbeddedOriginal(ref: EmbeddedFeedItem): HTMLElement {
+// Maximum visible embedded levels inside a single feed card. A repost
+// of a repost renders the outer wrapper + 2 embedded levels; deeper
+// chains collapse to a "view original post" link that navigates to the
+// canonical original.
+const MAX_EMBED_DEPTH = 2;
+
+function renderEmbeddedPost(ref: EmbeddedFeedItem, depth: number): HTMLElement {
   const card = document.createElement("blockquote");
   card.className = "stream-post__embed";
   if (ref.unavailable === true) {
     card.textContent = "original post unavailable";
     return card;
   }
-  const handle = document.createElement("div");
+  // The embed is itself a clickable surface that opens the original
+  // post's thread. The outer feed card's main click handler ignores
+  // clicks inside the embed (see handleFeedClick in main.ts).
+  card.dataset["threadOpenEmbed"] = "true";
+  card.dataset["embedPostId"] = ref.post_id;
+  card.setAttribute("role", "link");
+  card.tabIndex = 0;
+
+  const meta = document.createElement("div");
+  meta.className = "stream-post__embed-meta";
+  const handle = document.createElement("span");
   handle.className = "stream-post__embed-handle";
   handle.textContent = ref.author_handle ?? shortCanonical(ref.author_canonical_id);
+  const time = document.createElement("span");
+  time.className = "stream-post__embed-time";
+  time.textContent = formatPostTimestamp(ref.created_at);
+  meta.append(handle, time);
+
   const body = document.createElement("div");
   body.className = "stream-post__embed-body";
   body.textContent = ref.body;
-  card.append(handle, body);
+  card.append(meta, body);
+
+  if (ref.embedded_repost !== undefined) {
+    if (depth + 1 > MAX_EMBED_DEPTH) {
+      // Beyond the visible nesting limit — the outer chain is already
+      // 2 levels deep. Drop a navigation hint that opens the canonical
+      // original directly (the embed's click handler still uses
+      // ref.post_id, so this is a visual signal, not a separate
+      // target).
+      const more = document.createElement("div");
+      more.className = "stream-post__embed-more";
+      more.textContent = "view original post";
+      card.append(more);
+    } else {
+      card.append(renderEmbeddedPost(ref.embedded_repost, depth + 1));
+    }
+  }
   return card;
 }
 

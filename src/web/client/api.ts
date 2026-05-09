@@ -575,6 +575,64 @@ export async function listFeedPostReplies(
   return Array.isArray(body.posts) ? body.posts : [];
 }
 
+export type FeedEngagement = {
+  counts: { recommend: number; downrank: number; reply: number; repost: number };
+  viewer_reaction: "recommend" | "downrank" | null;
+  viewer_has_reposted: boolean;
+};
+
+export type PersonalFeedResponse = {
+  posts: FeedPost[];
+  engagement: Record<string, FeedEngagement>;
+};
+
+export async function listPersonalFeed(viewerCanonicalId: string): Promise<PersonalFeedResponse> {
+  const response = await fetchWithTimeout(
+    `/api/feeds/personal/${encodeURIComponent(viewerCanonicalId)}`,
+    { headers: { accept: "application/json" } }
+  );
+  if (!response.ok) {
+    throw new Error(`personal feed failed: ${response.status}`);
+  }
+  const body = await response.json() as Partial<PersonalFeedResponse>;
+  return {
+    posts: Array.isArray(body.posts) ? body.posts : [],
+    engagement: body.engagement ?? {}
+  };
+}
+
+export type FeedThreadResponse = {
+  post: FeedPost;
+  replies: FeedPost[];
+  repost_original: FeedPost | null;
+  viewer_state: { vote: "recommend" | "downrank" | null; has_reposted: boolean };
+  engagement: Record<string, FeedEngagement>;
+};
+
+export async function getFeedThread(
+  postId: string,
+  viewerCanonicalId?: string
+): Promise<FeedThreadResponse | null> {
+  const url = new URL(`/api/feeds/posts/${encodeURIComponent(postId)}/thread`, window.location.origin);
+  if (viewerCanonicalId !== undefined) url.searchParams.set("viewer", viewerCanonicalId);
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: { accept: "application/json" }
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`thread load failed: ${response.status}`);
+  }
+  const body = await response.json() as Partial<FeedThreadResponse>;
+  if (body.post === undefined) return null;
+  return {
+    post: body.post,
+    replies: Array.isArray(body.replies) ? body.replies : [],
+    repost_original: body.repost_original ?? null,
+    viewer_state: body.viewer_state ?? { vote: null, has_reposted: false },
+    engagement: body.engagement ?? {}
+  };
+}
+
 export async function reindexDiscoveryPosts(): Promise<number> {
   const response = await fetchWithTimeout("/api/discovery/reindex", {
     method: "POST",

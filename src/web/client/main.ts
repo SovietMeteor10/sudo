@@ -10,12 +10,14 @@ import {
   createFeedPost,
   FeedPostError,
   getDiscoveryPost,
+  getFeedThread,
   listDiscoveryPosts,
   getConnectionRelationship,
   fingerprintPublicKey,
   listConnections,
   listFeedPostReplies,
   listFeedSubscriptions,
+  listPersonalFeed,
   listUserFeedPosts,
   lookupHandle,
   normalizeLookupInput,
@@ -30,7 +32,8 @@ import {
   signinDevHandle,
   signupDevHandle,
   upsertConnectionRelationship,
-  upsertFeedSubscription
+  upsertFeedSubscription,
+  type FeedEngagement
 } from "./api.js";
 import {
   createBrowserCryptoAccount,
@@ -347,6 +350,20 @@ const handleFeedClick = (event: Event): void => {
       return;
     }
     return;
+  }
+
+  // Embedded original (the inset card inside a repost) navigates to
+  // the original post's thread, regardless of whether we're currently
+  // in the feed list or another thread. Action-button clicks above
+  // already returned, so this only runs for body/handle/timestamp
+  // clicks inside the embed.
+  const embed = target.closest<HTMLElement>(".stream-post__embed[data-thread-open-embed='true']");
+  if (embed !== null) {
+    const embedTarget = embed.dataset["embedPostId"];
+    if (typeof embedTarget === "string" && embedTarget.length > 0 && embedTarget !== postId) {
+      void enterThreadView(embedTarget);
+      return;
+    }
   }
 
   // Fallthrough: clicks on the post's main click surface open the
@@ -1784,31 +1801,15 @@ async function renderThreadView(postId: string): Promise<void> {
   streamRoot.replaceChildren(container);
 
   try {
-    // Fetch the post + viewer enrichment in parallel.
-    const [post, index] = await Promise.all([
-      fetchFeedPost(postId).catch(() => null),
-      getDiscoveryPost(postId, currentIdentityDocument.canonical_id).catch(() => null)
-    ]);
-    if (post === null) {
+    const thread = await getFeedThread(postId, currentIdentityDocument.canonical_id);
+    if (thread === null) {
       parentSlot.textContent = "post unavailable";
       return;
     }
-    const item = index === null
-      ? feedPostToUnifiedItem(post)
-      : feedPostToUnifiedItem(post, {
-          counts: {
-            recommend: index.recommend_count ?? 0,
-            downrank: index.downrank_count ?? 0,
-            reply: index.reply_count ?? 0,
-            repost: index.repost_count ?? 0
-          },
-          vote: index.viewer_reaction === "recommend" ? "like"
-            : index.viewer_reaction === "downrank" ? "dislike"
-            : null,
-          viewerHasReposted: index.viewer_has_reposted === true
-        });
-    // Render the parent via the shared helper so action wiring
-    // matches the feed list.
+    const item = feedPostToUnifiedItemFromEngagement(
+      thread.post,
+      thread.engagement[thread.post.post_id]
+    );
     const parentArticle = renderThreadParentArticle(item);
     parentSlot.replaceChildren();
     parentSlot.append(parentArticle);
@@ -1817,7 +1818,11 @@ async function renderThreadView(postId: string): Promise<void> {
     const panel = parentArticle.querySelector<HTMLElement>(
       `[data-replies-panel="${cssEscape(postId)}"]`
     );
-    if (panel !== null) openReplyComposer(postId, panel);
+    if (panel !== null) {
+      // Thread payload already includes replies — pass them straight
+      // through so the panel doesn't re-fetch from the server.
+      openReplyComposer(postId, panel, thread.replies);
+    }
   } catch {
     parentSlot.textContent = "post unavailable";
   }
@@ -1839,17 +1844,6 @@ function renderThreadParentArticle(item: ReturnType<typeof feedPostToUnifiedItem
   return article;
 }
 
-async function fetchFeedPost(postId: string): Promise<FeedPost | null> {
-  const url = new URL(`/api/feeds/posts/${encodeURIComponent(postId)}`, window.location.origin);
-  if (currentIdentityDocument !== null) {
-    url.searchParams.set("viewer", currentIdentityDocument.canonical_id);
-  }
-  const response = await fetch(url.toString(), { headers: { accept: "application/json" } });
-  if (!response.ok) return null;
-  const body = await response.json() as { post?: FeedPost };
-  return body.post ?? null;
-}
-
 async function refreshFeedPosts(): Promise<void> {
   if (activeThreadPostId !== null) {
     // Thread view owns the center column right now. Re-render the
@@ -1862,81 +1856,42 @@ async function refreshFeedPosts(): Promise<void> {
     return;
   }
 
-  const ownerCanonicalId = currentIdentityDocument.canonical_id;
-  // Personal feed = own posts + posts from known/close connections +
-  // subscribed authors. Each fetch is best-effort; one failure does not
-  // sink the rest. Posts that are publicly indexed get enriched with
-  // discovery reaction counts and the viewer's vote so the action row
-  // doesn't read as "0 0 0" for posts that have actual engagement.
+  // The server is the single source of truth for the personal feed:
+  // it knows the viewer's connections, subscriptions, and blocks, and
+  // it returns posts already filtered to top-level + author-visible
+  // along with engagement (counts + viewer state) for each card.
   try {
-    const [connections, subscriptions] = await Promise.all([
-      listConnections(ownerCanonicalId).catch(() => []),
-      listFeedSubscriptions(ownerCanonicalId).catch(() => [])
-    ]);
-
-    const authors = new Set<string>([ownerCanonicalId]);
-    const blocked = new Set<string>();
-    for (const connection of connections) {
-      if (connection.tier === "known" || connection.tier === "close") {
-        authors.add(connection.subject_canonical_id);
-      }
-      if (connection.tier === "blocked") {
-        blocked.add(connection.subject_canonical_id);
-      }
-    }
-    for (const subscription of subscriptions) {
-      if (subscription.muted) continue;
-      authors.add(subscription.author_canonical_id);
-    }
-    for (const blockedId of blocked) authors.delete(blockedId);
-
-    const fetched = await Promise.all([...authors].map((author) =>
-      listUserFeedPosts(author, ownerCanonicalId).catch(() => [])
+    const response = await listPersonalFeed(currentIdentityDocument.canonical_id);
+    const items = response.posts.map((post) => feedPostToUnifiedItemFromEngagement(
+      post,
+      response.engagement[post.post_id]
     ));
-    const merged = new Map<string, FeedPost>();
-    for (const posts of fetched) {
-      for (const post of posts) {
-        if (blocked.has(post.author_canonical_id)) continue;
-        // Replies are not top-level feed cards — they render nested
-        // under their parent post. Skip any reply that slips through
-        // (legacy server caches, races during the rollout).
-        if (typeof post.reply_to === "string" && post.reply_to.length > 0) continue;
-        if (!merged.has(post.post_id)) merged.set(post.post_id, post);
-      }
-    }
-
-    const enrichments = await Promise.all([...merged.values()].map(async (post) => {
-      try {
-        const index = await getDiscoveryPost(post.post_id, ownerCanonicalId);
-        return [post.post_id, index] as const;
-      } catch {
-        return [post.post_id, null] as const;
-      }
-    }));
-    const enrichmentMap = new Map(enrichments);
-
-    const items = [...merged.values()]
-      .sort((left, right) => right.created_at.localeCompare(left.created_at))
-      .map((post) => {
-        const index = enrichmentMap.get(post.post_id);
-        if (index === null || index === undefined) return feedPostToUnifiedItem(post);
-        return feedPostToUnifiedItem(post, {
-          counts: {
-            recommend: index.recommend_count ?? 0,
-            downrank: index.downrank_count ?? 0,
-            reply: index.reply_count ?? 0,
-            repost: index.repost_count ?? 0
-          },
-          vote: index.viewer_reaction === "recommend" ? "like"
-            : index.viewer_reaction === "downrank" ? "dislike"
-            : null,
-          viewerHasReposted: index.viewer_has_reposted === true
-        });
-      });
     renderStream(streamRoot, items);
   } catch {
     renderStream(streamRoot, []);
   }
+}
+
+// Map a server-side FeedEngagement record onto the renderer's
+// UnifiedFeedItem shape. Centralized so the personal feed and the
+// thread view feed cards share a single converter.
+function feedPostToUnifiedItemFromEngagement(
+  post: FeedPost,
+  engagement: FeedEngagement | undefined
+): ReturnType<typeof feedPostToUnifiedItem> {
+  if (engagement === undefined) return feedPostToUnifiedItem(post);
+  return feedPostToUnifiedItem(post, {
+    counts: {
+      recommend: engagement.counts.recommend,
+      downrank: engagement.counts.downrank,
+      reply: engagement.counts.reply,
+      repost: engagement.counts.repost
+    },
+    vote: engagement.viewer_reaction === "recommend" ? "like"
+      : engagement.viewer_reaction === "downrank" ? "dislike"
+      : null,
+    viewerHasReposted: engagement.viewer_has_reposted === true
+  });
 }
 
 async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode): Promise<void> {
@@ -2096,7 +2051,11 @@ function toggleReplyComposer(postId: string, article: HTMLElement): void {
   openReplyComposer(postId, panel);
 }
 
-function openReplyComposer(postId: string, panel: HTMLElement): void {
+function openReplyComposer(
+  postId: string,
+  panel: HTMLElement,
+  preloadedReplies?: FeedPost[]
+): void {
   panel.hidden = false;
   panel.dataset["mode"] = "compose";
   const form = document.createElement("div");
@@ -2116,8 +2075,14 @@ function openReplyComposer(postId: string, panel: HTMLElement): void {
   panel.replaceChildren(form);
   if (existingList !== null) panel.append(existingList);
 
-  // Pre-fetch the existing replies so the user sees prior context.
-  void renderRepliesUnder(postId, panel);
+  // Thread view passes replies in via the thread payload so we can
+  // skip the network round-trip. The feed-list path doesn't have
+  // them preloaded and falls back to the dedicated replies endpoint.
+  if (preloadedReplies !== undefined) {
+    renderRepliesIntoPanel(postId, panel, preloadedReplies);
+  } else {
+    void renderRepliesUnder(postId, panel);
+  }
   textarea.focus();
 }
 
@@ -2129,6 +2094,16 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
   } catch {
     return;
   }
+  renderRepliesIntoPanel(rootPostId, panel, replies);
+}
+
+// Builds a reply tree from a flat descendants array and paints it into
+// the supplied panel. The renderer enforces a maximum visible nest
+// depth (deeper replies stack flat under level 2) and renders each
+// comment as a full-width row whose header keeps @handle and timestamp
+// adjacent. There is no "replying to @X" / "@X replied" copy — the
+// indentation alone communicates the relationship.
+function renderRepliesIntoPanel(rootPostId: string, panel: HTMLElement, replies: FeedPost[]): void {
   let list = panel.querySelector<HTMLElement>(".stream-post__reply-list");
   if (list === null) {
     list = document.createElement("ul");
@@ -2144,9 +2119,6 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
     return;
   }
 
-  // Build a tree from the flat descendants list. A reply whose
-  // reply_to is not in our set (because it's the root post) becomes a
-  // top-level child here.
   const byParent = new Map<string, FeedPost[]>();
   const ids = new Set(replies.map((reply) => reply.post_id));
   for (const reply of replies) {
@@ -2161,71 +2133,78 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
     bucket.sort((left, right) => left.created_at.localeCompare(right.created_at));
   }
 
-  // Two visible indent levels; deeper replies stack flat under
-  // level-2 with no "replying to @handle" copy. Each comment that
-  // has children gets a [-]/[+] toggle to collapse its descendants
-  // without removing the comment itself.
-  const MAX_NEST_DEPTH = 2;
+  renderReplyTree(rootPostId, 1, list, byParent);
+}
 
-  const renderLevel = (parentId: string, depth: number, container: HTMLElement): void => {
-    const children = byParent.get(parentId) ?? [];
-    for (const reply of children) {
-      const item = document.createElement("li");
-      item.className = "stream-post__reply-item";
-      item.dataset["postId"] = reply.post_id;
-      item.dataset["depth"] = String(Math.min(depth, MAX_NEST_DEPTH));
+// Visible nesting cap. Beyond this, replies render flat under the
+// deepest visible parent so a long chain doesn't march off the right
+// edge of the column.
+const MAX_REPLY_NEST_DEPTH = 2;
 
-      const arrow = document.createElement("span");
-      arrow.className = "stream-post__reply-arrow";
-      arrow.setAttribute("aria-hidden", "true");
-      arrow.textContent = "↳";
+function renderReplyTree(
+  parentId: string,
+  depth: number,
+  container: HTMLElement,
+  byParent: Map<string, FeedPost[]>
+): void {
+  const children = byParent.get(parentId) ?? [];
+  for (const reply of children) {
+    const item = renderReply(reply, depth);
+    const childIds = byParent.get(reply.post_id);
+    if (childIds !== undefined && childIds.length > 0) {
+      const collapse = document.createElement("button");
+      collapse.type = "button";
+      collapse.className = "stream-post__reply-collapse";
+      collapse.dataset["collapseTarget"] = reply.post_id;
+      collapse.dataset["collapsed"] = "false";
+      collapse.setAttribute("aria-label", "collapse replies");
+      collapse.textContent = "[-]";
+      item.append(collapse);
 
-      const meta = document.createElement("div");
-      meta.className = "stream-post__reply-meta";
-      const handle = document.createElement("span");
-      handle.className = "stream-post__reply-handle";
-      handle.textContent = reply.author_handle ?? shortCanonicalForUi(reply.author_canonical_id);
-      const time = document.createElement("span");
-      time.className = "stream-post__reply-time";
-      time.textContent = formatPostTimestamp(reply.created_at);
-      meta.append(handle, time);
-
-      const body = document.createElement("div");
-      body.className = "stream-post__reply-body";
-      body.textContent = reply.body ?? "";
-
-      const replyButton = document.createElement("button");
-      replyButton.type = "button";
-      replyButton.className = "stream-post__reply-action";
-      replyButton.dataset["replyAction"] = "open-nested";
-      replyButton.dataset["replyTarget"] = reply.post_id;
-      replyButton.textContent = "↩ reply";
-
-      item.append(arrow, meta, body, replyButton);
-
-      const childIds = byParent.get(reply.post_id);
-      if (childIds !== undefined && childIds.length > 0) {
-        const collapse = document.createElement("button");
-        collapse.type = "button";
-        collapse.className = "stream-post__reply-collapse";
-        collapse.dataset["collapseTarget"] = reply.post_id;
-        collapse.dataset["collapsed"] = "false";
-        collapse.setAttribute("aria-label", "collapse replies");
-        collapse.textContent = "[-]";
-        item.append(collapse);
-
-        const sublist = document.createElement("ul");
-        sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
-        sublist.dataset["sublistFor"] = reply.post_id;
-        item.append(sublist);
-        renderLevel(reply.post_id, depth + 1, sublist);
-      }
-
-      container.append(item);
+      const sublist = document.createElement("ul");
+      sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
+      sublist.dataset["sublistFor"] = reply.post_id;
+      item.append(sublist);
+      renderReplyTree(reply.post_id, depth + 1, sublist, byParent);
     }
-  };
+    container.append(item);
+  }
+}
 
-  renderLevel(rootPostId, 1, list);
+function renderReply(reply: FeedPost, depth: number): HTMLLIElement {
+  const item = document.createElement("li");
+  item.className = "stream-post__reply-item";
+  item.dataset["postId"] = reply.post_id;
+  item.dataset["depth"] = String(Math.min(depth, MAX_REPLY_NEST_DEPTH));
+
+  const arrow = document.createElement("span");
+  arrow.className = "stream-post__reply-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "↳";
+
+  const meta = document.createElement("div");
+  meta.className = "stream-post__reply-meta";
+  const handle = document.createElement("span");
+  handle.className = "stream-post__reply-handle";
+  handle.textContent = reply.author_handle ?? shortCanonicalForUi(reply.author_canonical_id);
+  const time = document.createElement("span");
+  time.className = "stream-post__reply-time";
+  time.textContent = formatPostTimestamp(reply.created_at);
+  meta.append(handle, time);
+
+  const body = document.createElement("div");
+  body.className = "stream-post__reply-body";
+  body.textContent = reply.body ?? "";
+
+  const replyButton = document.createElement("button");
+  replyButton.type = "button";
+  replyButton.className = "stream-post__reply-action";
+  replyButton.dataset["replyAction"] = "open-nested";
+  replyButton.dataset["replyTarget"] = reply.post_id;
+  replyButton.textContent = "↩ reply";
+
+  item.append(arrow, meta, body, replyButton);
+  return item;
 }
 
 function toggleNestedComposer(article: HTMLElement, rootPostId: string, replyTargetPostId: string): void {

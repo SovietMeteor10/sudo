@@ -3,8 +3,10 @@ import {
   createFeedPost,
   deleteFeedPost,
   getPostForApiWithViewer,
+  getThreadForApi,
   getUserRssFeed,
   listFeedPosts,
+  listPersonalFeedForApi,
   listRepliesForApi,
   listUserPostsForApi
 } from "./feed.service.js";
@@ -25,12 +27,28 @@ feedRouter.post("/posts", (request, response) => {
   }
 });
 
+feedRouter.get("/personal/:viewerCanonicalId", (request, response) => {
+  try {
+    response.json(listPersonalFeedForApi(request.params.viewerCanonicalId));
+  } catch (error) {
+    sendFeedError(response, error);
+  }
+});
+
 feedRouter.get("/posts/:postId", (request, response) => {
   try {
     const result = getPostForApiWithViewer(request.params.postId, getViewer(request));
     response.json(result.warning === undefined
       ? { post: result.post }
       : { warning: result.warning, post: result.post });
+  } catch (error) {
+    sendFeedError(response, error);
+  }
+});
+
+feedRouter.get("/posts/:postId/thread", (request, response) => {
+  try {
+    response.json(getThreadForApi(request.params.postId, getViewer(request)));
   } catch (error) {
     sendFeedError(response, error);
   }
