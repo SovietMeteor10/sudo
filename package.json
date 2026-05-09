@@ -17,6 +17,7 @@
     "smoke:auth-lifecycle": "node scripts/auth-lifecycle-smoke.cjs",
     "smoke:chat-lifecycle": "node scripts/chat-lifecycle-smoke.cjs",
     "smoke:account-isolation": "node scripts/account-isolation-smoke.cjs",
+    "smoke:local-db-recovery": "node scripts/local-db-recovery-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

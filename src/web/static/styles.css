@@ -801,6 +801,40 @@ body[data-auth-state="auth-restore"] .landing {
   border-color: var(--focus);
 }
 
+.text-button--danger {
+  color: var(--danger);
+  border-color: var(--line);
+}
+
+.text-button--danger:hover,
+.text-button--danger:focus-visible {
+  border-color: var(--danger);
+  outline: none;
+}
+
+.auth-recovery {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.auth-recovery__hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.auth-recovery__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .signup-dialog input:focus-visible {
   outline: 1px solid var(--focus);
   outline-offset: 2px;

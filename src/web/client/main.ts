@@ -68,6 +68,7 @@ import {
   saveTrustedDevice,
   upsertContact
 } from "./local/local-store.js";
+import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable } from "./local/local-db.js";
 import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
 import type {
   ChatSummary,
@@ -814,7 +815,10 @@ async function withFlowTimeout<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
+const LOCAL_DB_USER_MESSAGE = "this browser's local sudo data is locked or needs a refresh. close other sudo tabs and refresh.";
+
 function describeAuthFailure(error: unknown): string {
+  if (containsLocalDbError(error)) return LOCAL_DB_USER_MESSAGE;
   if (error instanceof AuthFlowTimeout) {
     return "this is taking too long. check your connection and try again.";
   }
@@ -826,6 +830,20 @@ function describeAuthFailure(error: unknown): string {
   }
   if (error instanceof Error) return error.message;
   return "operation failed";
+}
+
+function containsLocalDbError(error: unknown): boolean {
+  let cursor: unknown = error;
+  for (let depth = 0; depth < 6 && cursor !== null && cursor !== undefined; depth++) {
+    if (isLocalDatabaseError(cursor)) return true;
+    if (cursor instanceof AuthStepError) { cursor = cursor.cause; continue; }
+    if (cursor instanceof Error && (cursor as Error & { cause?: unknown }).cause !== undefined) {
+      cursor = (cursor as Error & { cause?: unknown }).cause;
+      continue;
+    }
+    break;
+  }
+  return false;
 }
 
 async function runSignup(
@@ -875,6 +893,12 @@ async function runSignup(
 }
 
 async function doSignup(handle: string, password: string): Promise<void> {
+  // Verify the local IndexedDB is open and writable BEFORE we ever ask the
+  // server to register an identity. If the DB is poisoned (locked by
+  // another tab, mid-migration, quota etc.) we surface a clear local-DB
+  // error instead of leaving a partially-provisioned account on the server.
+  await withStep("local-db-preflight", () => probeLocalDbWritable(), 22000);
+
   const nodeDocument = await withStep(
     "node-document",
     () => currentNodeDocument !== null
@@ -939,6 +963,7 @@ async function resolveDeviceIdNonBlocking(): Promise<string> {
 function setSignupState(nextState: SignupState): void {
   signupState = nextState;
   renderSignupState(signupStateRoot, signupState);
+  decorateAuthStateWithDbRecovery(signupStateRoot, nextState);
 }
 
 async function runSignin(rawHandle: string, password: string): Promise<void> {
@@ -963,6 +988,11 @@ async function runSignin(rawHandle: string, password: string): Promise<void> {
 }
 
 async function doSignin(handle: string, password: string): Promise<void> {
+  // Same pre-flight as signup: surface a clear local-database error
+  // before we look up an unlocked crypto account, so a poisoned IndexedDB
+  // never gets reported as "wrong passphrase".
+  await withStep("local-db-preflight", () => probeLocalDbWritable(), 6000);
+
   let localUnlockError: unknown = null;
   try {
     const account = await withStep(
@@ -1009,6 +1039,9 @@ async function doSignin(handle: string, password: string): Promise<void> {
 }
 
 function explainSigninFailure(localError: unknown, devError: unknown): string {
+  if (containsLocalDbError(localError) || containsLocalDbError(devError)) {
+    return LOCAL_DB_USER_MESSAGE;
+  }
   const localMessage = localError instanceof Error ? localError.message : "";
   const devMessage = devError instanceof Error ? devError.message : "";
   const localMissing = /stored account not found/i.test(localMessage);
@@ -1117,6 +1150,60 @@ async function submitRestoreAccount(): Promise<void> {
 function setSigninState(nextState: SigninState): void {
   signinState = nextState;
   renderSigninState(signinStateRoot, signinState);
+  decorateAuthStateWithDbRecovery(signinStateRoot, nextState);
+}
+
+// When an auth state shows the local-database error, append a small
+// recovery panel offering "reset this device". Other error variants do
+// not get the action so we never tempt users into wiping their browser
+// for an ordinary wrong-passphrase mistake.
+function decorateAuthStateWithDbRecovery(root: HTMLElement, state: { status: string; message?: string }): void {
+  if (state.status !== "error") return;
+  if (typeof state.message !== "string") return;
+  if (!state.message.includes(LOCAL_DB_USER_MESSAGE)) return;
+
+  const panel = document.createElement("div");
+  panel.className = "auth-recovery";
+
+  const help = document.createElement("div");
+  help.className = "auth-recovery__hint";
+  help.textContent = "close other sudo tabs, hard-refresh, then try again. if it's still broken, you can reset this browser's local sudo data.";
+  panel.append(help);
+
+  const actions = document.createElement("div");
+  actions.className = "auth-recovery__actions";
+  const reload = document.createElement("button");
+  reload.type = "button";
+  reload.className = "text-button";
+  reload.textContent = "reload page";
+  reload.addEventListener("click", () => window.location.reload());
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "text-button text-button--danger";
+  reset.textContent = "reset this device";
+  reset.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
+  actions.append(reload, reset);
+  panel.append(actions);
+
+  root.append(panel);
+}
+
+async function resetThisDeviceWithConfirm(): Promise<void> {
+  const confirmed = window.confirm(
+    "Reset this browser's local sudo data? This removes accounts and messages stored only in this browser. " +
+    "Your server identity and feed posts are not deleted. You can sign back in or restore from a backup afterwards."
+  );
+  if (!confirmed) return;
+  try {
+    await deleteLocalDb();
+    flashFeedback("local sudo data cleared. reloading...");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "reset failed";
+    flashFeedback(message);
+    return;
+  }
+  // Force a clean reload regardless of in-flight fetches.
+  window.setTimeout(() => window.location.reload(), 200);
 }
 
 async function restoreStoredSession(): Promise<void> {
