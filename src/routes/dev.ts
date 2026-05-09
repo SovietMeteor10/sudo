@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { listSyncCounts } from "../devices/syncStore.js";
 import { searchIdentityHandles } from "../discovery/discovery.service.js";
 import { AccountAccessError, accountAccessProvider, createDevSession, getIdentityForDevSession } from "../localState/accountAccess.js";
 import { DevSignupError, createDevIdentity } from "../identity/devSignup.js";
@@ -176,6 +177,16 @@ devRouter.get("/dev/session", (request, response) => {
 devRouter.get("/dev/search-handles", (request, response) => {
   const query = typeof request.query["q"] === "string" ? request.query["q"] : "";
   response.json({ results: searchIdentityHandles(query) });
+});
+
+// Operator/dev diagnostic: counts of stored encrypted sync events
+// grouped by (owner, slice, kind). Exposes ONLY plaintext metadata
+// (counts, latest server_seq, latest server_received_at) — no
+// event_ids and no encrypted_payload. Lives under /dev so it ships
+// disabled in production deployments that don't expose the dev
+// router.
+devRouter.get("/dev/sync/counts", (_request, response) => {
+  response.json({ counts: listSyncCounts() });
 });
 
 function isStrongPassword(password: string): boolean {

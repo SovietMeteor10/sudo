@@ -92,6 +92,47 @@ Even with encrypted messages, metadata still exists:
 
 Expect to revisit metadata minimization later.
 
+## Trusted-device sync log
+
+The server stores a `device_sync_log` table that relays encrypted
+SignedSyncEvent envelopes between paired devices. The encryption key
+is derived on the client from the per-account `account_sync` key,
+which lives only inside the encrypted local bundle and never leaves
+the browser. The server therefore stores the events but cannot read
+the per-slice payload.
+
+What the server CAN see (plaintext fields on the envelope, used for
+routing, dedupe, and replay protection):
+
+- `event_id` — UUID
+- `owner_canonical_id` — which account this belongs to
+- `origin_device_id` — which paired device produced it
+- `slice` — `"contact"`, `"subscription"`, or `"message"`
+- `kind` — e.g. `"contact.upsert"`, `"subscription.delete"`,
+  `"message.upsert"`
+- `sequence` — per-(owner, origin_device) monotonic counter
+- `created_at`, `server_received_at`
+- `signature` — the origin device's device-key signature, used to
+  verify the envelope before it's accepted
+
+What the server **cannot** see (sealed inside `encrypted_payload`):
+
+- contact handles, canonical_ids, fingerprints, and tier
+- subscription author canonical_ids and visibility flags
+- message bodies, conversation_ids, and peer canonical_ids
+- relay-message linkage details
+
+`smoke:contact-sync`, `smoke:subscription-sync`, and
+`smoke:message-sync` each include an audit assertion that pulls the
+entire stored log via the public listing route and verifies that no
+slice plaintext (handle, canonical_id, message body, peer id,
+conversation id) appears anywhere readable on the server.
+
+A revoked device's `POST /:owner/sync`, `GET /:owner/sync`, and
+`POST /:owner/sync/ack` all return 403; revocation is enforced at the
+relay edge and is independent of any local state the revoked device
+still holds.
+
 ## Safe logging
 
 Acceptable logs:

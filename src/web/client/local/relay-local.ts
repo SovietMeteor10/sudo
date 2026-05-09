@@ -11,6 +11,7 @@ import {
   savePendingOutbound
 } from "./local-store.js";
 import type { LocalMessage, PendingOutbound } from "./local-types.js";
+import { notifyMessageUpsert } from "../sync/messageSync.js";
 
 const SUDO_PROTOCOL_VERSION = "0.1.0";
 
@@ -110,6 +111,10 @@ export async function queueAndSubmitLocalMessage(options: {
   };
 
   await saveLocalMessage(ownerCanonicalId, message);
+  // Stamp owner_canonical_id explicitly for the sync coordinator —
+  // the local row already has it; this hands the same shape to the
+  // sync layer without a re-read.
+  void notifyMessageUpsert(ownerCanonicalId, { ...message, owner_canonical_id: ownerCanonicalId });
   await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),
     type: "message.sent.local",
@@ -159,11 +164,14 @@ export async function queueAndSubmitLocalMessage(options: {
     const updatedAt = new Date().toISOString();
 
     if (response.ok && result.ok === true) {
-      await saveLocalMessage(ownerCanonicalId, {
+      const storedRow: LocalMessage = {
         ...message,
+        owner_canonical_id: ownerCanonicalId,
         updated_at: updatedAt,
         status: "stored_by_relay"
-      });
+      };
+      await saveLocalMessage(ownerCanonicalId, storedRow);
+      void notifyMessageUpsert(ownerCanonicalId, storedRow);
       await savePendingOutbound(ownerCanonicalId, {
         ...outbound,
         updated_at: updatedAt,
@@ -230,6 +238,7 @@ export async function retrieveRelayInboxAfterLocalSave(
 
     try {
       await saveLocalMessage(ownerCanonicalId, message);
+      void notifyMessageUpsert(ownerCanonicalId, message);
       saved.push(message);
     } catch (error) {
       // Don't ACK if local save failed. The relay will keep the envelope until
@@ -357,7 +366,14 @@ async function decodeEnvelopeBody(
 
 async function markFailed(ownerCanonicalId: string, message: LocalMessage, outbound: PendingOutbound, error: string): Promise<void> {
   const updatedAt = new Date().toISOString();
-  await saveLocalMessage(ownerCanonicalId, { ...message, updated_at: updatedAt, status: "failed" });
+  const failedRow: LocalMessage = {
+    ...message,
+    owner_canonical_id: ownerCanonicalId,
+    updated_at: updatedAt,
+    status: "failed"
+  };
+  await saveLocalMessage(ownerCanonicalId, failedRow);
+  void notifyMessageUpsert(ownerCanonicalId, failedRow);
   await savePendingOutbound(ownerCanonicalId, { ...outbound, updated_at: updatedAt, status: "failed", last_error: error });
   await appendLocalEvent(ownerCanonicalId, {
     event_id: crypto.randomUUID(),

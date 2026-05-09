@@ -275,12 +275,19 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // other relay) can route events without learning the slice's body —
 // the actual subject material is sealed inside encrypted_payload under
 // the account-shared sync key.
-export type SyncEventSlice = "contact" | "subscription";
+//
+// Add new slices here as they come online. Today we ship contact,
+// subscription, and message; drafts/settings/read-receipts are not
+// synced yet. There is no "message.delete" because the message store
+// has no local-tombstone concept; message removal will land alongside
+// that work in a future slice.
+export type SyncEventSlice = "contact" | "subscription" | "message";
 export type SyncEventKind =
   | "contact.upsert"
   | "contact.delete"
   | "subscription.upsert"
-  | "subscription.delete";
+  | "subscription.delete"
+  | "message.upsert";
 
 export type SignableSyncEvent = {
   type: "sudo_sync_event";

@@ -23,6 +23,7 @@
     "smoke:device-pairing": "node scripts/device-pairing-smoke.cjs",
     "smoke:contact-sync": "node scripts/contact-sync-smoke.cjs",
     "smoke:subscription-sync": "node scripts/subscription-sync-smoke.cjs",
+    "smoke:message-sync": "node scripts/message-sync-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

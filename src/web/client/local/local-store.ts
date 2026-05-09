@@ -45,6 +45,35 @@ export async function saveLocalMessage(ownerCanonicalId: string, message: Omit<L
   broadcastLocalStateChange("messages", ownerCanonicalId);
 }
 
+// Idempotent message-sync projection. Receiver-side path used by the
+// trusted-device sync poller to apply a peer's saved message into the
+// local store. Returns false (without writing) when an existing local
+// row is at least as fresh as the incoming one — keeping replays
+// stable and preventing newer state from being clobbered by an older
+// queued event. The owner_canonical_id stamp is enforced so a sync
+// event from another account can never overwrite a row.
+export async function projectIncomingMessage(
+  ownerCanonicalId: string,
+  message: Omit<LocalMessage, "owner_canonical_id">
+): Promise<{ written: boolean }> {
+  const existing = await getRecord<LocalMessage>("messages", message.message_id);
+  if (existing !== null && existing.owner_canonical_id !== ownerCanonicalId) {
+    // Should never happen in practice (message_ids are UUIDv4) but if
+    // it ever did, refuse to cross account boundaries.
+    return { written: false };
+  }
+  if (existing !== null && Date.parse(existing.updated_at) >= Date.parse(message.updated_at)) {
+    return { written: false };
+  }
+  await putRecord("messages", { ...message, owner_canonical_id: ownerCanonicalId });
+  broadcastLocalStateChange("messages", ownerCanonicalId);
+  return { written: true };
+}
+
+export async function getLocalMessage(messageId: string): Promise<LocalMessage | null> {
+  return getRecord<LocalMessage>("messages", messageId);
+}
+
 export async function listLocalMessagesByConversation(
   ownerCanonicalId: string,
   conversationId: string

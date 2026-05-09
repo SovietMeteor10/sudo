@@ -25,9 +25,11 @@ The current UX is intentionally spare: a three-pane shell for identity, stream, 
 - account recovery code shown once
 - recovery question/answer scaffolding
 - signed identity documents
-- trusted devices and pairing foundation
+- trusted devices, pairing, and signed-membership-based revocation
+- encrypted trusted-device sync for **contacts**, **follows/subscriptions**, and **message history** (server stores ciphertext + signed envelopes only — payloads sealed under a per-account key the server never sees)
 - handle lookup and fuzzy search
 - local connections list for conversation targets
+- live personal-feed refresh: leader-elected polling with cross-tab broadcast and tab/focus wake-ups, no WebSockets
 - encrypted inbox blob endpoints
 - one-page three-pane client UI
 - mobile tabs for identity, stream, and chats

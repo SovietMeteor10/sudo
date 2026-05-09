@@ -78,10 +78,133 @@ reconstruct it. Pairing and revocation accept an optional `signed_membership`
 on the API today; legacy clients that don't yet send one still work, and the
 cache row remains the read path for the current UI.
 
-Trusted devices are modeled separately so future encrypted event-diff sync can
-move between devices without turning the relay into the source of truth. That
-future sync layer should stream encrypted changes for messages, contacts,
-subscriptions, feed state, and device events rather than copying whole stores.
+Trusted devices are modeled separately so encrypted event-diff sync can
+move between devices without turning the relay into the source of truth.
+That sync layer is described next.
+
+## Encrypted Trusted-Device Sync
+
+Each paired device runs a small append-only sync log together with the
+identity bundle. The log is a stream of **SignedSyncEvent** envelopes
+that the server stores as ciphertext-only relay rows; the server can
+route and de-duplicate them but cannot read the bodies.
+
+### SignedSyncEvent shape
+
+```
+{
+  type: "sudo_sync_event",
+  protocol_version,
+  event_id,                  // UUID, server-side primary key for dedupe
+  owner_canonical_id,        // account this event belongs to
+  origin_device_id,          // which paired device produced it
+  slice,                     // "contact" | "subscription" | "message"
+  kind,                      // e.g. "contact.upsert", "message.upsert"
+  sequence,                  // strictly increasing per (owner, origin_device)
+  created_at,
+  encrypted_payload,         // base64url JSON: { iv, ciphertext } AES-GCM
+  signature                  // by the origin device's device key
+}
+```
+
+The `slice` and `kind` are plaintext on the envelope so the relay can
+filter and dispatch without decrypting. Slice-specific bodies (contact
+canonical ids and tiers, subscription author ids, message bodies and
+peer canonical ids, etc.) live inside `encrypted_payload`, sealed under
+a per-account symmetric key derived from the bundled `account_sync`
+keypair via HKDF-SHA-256 with domain `sudo-sync-aes-gcm-v1`. The same
+bundle is provisioned to every paired device, so the derived key is
+identical on each — the server never sees it.
+
+### Slice projectors
+
+The browser sync runtime is one shared coordinator
+(`src/web/client/sync/coordinator.ts`) plus thin slice modules
+(`contactSync.ts`, `subscriptionSync.ts`, `messageSync.ts`). Each slice
+module calls `registerSliceProjector(slice, fn)` at module load and
+exposes user-driven helpers that wrap a local IndexedDB write together
+with a best-effort outbound `buildAndPostSyncEvent`. The coordinator
+runs the polling loop, owns the per-device origin sequence and the
+recipient cursor, and dispatches inbound events by `event.slice` to the
+registered projector.
+
+Adding a new slice is intentionally small: pick a `slice` tag, define
+its `kind` values, register a projector, and add user-driven `apply*`
+helpers that follow the local-write-then-broadcast pattern.
+
+### Cursors and ACK
+
+There are two cursors per (owner, recipient device):
+
+- **Local cursor** in IndexedDB (`sync.recipient_cursor:{owner}:{device}`).
+  Advanced only after a projector returns true — i.e. the receiver has
+  durably saved the inbound event. The local cursor is the durable
+  record of "what we've applied".
+- **Server cursor** in the `device_sync_cursors` table. Updated by
+  `POST /:owner/sync/ack` *after* the local cursor advances. ACK is
+  best-effort; if the network call fails the next cycle catches up.
+  The server cursor is convenience for catch-up across reinstall, not
+  a source of truth.
+
+A projector that returns `false` halts the cycle so the cursor doesn't
+skip past an event the device couldn't apply. The next cycle retries
+from the same position. A projector that returns `true` for an unknown
+slice (e.g. a forward-compatible newer client) lets the cursor advance
+without applying the body — keeping a newer client's writes from
+wedging an older receiver.
+
+### Origin sequence and replay protection
+
+Every outbound event reserves a strictly increasing per-device
+`sequence` (`sync.origin_sequence:{owner}:{device}` in IndexedDB).
+The server enforces this at insert time:
+
+- Duplicate `event_id` → 200 with `created: false` (idempotent retry).
+- New `event_id` with `sequence ≤ max_sequence_for(owner, origin_device)`
+  → 409 `sequence_regression`.
+- Otherwise → 201 with a fresh `server_seq`.
+
+`server_seq` is a global monotonic id (`device_sync_log.server_seq
+INTEGER PRIMARY KEY AUTOINCREMENT`). Recipients use it as their
+cursor; the server uses it for `since=<n>` pagination on poll.
+
+### Membership gates and revocation
+
+Origin and recipient checks both consult the canonical
+`SignedDeviceMembership` (the `device_memberships` table). The server
+will:
+
+- `POST /:owner/sync` with `origin_device_id` whose latest membership
+  is **not** `active` → 403 `origin_not_authorized`.
+- `GET /:owner/sync?device_id=<recipient>` for a non-active recipient
+  → 403 `recipient_not_authorized`.
+- `POST /:owner/sync/ack` for a non-active recipient → 403.
+
+Revocation is therefore enforced at the relay edge: once an owner
+revokes a device (signed revocation membership at a higher sequence),
+that device's `GET`, `POST`, and `ACK` paths all start returning 403
+and it stops receiving new events.
+
+### Server-stored vs server-readable
+
+| Server stores             | Server can read                         |
+| ------------------------- | --------------------------------------- |
+| event_id (UUID)           | yes (used for dedupe)                   |
+| owner_canonical_id        | yes                                     |
+| origin_device_id          | yes (used for membership lookup)        |
+| slice ("contact" / ...)   | yes (used for routing)                  |
+| kind                      | yes                                     |
+| sequence                  | yes (used for replay protection)        |
+| created_at                | yes                                     |
+| server_received_at        | yes                                     |
+| signature                 | yes (verified, then stored)             |
+| encrypted_payload         | **no** — AES-GCM, key never on server   |
+
+The smokes (`smoke:contact-sync`, `smoke:subscription-sync`,
+`smoke:message-sync`) include an audit assertion that pulls the entire
+stored sync log and verifies that no plaintext slice body (handle,
+canonical id, message body, peer canonical id, conversation id)
+appears anywhere readable through the public surface.
 
 ## Relay Model
 
