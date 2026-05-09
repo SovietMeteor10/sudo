@@ -61,7 +61,10 @@
         <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
       </div>
       <div class="column__bottom" data-mobile-region="notifications">
-        <div class="column__title" id="notifications-title">notifications</div>
+        <div class="column__title column__title--row" id="notifications-title">
+          <span>notifications</span>
+          <button class="notifications__clear-all" id="notifications-clear-all" type="button" hidden>clear all</button>
+        </div>
         <div class="notifications" id="notifications-panel" aria-live="polite">
           <div class="notifications__empty" id="notifications-empty">no notifications</div>
           <div class="notifications__list" id="notifications-list" hidden></div>

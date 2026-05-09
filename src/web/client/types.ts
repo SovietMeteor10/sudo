@@ -18,6 +18,7 @@ import type {
   SignedSyncEvent as ProtocolSignedSyncEvent,
   SyncEventKind as ProtocolSyncEventKind,
   SocialNotification as ProtocolSocialNotification,
+  SocialNotificationKind as ProtocolSocialNotificationKind,
   StreamPost as ProtocolStreamPost
 } from "../../protocol/types.js";
 
@@ -37,6 +38,7 @@ export type SignableSyncEvent = ProtocolSignableSyncEvent;
 export type SignedSyncEvent = ProtocolSignedSyncEvent;
 export type SyncEventKind = ProtocolSyncEventKind;
 export type SocialNotification = ProtocolSocialNotification;
+export type SocialNotificationKind = ProtocolSocialNotificationKind;
 
 export type LocalIdentity = {
   handle: string;

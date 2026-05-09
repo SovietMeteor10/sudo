@@ -82,36 +82,48 @@ export function renderIdentityPane(root: HTMLElement, identity: LocalIdentity): 
   );
 }
 
-// Notifications panel — lower-left of the shell. Renders incoming
-// follow notifications with state-aware action buttons. The
-// connect/friend relationship is intentionally NOT a notification
-// category, so this surface stays narrow: "@handle follows you"
-// with follow back / dismiss / block.
-// `dismissed` is the local-only set of notification ids the user has
-// already dismissed, kept in IndexedDB by the coordinator.
-export type NotificationActionKind = "follow-back" | "dismiss" | "block";
+// Notifications panel — lower-left of the shell. Renders five
+// notification categories with state-aware action sets:
+//   - follow                      → follow back / dismiss / block
+//   - reaction_recommend (like)   → view / dismiss
+//   - reaction_downrank (dislike) → view / dismiss
+//   - reply                       → view / dismiss
+//   - repost                      → view / dismiss
+// Connect/friend is intentionally NOT a notification category — it
+// lives in the lookup-card relationship UI. `clearAllButton` is
+// shown only while the panel has visible rows; clicking it asks
+// the coordinator to dismiss every visible row in one write.
+// Dismissal is local-only (IndexedDB) on the recipient device.
+export type NotificationActionKind = "follow-back" | "dismiss" | "block" | "view";
+
+export type NotificationsViewModel = {
+  notifications: SocialNotification[];
+  ownConnections: Map<string, ConnectionRelationship["tier"]>;
+  ownSubscriptions: Set<string>;
+};
 
 export function renderNotificationsPanel(
   list: HTMLElement,
   empty: HTMLElement,
-  notifications: SocialNotification[],
-  ownConnections: Map<string, ConnectionRelationship["tier"]>,
-  ownSubscriptions: Set<string>,
+  clearAllButton: HTMLButtonElement | null,
+  view: NotificationsViewModel,
   onAction: (notification: SocialNotification, action: NotificationActionKind) => void
 ): void {
-  if (notifications.length === 0) {
+  if (view.notifications.length === 0) {
     list.replaceChildren();
     list.hidden = true;
     empty.hidden = false;
+    if (clearAllButton !== null) clearAllButton.hidden = true;
     return;
   }
 
   empty.hidden = true;
   list.hidden = false;
+  if (clearAllButton !== null) clearAllButton.hidden = false;
 
   const fragment = document.createDocumentFragment();
-  for (const notification of notifications) {
-    fragment.append(renderNotificationRow(notification, ownConnections, ownSubscriptions, onAction));
+  for (const notification of view.notifications) {
+    fragment.append(renderNotificationRow(notification, view.ownConnections, view.ownSubscriptions, onAction));
   }
   list.replaceChildren(fragment);
 }
@@ -129,32 +141,51 @@ function renderNotificationRow(
   const actorHandle = notification.actor_handle ?? notification.actor_canonical_id;
   const lead = document.createElement("div");
   lead.className = "notification-row__line";
-  lead.textContent = `${actorHandle} follows you`;
+  lead.textContent = `${actorHandle} ${describeAction(notification.kind)}`;
   row.append(lead);
-
-  const actorTier = ownConnections.get(notification.actor_canonical_id);
-  const reciprocallyFollowing = ownSubscriptions.has(notification.actor_canonical_id);
-  const reciprocallyConnected = actorTier === "known" || actorTier === "close";
-
-  const sub = document.createElement("div");
-  sub.className = "notification-row__sub notification-row__line";
-  sub.textContent = describeReciprocal(reciprocallyFollowing, reciprocallyConnected);
-  row.append(sub);
 
   const actions = document.createElement("div");
   actions.className = "notification-row__actions";
 
-  // "follow back" only when the viewer doesn't already follow or
-  // hold a connection to the actor — otherwise the action is a no-op.
-  if (!reciprocallyFollowing && !reciprocallyConnected) {
-    actions.append(notificationButton("follow back", () => onAction(notification, "follow-back")));
+  if (notification.kind === "follow") {
+    const actorTier = ownConnections.get(notification.actor_canonical_id);
+    const reciprocallyFollowing = ownSubscriptions.has(notification.actor_canonical_id);
+    const reciprocallyConnected = actorTier === "known" || actorTier === "close";
+
+    const sub = document.createElement("div");
+    sub.className = "notification-row__sub notification-row__line";
+    sub.textContent = describeReciprocal(reciprocallyFollowing, reciprocallyConnected);
+    row.append(sub);
+
+    if (!reciprocallyFollowing && !reciprocallyConnected) {
+      actions.append(notificationButton("follow back", () => onAction(notification, "follow-back")));
+    }
+    actions.append(notificationButton("dismiss", () => onAction(notification, "dismiss")));
+    if (actorTier !== "blocked") {
+      actions.append(notificationButton("block", () => onAction(notification, "block")));
+    }
+  } else {
+    // Post-interaction: view opens the relevant post/thread; dismiss
+    // hides the row locally. We only emit "view" when there's a
+    // post to navigate to.
+    if (typeof notification.post_id === "string" && notification.post_id.length > 0) {
+      actions.append(notificationButton("view", () => onAction(notification, "view")));
+    }
+    actions.append(notificationButton("dismiss", () => onAction(notification, "dismiss")));
   }
-  actions.append(notificationButton("dismiss", () => onAction(notification, "dismiss")));
-  if (actorTier !== "blocked") {
-    actions.append(notificationButton("block", () => onAction(notification, "block")));
-  }
+
   row.append(actions);
   return row;
+}
+
+function describeAction(kind: SocialNotification["kind"]): string {
+  switch (kind) {
+    case "follow": return "follows you";
+    case "reaction_recommend": return "liked your post";
+    case "reaction_downrank": return "disliked your post";
+    case "reply": return "replied to your post";
+    case "repost": return "reposted your post";
+  }
 }
 
 function notificationButton(label: string, onClick: () => void): HTMLButtonElement {

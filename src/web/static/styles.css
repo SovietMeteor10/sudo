@@ -296,6 +296,29 @@ body[data-auth-state="auth-restore"] .landing {
   flex-shrink: 0;
 }
 
+.column__title--row {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notifications__clear-all {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.notifications__clear-all:hover,
+.notifications__clear-all:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
 .column__search {
   padding: 10px 14px 8px;
   border-bottom: 1px solid var(--line-soft);

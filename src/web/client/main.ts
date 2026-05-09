@@ -121,6 +121,10 @@ import { describePortalTransport, selectRelayForRecipient } from "./transport/re
 // rest of the app keeps working.
 const notificationsList = document.getElementById("notifications-list");
 const notificationsEmpty = document.getElementById("notifications-empty");
+const notificationsClearAllRaw = document.getElementById("notifications-clear-all");
+const notificationsClearAll = notificationsClearAllRaw instanceof HTMLButtonElement
+  ? notificationsClearAllRaw
+  : null;
 const streamRoot = getRequiredElement("stream-list");
 const feedComposer = getRequiredForm("feed-composer");
 const feedBodyInput = getRequiredTextArea("feed-body");
@@ -3196,7 +3200,24 @@ function setSignedIn(handle: string): void {
     startInboxPolling(currentIdentityDocument.canonical_id);
     startFeedPolling(currentIdentityDocument.canonical_id);
     if (notificationsList !== null && notificationsEmpty !== null) {
-      startNotificationsPolling(currentIdentityDocument.canonical_id, notificationsList, notificationsEmpty);
+      startNotificationsPolling(currentIdentityDocument.canonical_id, {
+        list: notificationsList,
+        empty: notificationsEmpty,
+        clearAllButton: notificationsClearAll,
+        onView: (postId) => {
+          // The user might be on Discover or in another mobile pane;
+          // bring them to the personal feed first so the thread view
+          // takes over the visible center column.
+          if (activeFeedTab !== "personal") setFeedTab("personal");
+          if (typeof document !== "undefined" && document.body.dataset["mobilePane"] !== undefined) {
+            document.body.dataset["mobilePane"] = "feed";
+            for (const button of mobileTabButtons) {
+              button.classList.toggle("is-active", button.dataset["mobileTab"] === "feed");
+            }
+          }
+          void enterThreadView(postId);
+        }
+      });
     }
   }
 }

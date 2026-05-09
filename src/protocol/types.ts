@@ -232,20 +232,44 @@ export type TrustedDevice = {
   };
 };
 
-// Social-action notification surfaced to a recipient. Today the only
-// surfaced category is "someone followed me" — the connect/friend
-// relationship is intentionally NOT a notification category, so a
-// connection request never enters this stream. Derived server-side
-// from feed_subscriptions; dismissal is local-only on the recipient
-// device. `id` is stable for a given actor so dismissal in IndexedDB
-// survives re-fetches.
+// Social-action notification surfaced to a recipient. Categories:
+//   - follow             : someone subscribed to my feed
+//   - reaction_recommend : someone liked one of my posts
+//   - reaction_downrank  : someone disliked one of my posts
+//   - reply              : someone replied to one of my posts
+//   - repost             : someone reposted one of my posts
+// Connect/friend is deliberately NOT a notification category — that
+// lives in the lookup-card relationship UI, not the notification
+// stream. All categories are derived server-side from existing
+// canonical state (feed_subscriptions, discovery_reactions,
+// feed_posts); we never add a separate notifications table.
+// Dismissal is local-only on the recipient device.
+//
+// `id` is stable per (kind, actor[, post]) so dismissal in IndexedDB
+// survives re-fetches and a re-vote of the same kind doesn't
+// duplicate the row.
+export type SocialNotificationKind =
+  | "follow"
+  | "reaction_recommend"
+  | "reaction_downrank"
+  | "reply"
+  | "repost";
+
 export type SocialNotification = {
   type: "sudo_social_notification";
   id: string;
-  kind: "follow";
+  kind: SocialNotificationKind;
   recipient_canonical_id: CanonicalId;
   actor_canonical_id: CanonicalId;
   actor_handle?: Handle;
+  // The post the user navigates to on "view". For reactions this is
+  // the recipient's original post; for replies/reposts it's the
+  // actor's new post (which the thread view will show in context).
+  post_id?: string;
+  // For replies/reposts, the recipient's original post the action
+  // targeted. Useful for grouping/back-navigation; the view button
+  // uses post_id by default.
+  parent_post_id?: string;
   created_at: string;
   updated_at: string;
 };

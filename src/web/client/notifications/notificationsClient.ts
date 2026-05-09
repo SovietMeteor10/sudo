@@ -1,15 +1,20 @@
 // Lower-left notifications coordinator. Polls the read-only
-// /api/notifications/incoming endpoint (follow notifications only —
-// connect/friend is intentionally NOT a notification category),
+// /api/notifications/incoming endpoint (follow notifications +
+// reaction / reply / repost notifications derived server-side from
+// existing canonical state — no separate notifications table),
 // filters out anything the recipient device has already dismissed
 // (kept in IndexedDB so reload preserves state), and re-renders
 // into the notifications panel. Dismissal lives client-side because
-// the underlying follow rows are owner-canonical on the server —
-// we don't add a server-side dismissed table for the MVP.
+// the underlying social-action rows are owner-canonical on the
+// server — we don't add a server-side dismissed table for the MVP.
 //
-// No new architecture: piggy-backs on the existing settings store
-// and the same lookup-pane relationship helpers that drive the
-// "follow back" / "block" actions.
+// Actions:
+//   - follow-back / block : drives the existing relationship helpers
+//   - view                : opens the relevant post via onView()
+//   - dismiss             : local-only mark
+//   - clear-all           : marks every visible row dismissed in one
+//                           write so the list returns to "no
+//                           notifications"; persists across reload.
 
 import {
   listConnections,
@@ -35,6 +40,12 @@ type Coordinator = {
   ownerCanonicalId: string;
   list: HTMLElement;
   empty: HTMLElement;
+  clearAllButton: HTMLButtonElement | null;
+  onView: ((postId: string) => void) | null;
+  // Last-rendered visible ids — used by clear-all so we can dismiss
+  // exactly what the user can see, even if the next poll arrives
+  // before the click.
+  lastVisibleIds: string[];
 };
 
 let active: Coordinator | null = null;
@@ -54,13 +65,29 @@ async function writeDismissed(ownerCanonicalId: string, dismissed: Set<string>):
   await putSetting(dismissedKey(ownerCanonicalId), [...dismissed]);
 }
 
+export type StartNotificationsOptions = {
+  list: HTMLElement;
+  empty: HTMLElement;
+  clearAllButton?: HTMLButtonElement | null;
+  onView?: (postId: string) => void;
+};
+
 export function startNotificationsPolling(
   ownerCanonicalId: string,
-  list: HTMLElement,
-  empty: HTMLElement
+  options: StartNotificationsOptions
 ): void {
   stopNotificationsPolling();
-  active = { ownerCanonicalId, list, empty };
+  active = {
+    ownerCanonicalId,
+    list: options.list,
+    empty: options.empty,
+    clearAllButton: options.clearAllButton ?? null,
+    onView: options.onView ?? null,
+    lastVisibleIds: []
+  };
+  if (active.clearAllButton !== null) {
+    active.clearAllButton.addEventListener("click", handleClearAll);
+  }
   void pollOnce();
   pollHandle = setInterval(() => { void pollOnce(); }, POLL_INTERVAL_MS);
 }
@@ -71,6 +98,10 @@ export function stopNotificationsPolling(): void {
     pollHandle = null;
   }
   if (active !== null) {
+    if (active.clearAllButton !== null) {
+      active.clearAllButton.removeEventListener("click", handleClearAll);
+      active.clearAllButton.hidden = true;
+    }
     active.list.replaceChildren();
     active.list.hidden = true;
     active.empty.hidden = false;
@@ -78,11 +109,24 @@ export function stopNotificationsPolling(): void {
   active = null;
 }
 
+function handleClearAll(): void {
+  if (active === null) return;
+  const ownerCanonicalId = active.ownerCanonicalId;
+  const ids = [...active.lastVisibleIds];
+  if (ids.length === 0) return;
+  void (async () => {
+    const dismissed = await readDismissed(ownerCanonicalId);
+    for (const id of ids) dismissed.add(id);
+    await writeDismissed(ownerCanonicalId, dismissed);
+    void pollOnce();
+  })();
+}
+
 async function pollOnce(): Promise<void> {
   if (active === null || polling) return;
   polling = true;
   try {
-    const { ownerCanonicalId, list, empty } = active;
+    const { ownerCanonicalId, list, empty, clearAllButton } = active;
     const [incoming, dismissed, ownConnections, ownSubscriptions] = await Promise.all([
       listIncomingSocialNotifications(ownerCanonicalId).catch(() => [] as SocialNotification[]),
       readDismissed(ownerCanonicalId),
@@ -93,6 +137,7 @@ async function pollOnce(): Promise<void> {
     if (active === null || active.ownerCanonicalId !== ownerCanonicalId) return;
 
     const visible = incoming.filter((notification) => !dismissed.has(notification.id));
+    active.lastVisibleIds = visible.map((notification) => notification.id);
 
     const connectionMap = new Map<string, ConnectionRelationship["tier"]>();
     for (const relationship of ownConnections) {
@@ -103,9 +148,19 @@ async function pollOnce(): Promise<void> {
       if (!sub.muted) subscriptionSet.add(sub.author_canonical_id);
     }
 
-    renderNotificationsPanel(list, empty, visible, connectionMap, subscriptionSet, (notification, action) => {
-      void handleNotificationAction(ownerCanonicalId, notification, action);
-    });
+    renderNotificationsPanel(
+      list,
+      empty,
+      clearAllButton,
+      {
+        notifications: visible,
+        ownConnections: connectionMap,
+        ownSubscriptions: subscriptionSet
+      },
+      (notification, action) => {
+        void handleNotificationAction(ownerCanonicalId, notification, action);
+      }
+    );
   } finally {
     polling = false;
   }
@@ -117,6 +172,17 @@ async function handleNotificationAction(
   action: NotificationActionKind
 ): Promise<void> {
   if (active === null || active.ownerCanonicalId !== ownerCanonicalId) return;
+
+  // "view" is the one action that doesn't dismiss the row — the
+  // user might want to see the same post twice. Hand off to
+  // main.ts's thread navigator and stop here.
+  if (action === "view") {
+    if (typeof notification.post_id === "string" && notification.post_id.length > 0
+        && active.onView !== null) {
+      try { active.onView(notification.post_id); } catch { /* ignore */ }
+    }
+    return;
+  }
 
   try {
     if (action === "follow-back") {
@@ -148,8 +214,9 @@ async function handleNotificationAction(
     console.warn("[notifications] action failed", error instanceof Error ? error.message : error);
   }
 
-  // Always dismiss locally after any of the above actions; the
-  // notification has been "handled" from the user's POV.
+  // Always dismiss locally after follow-back / block / dismiss; the
+  // notification has been "handled" from the user's POV. View skips
+  // dismissal (handled above).
   const dismissed = await readDismissed(ownerCanonicalId);
   dismissed.add(notification.id);
   await writeDismissed(ownerCanonicalId, dismissed);
