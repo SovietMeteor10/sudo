@@ -31,6 +31,7 @@ export type CreateFeedPostInput = {
 };
 
 export class FeedError extends Error {
+  retry_after_seconds?: number;
   constructor(
     readonly code:
       | "author_not_found"
@@ -43,7 +44,9 @@ export class FeedError extends Error {
       | "post_not_found"
       | "missing_repost_of"
       | "missing_reply_to"
-      | "invalid_kind",
+      | "invalid_kind"
+      | "duplicate_repost"
+      | "rate_limited",
     message: string,
     readonly status = 400
   ) {

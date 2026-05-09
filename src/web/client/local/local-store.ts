@@ -206,6 +206,23 @@ export async function getContact(ownerCanonicalId: string, canonicalId: string):
   });
 }
 
+export async function deleteLocalContact(ownerCanonicalId: string, canonicalId: string): Promise<void> {
+  const db = await openLocalDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction("contacts", "readwrite");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error ?? new Error("failed to delete contact"));
+    tx.objectStore("contacts").delete([ownerCanonicalId, canonicalId]);
+  });
+  await appendLocalEvent(ownerCanonicalId, {
+    event_id: crypto.randomUUID(),
+    type: "contact.removed",
+    created_at: new Date().toISOString(),
+    subject_id: canonicalId
+  });
+  broadcastLocalStateChange("contacts", ownerCanonicalId);
+}
+
 export async function blockContact(ownerCanonicalId: string, canonicalId: string): Promise<void> {
   const existing = await getContact(ownerCanonicalId, canonicalId);
   const now = new Date().toISOString();

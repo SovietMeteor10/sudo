@@ -132,10 +132,11 @@ async function postBody(page, postId) {
     const canonicalB = await lookupCanonical(handleB);
     ok(`accounts created: @${handleA}, @${handleB}`);
 
-    // ===== A creates two public posts =====
+    // ===== A creates two public posts (5s gap to clear rate limit) =====
     const bodyOne = `alpha post one ${Date.now()}`;
     const bodyTwo = `alpha post two ${Date.now()}`;
     const postOne = await postPublic(pageA, bodyOne);
+    await new Promise((r) => setTimeout(r, 5500));
     const postTwo = await postPublic(pageA, bodyTwo);
     ok("A created two public posts");
 
@@ -260,6 +261,8 @@ async function postBody(page, postId) {
     else ok("repost: original post shows ↻ 1");
 
     // ===== Reply =====
+    // Wait 5s for rate limit to clear after B's repost feed post.
+    await new Promise((r) => setTimeout(r, 5500));
     await clickAction(pageB, postOne, ".stream-post__action[data-reaction='reply']");
     await new Promise((r) => setTimeout(r, 200));
     const composerOpen = await pageB.evaluate((id) => {
@@ -290,6 +293,27 @@ async function postBody(page, postId) {
     }
     if (!replyShown) fail("reply-render", `reply '${replyText}' did not appear under post`);
     else ok("reply: reply text visible under parent post");
+
+    // Threaded UI: each reply has a ↳ marker, a timestamp using the
+    // post timestamp formatter (HH:MM DD MMM, optional YY), and its
+    // own ↩ button.
+    const threadShape = await pageB.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      const item = article?.querySelector(".stream-post__reply-item");
+      if (!item) return { ok: false, reason: "no reply item" };
+      return {
+        ok: true,
+        arrow: item.querySelector(".stream-post__reply-arrow")?.textContent ?? "",
+        time: item.querySelector(".stream-post__reply-time")?.textContent ?? "",
+        hasReplyButton: item.querySelector(".stream-post__reply-action[data-reply-action='open-nested']") !== null
+      };
+    }, postOne);
+    if (!threadShape.ok) fail("thread-shape", threadShape.reason);
+    else if (threadShape.arrow !== "↳") fail("thread-shape", `expected ↳ marker, got '${threadShape.arrow}'`);
+    else if (!/^\d{2}:\d{2} \d{2} [A-Z][a-z]{2}( \d{2})?$/.test(threadShape.time.trim())) {
+      fail("thread-shape", `reply time format wrong: '${threadShape.time}'`);
+    } else if (!threadShape.hasReplyButton) fail("thread-shape", "reply has no ↩ button");
+    else ok(`reply: threaded shape (↳ + '${threadShape.time}' + per-reply ↩)`);
 
     // Composer should collapse after a successful submit. The replies
     // list stays visible so the user sees the reply they just posted.
@@ -422,6 +446,207 @@ async function postBody(page, postId) {
     if (bIdsAfterDirRemove.includes(postOne) || bIdsAfterDirRemove.includes(postTwo)) {
       fail("dir-remove-depopulate", `directory-remove did not drop A's posts; visible=${bIdsAfterDirRemove.join(", ")}`);
     } else ok("directory: 'remove' on search row depopulates A's posts from B's feed");
+
+    // After directory-remove, the same row should re-show "+" (we
+    // deleted the local contact so isAdded is false again). Re-adding
+    // should backfill A's posts a second time without a page reload.
+    let plusReady = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      plusReady = await pageB.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
+        return buttons.some((b) => b.textContent === "+");
+      });
+      if (plusReady) break;
+    }
+    if (!plusReady) fail("dir-readd-button", "search row did not return to '+' after remove");
+    else ok("re-add: search row shows '+' again after remove");
+    await pageB.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
+      const plusBtn = buttons.find((b) => b.textContent === "+");
+      plusBtn?.click();
+    });
+    let bIdsReAdd = [];
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      bIdsReAdd = await feedPostIds(pageB);
+      if (bIdsReAdd.includes(postOne) && bIdsReAdd.includes(postTwo)) break;
+    }
+    if (!bIdsReAdd.includes(postOne) || !bIdsReAdd.includes(postTwo)) {
+      fail("re-add-backfill", `re-add did not backfill A's posts; visible=${bIdsReAdd.join(", ")}`);
+    } else ok("re-add: B's personal feed shows A's posts again after re-add");
+
+    // ===== Duplicate repost =====
+    // B has already reposted postTwo earlier in the run. The repost
+    // button should be in the already-reposted state, and the action
+    // handler should refuse to create a second repost.
+    const repostState = await pageB.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      const btn = article?.querySelector(".stream-post__action--repost");
+      return { already: btn?.dataset.alreadyReposted ?? "", title: btn?.title ?? "" };
+    }, postTwo);
+    if (repostState.already !== "true") fail("dup-repost-state", `repost button not flagged already (got '${repostState.already}')`);
+    else ok("dup-repost: repost button flagged as already-reposted");
+
+    // Direct API call: a second POST with kind=repost for the same
+    // (author, original) must be rejected with duplicate_repost.
+    const secondRepost = await fetch(`${BASE}/api/feeds/posts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        author_canonical_id: canonicalB,
+        author_handle: `@${handleB}`,
+        visibility: "public",
+        kind: "repost",
+        repost_of: postTwo,
+        public_metadata: { tags: [] },
+        sequence: 1
+      })
+    });
+    const secondBody = await secondRepost.json();
+    if (secondRepost.status !== 409 || secondBody.error !== "duplicate_repost") {
+      fail("dup-repost-api", `expected 409 duplicate_repost, got ${secondRepost.status} ${JSON.stringify(secondBody)}`);
+    } else ok("dup-repost: API rejects second repost with duplicate_repost (409)");
+
+    // ===== Rate limit =====
+    // A fresh account so we don't have to wait for prior B/A waits to
+    // clear. C posts once (succeeds), then immediately posts again
+    // (rate_limited), then waits 5s and posts (succeeds).
+    const handleC = "charlie" + Date.now().toString().slice(-6);
+    const { page: pageC } = await newSignedInContext(browser, handleC);
+    const ratePostOne = `charlie post one ${Date.now()}`;
+    const ratePostTwo = `charlie post two ${Date.now()}`;
+    await postPublic(pageC, ratePostOne);
+    // Submit a second post immediately and read the inline error.
+    await pageC.evaluate((b) => {
+      const input = document.getElementById("feed-body");
+      input.value = b;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.getElementById("feed-composer")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    }, ratePostTwo);
+    let rateState = "";
+    let preservedText = "";
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      const probe = await pageC.evaluate(() => ({
+        state: document.getElementById("feed-composer-state")?.textContent ?? "",
+        text: document.getElementById("feed-body")?.value ?? ""
+      }));
+      if (probe.state.length > 0) {
+        rateState = probe.state;
+        preservedText = probe.text;
+        break;
+      }
+    }
+    if (!/wait/i.test(rateState)) fail("rate-limit-copy", `expected 'wait' message, got '${rateState}'`);
+    else ok(`rate-limit: composer state shows '${rateState}'`);
+    if (preservedText !== ratePostTwo) fail("rate-limit-preserve", `composer text not preserved: '${preservedText}'`);
+    else ok("rate-limit: composer text preserved on rate_limited");
+    // Wait 5s and re-submit; should succeed.
+    await new Promise((r) => setTimeout(r, 5500));
+    await pageC.evaluate(() => {
+      document.getElementById("feed-composer")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    let secondLanded = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      secondLanded = await pageC.evaluate((needle) => {
+        const articles = document.querySelectorAll("#stream-list .stream-post");
+        return Array.from(articles).some((a) => (a.querySelector(".stream-post__body")?.textContent || "").includes(needle));
+      }, ratePostTwo);
+      if (secondLanded) break;
+    }
+    if (!secondLanded) fail("rate-limit-recover", "second post did not land after 5s wait");
+    else ok("rate-limit: post succeeds after 5s wait");
+
+    // ===== Nested reply (level 2 threading) =====
+    // A replies to B's earlier reply on postOne, demonstrating that
+    // reply-to-reply is supported and the descendants come back in one
+    // listFeedPostReplies call. Re-open B's reply panel first so the
+    // reply <li> is in the DOM (it gets removed when refreshFeedPosts
+    // re-renders the feed).
+    await pageB.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      article?.querySelector(".stream-post__action[data-reaction='reply']")?.click();
+    }, postOne);
+    let bReplyId = null;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      bReplyId = await pageB.evaluate((rootId) => {
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+        const item = article?.querySelector(".stream-post__reply-item");
+        return item?.dataset.postId ?? null;
+      }, postOne);
+      if (typeof bReplyId === "string" && bReplyId.length > 0) break;
+    }
+    if (typeof bReplyId !== "string" || bReplyId.length === 0) {
+      fail("nested-bootstrap", "could not find B's reply id");
+    } else {
+      // A waits for rate-limit to clear since A's last post was bodyTwo
+      // (~30s ago by now after various waits — usually fine, but be safe).
+      await new Promise((r) => setTimeout(r, 5500));
+      // Open postOne in A's tab and reply to B's reply.
+      await pageA.evaluate((rootId) => {
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+        article?.querySelector(".stream-post__action[data-reaction='reply']")?.click();
+      }, postOne);
+      // Wait for the replies list to populate so A's nested ↩ button exists.
+      let aSeesBReply = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        aSeesBReply = await pageA.evaluate((rootId, replyId) => {
+          const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+          return article?.querySelector(`.stream-post__reply-item[data-post-id="${replyId}"]`) !== null;
+        }, postOne, bReplyId);
+        if (aSeesBReply) break;
+      }
+      if (!aSeesBReply) {
+        fail("nested-fetch", "A could not see B's reply in the threaded view");
+      } else {
+        // Click ↩ on B's reply, type a nested reply, submit.
+        const nestedText = `agreed ${Date.now()}`;
+        await pageA.evaluate((rootId, replyId) => {
+          const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+          const item = article?.querySelector(`.stream-post__reply-item[data-post-id="${replyId}"]`);
+          item?.querySelector(".stream-post__reply-action[data-reply-action='open-nested']")?.click();
+        }, postOne, bReplyId);
+        // Wait for the nested form to be inserted by the click handler.
+        let nestedFormReady = false;
+        for (let i = 0; i < 30; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          nestedFormReady = await pageA.evaluate((rootId, replyId) => {
+            const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+            const item = article?.querySelector(`.stream-post__reply-item[data-post-id="${replyId}"]`);
+            return item?.querySelector(".stream-post__reply-form--nested .stream-post__reply-input") !== null;
+          }, postOne, bReplyId);
+          if (nestedFormReady) break;
+        }
+        if (!nestedFormReady) {
+          fail("nested-form", "nested composer did not open after clicking ↩ on B's reply");
+        }
+        await pageA.evaluate((rootId, replyId, body) => {
+          const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+          const item = article?.querySelector(`.stream-post__reply-item[data-post-id="${replyId}"]`);
+          const input = item?.querySelector(".stream-post__reply-form--nested .stream-post__reply-input");
+          input.value = body;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          item?.querySelector(".stream-post__reply-form--nested .stream-post__reply-submit")?.click();
+        }, postOne, bReplyId, nestedText);
+        let nestedLanded = false;
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 200));
+          nestedLanded = await pageA.evaluate((rootId, replyId, expected) => {
+            const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+            const parent = article?.querySelector(`.stream-post__reply-item[data-post-id="${replyId}"]`);
+            const sublist = parent?.querySelector(".stream-post__reply-list--nested");
+            return sublist?.textContent.includes(expected) ?? false;
+          }, postOne, bReplyId, nestedText);
+          if (nestedLanded) break;
+        }
+        if (!nestedLanded) fail("nested-render", `nested reply '${nestedText}' did not appear under B's reply`);
+        else ok("nested-reply: A's reply to B's reply renders under the parent reply");
+      }
+    }
   } finally {
     await browser.close();
   }

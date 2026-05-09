@@ -439,6 +439,17 @@ export function getViewerReaction(
   return row?.reaction ?? null;
 }
 
+export function viewerHasReposted(postId: string, viewerCanonicalId: string): boolean {
+  const row = db.prepare(`
+    SELECT 1 FROM feed_posts
+    WHERE author_canonical_id = ?
+      AND repost_of = ?
+      AND deleted_at IS NULL
+    LIMIT 1
+  `).get(viewerCanonicalId, postId);
+  return row !== undefined;
+}
+
 function buildCounts(
   totalRows: Array<{ reaction: DiscoveryReaction["reaction"]; count: number }>,
   recentRows: Array<{ reaction: DiscoveryReaction["reaction"]; count: number }>

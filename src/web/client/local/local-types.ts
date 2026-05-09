@@ -9,6 +9,7 @@ export type LocalEventType =
   | "contact.added"
   | "contact.blocked"
   | "contact.unblocked"
+  | "contact.removed"
   | "subscription.added"
   | "subscription.removed"
   | "draft.saved"
@@ -54,7 +55,7 @@ export type LocalContact = {
   owner_canonical_id: string;
   canonical_id: string;
   handle: string;
-  tier: "known" | "unknown" | "blocked";
+  tier: "known" | "close" | "unknown" | "blocked";
   added_at: string;
   updated_at: string;
   fingerprint?: string;

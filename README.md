@@ -192,15 +192,40 @@ Visibility modes are explicit:
 
 Feed routes:
 
-- `POST /api/feeds/posts`
+- `POST /api/feeds/posts` (rate-limited: 1 per author per 5s; rejects
+  duplicate `kind: "repost"` with `error: "duplicate_repost"`)
 - `GET /api/feeds/posts/:postId`
+- `GET /api/feeds/posts/:postId/replies` (returns the descendant subtree;
+  client builds the threaded reply view from the flat list)
 - `GET /api/feeds/users/:canonicalId`
 - `GET /api/feeds/users/:canonicalId/rss`
 - `DELETE /api/feeds/posts/:postId`
 
+Posts can carry `kind: "post" | "repost" | "reply"` plus `repost_of` /
+`reply_to` references. Reposts of reposts are normalized to the canonical
+original so duplicate-repost guards aren't bypassed by reposting someone
+else's repost.
+
 The RSS endpoint emits public/unlisted plaintext posts only. Restricted
 visibility and encrypted-body modes are still development scaffolding until
 client-side encryption, recipient authorization, and group key management exist.
+
+### Personal-feed backfill: trust model today vs. long-term
+
+When the personal feed is rebuilt — on sign-in, post, or any
+connection/subscription change — the client calls
+`GET /api/feeds/users/:authorCanonicalId?viewer=:viewerCanonicalId` for each
+allowed author and merges the results.
+
+For the single-node MVP, those signed feed objects live in this node's SQLite
+database, so "fetch from the node" and "fetch from the author's feed host" are
+the same thing. **This is a deployment convenience, not the trust model.** The
+source of truth is the signed post — clients should verify signatures locally
+rather than trust the host. The long-term direction is portable signed feed
+objects fetched from the author's advertised feed endpoint (home node or onion
+endpoint), not central server trust. See
+[ARCHITECTURE.md](./ARCHITECTURE.md#backfill-trust-model) for the federation
+direction.
 
 ## Discovery
 

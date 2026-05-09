@@ -52,6 +52,7 @@ export type UnifiedFeedItem = {
   // sense in a chronological feed.
   reply_to?: EmbeddedFeedItem;
   kind?: "post" | "repost" | "reply";
+  viewer_has_reposted?: boolean;
 };
 
 export type ReactionHandler = (postId: string, kind: ReactionKind) => void;
@@ -220,7 +221,7 @@ export function renderDiscoveryPanel(root: HTMLElement, state: DiscoveryState): 
 
 export function feedPostToUnifiedItem(
   post: FeedPost,
-  enrichment: { counts?: ReactionCounts; vote?: VoteKind } = {}
+  enrichment: { counts?: ReactionCounts; vote?: VoteKind; viewerHasReposted?: boolean } = {}
 ): UnifiedFeedItem {
   const text = post.body
     ?? post.public_metadata?.summary
@@ -238,7 +239,8 @@ export function feedPostToUnifiedItem(
     repost_of: post.repost_of === undefined ? undefined
       : embeddedFromMaybe(post.repost_of_post),
     reply_to: post.reply_to === undefined ? undefined
-      : embeddedFromMaybe(post.reply_to_post)
+      : embeddedFromMaybe(post.reply_to_post),
+    viewer_has_reposted: enrichment.viewerHasReposted ?? false
   };
 }
 
@@ -276,7 +278,8 @@ function discoveryToUnifiedItem(post: DiscoveryPostIndex): UnifiedFeedItem {
     vote: post.viewer_reaction === "recommend" ? "like"
       : post.viewer_reaction === "downrank" ? "dislike"
       : null,
-    kind: "post"
+    kind: "post",
+    viewer_has_reposted: post.viewer_has_reposted ?? false
   };
 }
 
@@ -329,7 +332,7 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   actions.className = "stream-post__actions";
   actions.append(renderVoteButton(item.counts, item.vote));
   actions.append(renderActionButton("reply", "↩", item.counts.reply));
-  actions.append(renderActionButton("repost", "↻", item.counts.repost));
+  actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
   article.append(actions);
 
   // Container for the inline reply composer / expanded replies list,
@@ -399,12 +402,24 @@ function renderVoteButton(counts: ReactionCounts, vote: VoteKind): HTMLButtonEle
   return button;
 }
 
-function renderActionButton(kind: "reply" | "repost", glyphChar: string, count: number): HTMLButtonElement {
+function renderActionButton(
+  kind: "reply" | "repost",
+  glyphChar: string,
+  count: number,
+  alreadyReposted = false
+): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = `stream-post__action stream-post__action--${kind}`;
+  const alreadyClass = kind === "repost" && alreadyReposted ? " is-already" : "";
+  button.className = `stream-post__action stream-post__action--${kind}${alreadyClass}`;
   button.dataset["reaction"] = kind;
-  button.setAttribute("aria-label", kind);
+  if (kind === "repost" && alreadyReposted) {
+    button.dataset["alreadyReposted"] = "true";
+    button.setAttribute("aria-label", "you have already reposted this");
+    button.title = "you have already reposted this";
+  } else {
+    button.setAttribute("aria-label", kind);
+  }
 
   const glyph = document.createElement("span");
   glyph.className = "stream-post__action-glyph";
@@ -627,7 +642,7 @@ function formatTimestamp(value: string): string {
   return date.toISOString().replace("T", " ").slice(0, 16);
 }
 
-function formatPostTimestamp(value: string): string {
+export function formatPostTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return value;
   const now = new Date();

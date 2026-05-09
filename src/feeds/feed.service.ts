@@ -8,15 +8,19 @@ import { getIdentityByCanonicalId } from "../identity/identity.store.js";
 import type { FeedPost, FeedPostKind, FeedVisibility, SignableFeedPost } from "./feed.types.js";
 import { FeedError, type CreateFeedPostInput } from "./feed.types.js";
 import {
+  findExistingRepost,
   getFeedPost,
+  getLastPostCreatedAt,
+  listDescendantReplies,
   listFeedPosts as listStoredFeedPosts,
   listFeedPostsByAuthor,
   listLocalFeedPosts,
-  listRepliesForPost,
   listRssFeedPostsByAuthor,
   saveFeedPost,
   softDeleteFeedPost
 } from "./feed.store.js";
+
+const POST_RATE_LIMIT_WINDOW_MS = 5000;
 
 const allowedVisibilities = new Set<FeedVisibility>([
   "connections_only",
@@ -52,9 +56,49 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
   const allowedRecipients = normalizeRecipients(input.allowed_recipients);
   const kind = normalizeKind(input.kind);
   const replyTo = normalizePostRef(input.reply_to);
-  const repostOf = normalizePostRef(input.repost_of);
+  let repostOf = normalizePostRef(input.repost_of);
+
+  // Repost-of-repost normalization: collapse repost chains so the
+  // repost_of always points at the canonical original. Prevents the
+  // duplicate-repost guard from being bypassed by reposting someone
+  // else's repost of the same source.
+  if (kind === "repost" && repostOf !== undefined) {
+    const target = getFeedPost(repostOf);
+    if (target !== null && target.kind === "repost" && typeof target.repost_of === "string") {
+      repostOf = target.repost_of;
+    }
+  }
 
   validatePostContent(input.visibility, body, encryptedBody, metadata, allowedRecipients, kind, replyTo, repostOf);
+
+  // One repost per (author, original) — the second click should not
+  // create another feed post. Clients can use this signal to flip
+  // their UI into "already reposted" state.
+  if (kind === "repost" && repostOf !== undefined) {
+    if (findExistingRepost(input.author_canonical_id, repostOf) !== null) {
+      throw new FeedError("duplicate_repost", "you have already reposted this post", 409);
+    }
+  }
+
+  // Rate limit: 1 post per 5 seconds per author. Applies to plain
+  // posts, replies, and reposts since they all become feed posts.
+  const lastAt = getLastPostCreatedAt(input.author_canonical_id);
+  if (lastAt !== null) {
+    const lastMs = Date.parse(lastAt);
+    if (Number.isFinite(lastMs)) {
+      const elapsed = Date.now() - lastMs;
+      if (elapsed < POST_RATE_LIMIT_WINDOW_MS) {
+        const retryAfter = Math.max(1, Math.ceil((POST_RATE_LIMIT_WINDOW_MS - elapsed) / 1000));
+        const error = new FeedError(
+          "rate_limited",
+          `wait ${retryAfter} seconds before posting again`,
+          429
+        );
+        error.retry_after_seconds = retryAfter;
+        throw error;
+      }
+    }
+  }
 
   const createdAt = normalizeTimestamp(input.created_at) ?? new Date().toISOString();
   const updatedAt = normalizeTimestamp(input.updated_at) ?? createdAt;
@@ -91,10 +135,13 @@ export function listRepliesForApi(
   postId: string,
   viewerCanonicalId: string | undefined
 ): { posts: FeedPost[] } {
-  const replies = listRepliesForPost(postId)
+  // Returns the full subtree (depth-bounded) so the client can render
+  // threaded replies in one round-trip. Each post carries its own
+  // reply_to so the client can build the tree.
+  const replies = listDescendantReplies(postId)
     .map((post) => filterPostForViewer(post, viewerCanonicalId))
     .filter((post): post is FeedPost => post !== null)
-    .map((post) => decorateRefs(post));
+    .map((post) => decorateRefs(post, viewerCanonicalId));
   return { posts: replies };
 }
 

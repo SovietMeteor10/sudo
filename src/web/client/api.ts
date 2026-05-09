@@ -429,6 +429,17 @@ export type CreateFeedPostRequest = {
   repost_of?: string;
 };
 
+export class FeedPostError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly retry_after_seconds?: number,
+    readonly status?: number
+  ) {
+    super(message);
+  }
+}
+
 export async function createFeedPost(input: CreateFeedPostRequest): Promise<FeedPost> {
   const response = await fetchWithTimeout("/api/feeds/posts", {
     method: "POST",
@@ -439,9 +450,19 @@ export async function createFeedPost(input: CreateFeedPostRequest): Promise<Feed
     body: JSON.stringify(input),
   });
 
-  const body = await response.json() as { post?: FeedPost; message?: string };
+  const body = await response.json() as {
+    post?: FeedPost;
+    message?: string;
+    error?: string;
+    retry_after_seconds?: number;
+  };
   if (response.ok && body.post !== undefined) return body.post;
-  throw new Error(body.message ?? `feed post failed: ${response.status}`);
+  throw new FeedPostError(
+    body.error ?? "feed_post_failed",
+    body.message ?? `feed post failed: ${response.status}`,
+    body.retry_after_seconds,
+    response.status
+  );
 }
 
 export async function listUserFeedPosts(canonicalId: string, viewerCanonicalId?: string): Promise<FeedPost[]> {

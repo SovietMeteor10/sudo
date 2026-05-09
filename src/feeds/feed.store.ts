@@ -107,6 +107,62 @@ export function countRepostsForPost(postId: string): number {
   return row?.count ?? 0;
 }
 
+export function findExistingRepost(authorCanonicalId: string, originalPostId: string): FeedPost | null {
+  const row = db
+    .prepare(`
+      SELECT * FROM feed_posts
+      WHERE author_canonical_id = ?
+        AND repost_of = ?
+        AND deleted_at IS NULL
+      LIMIT 1
+    `)
+    .get(authorCanonicalId, originalPostId) as FeedPostRow | undefined;
+  return row === undefined ? null : rowToPost(row);
+}
+
+export function getLastPostCreatedAt(authorCanonicalId: string): string | null {
+  const row = db
+    .prepare(`
+      SELECT created_at FROM feed_posts
+      WHERE author_canonical_id = ?
+        AND deleted_at IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    `)
+    .get(authorCanonicalId) as { created_at: string } | undefined;
+  return row?.created_at ?? null;
+}
+
+export function listDescendantReplies(rootPostId: string, maxDepth = 4, limitPerLevel = 200): FeedPost[] {
+  const result: FeedPost[] = [];
+  const seen = new Set<string>([rootPostId]);
+  let frontier: string[] = [rootPostId];
+  let depth = 0;
+  while (frontier.length > 0 && depth < maxDepth) {
+    const placeholders = frontier.map(() => "?").join(",");
+    const rows = db
+      .prepare(`
+        SELECT * FROM feed_posts
+        WHERE reply_to IN (${placeholders})
+          AND deleted_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT ${limitPerLevel}
+      `)
+      .all(...frontier) as FeedPostRow[];
+    if (rows.length === 0) break;
+    const next: string[] = [];
+    for (const row of rows) {
+      if (seen.has(row.post_id)) continue;
+      seen.add(row.post_id);
+      result.push(rowToPost(row));
+      next.push(row.post_id);
+    }
+    frontier = next;
+    depth += 1;
+  }
+  return result;
+}
+
 export function getFeedPost(postId: string): FeedPost | null {
   const row = db
     .prepare("SELECT * FROM feed_posts WHERE post_id = ?")

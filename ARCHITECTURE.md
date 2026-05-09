@@ -167,6 +167,53 @@ bodies, deleted posts, and private-message semantics. Future discovery should
 only index public or explicitly discoverable feed metadata; it should not be
 treated as identity trust.
 
+### Backfill Trust Model
+
+When the personal feed needs an author's posts (because the viewer just
+followed/befriended them), the client today calls
+`GET /api/feeds/users/:authorCanonicalId?viewer=:viewerCanonicalId` on the node
+the client is connected to. For the single-node MVP, that node is also the host
+of those signed feed objects. This is acceptable for now but is **not** the
+final trust model.
+
+The long-term model:
+
+- **Source of truth** is the signed feed post itself. Each post carries the
+  author's signature; clients should verify signatures locally rather than
+  trust the host that served them.
+- **Author home node**: the author's identity document advertises a feed
+  endpoint (their home node, an onion endpoint, or both). Clients should
+  resolve "give me A's posts" by hitting A's advertised feed host, not by
+  querying whichever node the viewer happens to be on.
+- **Federation**: nodes are not authoritative caches. A node that doesn't host
+  A's posts should be free to refuse, redirect, or proxy without affecting
+  the viewer's ability to verify what comes back.
+- **Replies and reposts** carry their own signatures and `reply_to` /
+  `repost_of` references; once federated, a reply hosted on node X to a post
+  hosted on node Y still verifies because the signature is over the full
+  canonical post object.
+
+For now, treat "this node's SQLite is hosting these signed posts" as a
+single-node convenience. Federation will replace that assumption with remote
+feed-host resolution; signature verification on the client is the long-term
+trust anchor.
+
+### Server-side guardrails
+
+Two non-cryptographic guardrails on `POST /api/feeds/posts`:
+
+- **Rate limit**: at most one feed post per author per 5 seconds (covers
+  ordinary posts, replies, and reposts). Server returns
+  `{ ok: false, error: "rate_limited", retry_after_seconds: N }` with HTTP 429.
+- **One repost per (author, original)**: the server rejects a second
+  `kind: "repost"` whose `repost_of` already has a non-deleted repost from
+  the same author with `{ error: "duplicate_repost" }` and HTTP 409. Reposts
+  of reposts are normalized server-side to point at the canonical original.
+
+Both guardrails are convenience for the current single-node deployment and
+will need to be re-expressed at the federation boundary (rate-limit at the
+relay/host edge; duplicate-repost as a property of the signed object set).
+
 ## Discovery Indexes
 
 Discovery nodes are optional indexes, not the source of truth. The source of

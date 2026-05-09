@@ -22,7 +22,8 @@ import {
   refreshDiscoveryPostIndex,
   removeDiscoveryPostIndex,
   getDiscoveryPostIndex,
-  upsertDiscoveryPostIndexFromFeedPost
+  upsertDiscoveryPostIndexFromFeedPost,
+  viewerHasReposted
 } from "./discovery.store.js";
 import { DiscoveryError } from "./discovery.types.js";
 import { verifyCanonicalSignature } from "../crypto/signatures.js";
@@ -172,7 +173,11 @@ function decorateIndex(index: DiscoveryPostIndex, viewerCanonicalId?: string): D
   }
 
   if (viewerCanonicalId !== undefined && viewerCanonicalId.length > 0) {
-    decorated = { ...decorated, viewer_reaction: getViewerReaction(index.post_id, viewerCanonicalId) };
+    decorated = {
+      ...decorated,
+      viewer_reaction: getViewerReaction(index.post_id, viewerCanonicalId),
+      viewer_has_reposted: viewerHasReposted(index.post_id, viewerCanonicalId)
+    };
   }
 
   return decorated;

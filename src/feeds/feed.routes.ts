@@ -75,7 +75,11 @@ function sendFeedError(
   error: unknown
 ): void {
   if (error instanceof FeedError) {
-    response.status(error.status).json({ ok: false, error: error.code, message: error.message });
+    const payload: Record<string, unknown> = { ok: false, error: error.code, message: error.message };
+    if (error.retry_after_seconds !== undefined) {
+      payload["retry_after_seconds"] = error.retry_after_seconds;
+    }
+    response.status(error.status).json(payload);
     return;
   }
 

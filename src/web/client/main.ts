@@ -8,6 +8,7 @@ import {
   deleteConnectionRelationship,
   deleteFeedSubscription,
   createFeedPost,
+  FeedPostError,
   getDiscoveryPost,
   listDiscoveryPosts,
   getConnectionRelationship,
@@ -42,6 +43,7 @@ import {
 import { signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
   feedPostToUnifiedItem,
+  formatPostTimestamp,
   renderChatList,
   renderDiscoveryPanel,
   renderDevicePanel,
@@ -62,6 +64,7 @@ import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup 
 import { base64Url, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
+  deleteLocalContact,
   getLocalStorageStatus,
   initializeLocalState,
   listConversations,
@@ -289,7 +292,11 @@ lookupRoot.addEventListener("click", (event) => {
 const handleFeedClick = (event: Event): void => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
-  const article = target.closest<HTMLElement>("[data-post-id]");
+  // Walk to the root post article, not just any data-post-id (reply
+  // items inside the panel also carry data-post-id, so a plain
+  // [data-post-id] match would surface the reply-item instead of
+  // the article and break click delegation).
+  const article = target.closest<HTMLElement>(".stream-post");
   const postId = article?.dataset["postId"];
   if (typeof postId !== "string") return;
 
@@ -300,9 +307,24 @@ const handleFeedClick = (event: Event): void => {
     return;
   }
 
+  // Per-reply ↩ button: open a nested composer below that reply.
+  const nestedOpen = target.closest<HTMLButtonElement>(
+    ".stream-post__reply-action[data-reply-action='open-nested']"
+  );
+  if (nestedOpen !== null && article !== null) {
+    const replyTarget = nestedOpen.dataset["replyTarget"];
+    if (typeof replyTarget === "string") toggleNestedComposer(article, postId, replyTarget);
+    return;
+  }
+
   const submit = target.closest<HTMLButtonElement>(".stream-post__reply-submit");
   if (submit !== null && article !== null) {
-    void handleReplySubmit(postId, article);
+    // The submit may belong to the root composer (no target) or a
+    // nested per-reply composer (data-reply-target set). The root
+    // composer replies to the article post; nested ones reply to the
+    // descendant reply they're attached to.
+    const replyTarget = submit.dataset["replyTarget"] ?? postId;
+    void handleReplySubmit(postId, replyTarget, submit, article);
     return;
   }
 
@@ -314,6 +336,7 @@ const handleFeedClick = (event: Event): void => {
     return;
   }
   if (reaction === "repost") {
+    if (button.dataset["alreadyReposted"] === "true") return;
     void handleRepost(postId);
     return;
   }
@@ -1742,7 +1765,8 @@ async function refreshFeedPosts(): Promise<void> {
           },
           vote: index.viewer_reaction === "recommend" ? "like"
             : index.viewer_reaction === "downrank" ? "dislike"
-            : null
+            : null,
+          viewerHasReposted: index.viewer_has_reposted === true
         });
       });
     renderStream(streamRoot, items);
@@ -1877,8 +1901,14 @@ async function handleRepost(postId: string): Promise<void> {
     });
     flashFeedback("reposted");
   } catch (error) {
-    const message = error instanceof Error ? error.message : "repost failed";
-    flashFeedback(message);
+    if (error instanceof FeedPostError && error.code === "duplicate_repost") {
+      flashFeedback("you've already reposted this post");
+    } else if (error instanceof FeedPostError && error.code === "rate_limited") {
+      const seconds = error.retry_after_seconds ?? 5;
+      flashFeedback(`wait ${seconds}s before posting again`);
+    } else {
+      flashFeedback(error instanceof Error ? error.message : "repost failed");
+    }
   }
   await refreshDiscoveryPosts();
   await refreshFeedPosts();
@@ -1927,15 +1957,14 @@ function openReplyComposer(postId: string, panel: HTMLElement): void {
   textarea.focus();
 }
 
-async function renderRepliesUnder(postId: string, panel: HTMLElement): Promise<void> {
+async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promise<void> {
   if (currentIdentityDocument === null) return;
   let replies: FeedPost[] = [];
   try {
-    replies = await listFeedPostReplies(postId, currentIdentityDocument.canonical_id);
+    replies = await listFeedPostReplies(rootPostId, currentIdentityDocument.canonical_id);
   } catch {
     return;
   }
-  // Find/insert the list inside the panel under the form.
   let list = panel.querySelector<HTMLElement>(".stream-post__reply-list");
   if (list === null) {
     list = document.createElement("ul");
@@ -1950,31 +1979,157 @@ async function renderRepliesUnder(postId: string, panel: HTMLElement): Promise<v
     list.append(empty);
     return;
   }
+
+  // Build a tree from the flat descendants list. A reply whose
+  // reply_to is not in our set (because it's the root post) becomes a
+  // top-level child here.
+  const byParent = new Map<string, FeedPost[]>();
+  const ids = new Set(replies.map((reply) => reply.post_id));
   for (const reply of replies) {
-    const item = document.createElement("li");
-    item.className = "stream-post__reply-item";
-    const handle = document.createElement("span");
-    handle.className = "stream-post__reply-handle";
-    handle.textContent = reply.author_handle ?? reply.author_canonical_id;
-    const body = document.createElement("span");
-    body.className = "stream-post__reply-body";
-    body.textContent = reply.body ?? "";
-    item.append(handle, document.createTextNode(" "), body);
-    list.append(item);
+    const parent = typeof reply.reply_to === "string" && ids.has(reply.reply_to)
+      ? reply.reply_to
+      : rootPostId;
+    const bucket = byParent.get(parent) ?? [];
+    bucket.push(reply);
+    byParent.set(parent, bucket);
   }
+  for (const bucket of byParent.values()) {
+    bucket.sort((left, right) => left.created_at.localeCompare(right.created_at));
+  }
+
+  // Beyond depth 2 we flatten with "replying to @handle" so the UI
+  // doesn't drift into infinite indentation.
+  const MAX_NEST_DEPTH = 2;
+  const handleByPostId = new Map<string, string>();
+  for (const reply of replies) {
+    handleByPostId.set(reply.post_id, reply.author_handle ?? shortCanonicalForUi(reply.author_canonical_id));
+  }
+
+  const renderLevel = (parentId: string, depth: number, container: HTMLElement): void => {
+    const children = byParent.get(parentId) ?? [];
+    for (const reply of children) {
+      const item = document.createElement("li");
+      item.className = "stream-post__reply-item";
+      item.dataset["postId"] = reply.post_id;
+      item.dataset["depth"] = String(Math.min(depth, MAX_NEST_DEPTH));
+
+      const arrow = document.createElement("span");
+      arrow.className = "stream-post__reply-arrow";
+      arrow.setAttribute("aria-hidden", "true");
+      arrow.textContent = "↳";
+
+      const meta = document.createElement("div");
+      meta.className = "stream-post__reply-meta";
+      const handle = document.createElement("span");
+      handle.className = "stream-post__reply-handle";
+      handle.textContent = reply.author_handle ?? shortCanonicalForUi(reply.author_canonical_id);
+      const time = document.createElement("span");
+      time.className = "stream-post__reply-time";
+      time.textContent = formatPostTimestamp(reply.created_at);
+      meta.append(handle, time);
+
+      // For replies past max depth, show the immediate parent's handle
+      // so the relationship stays legible after we flatten.
+      if (depth > MAX_NEST_DEPTH && typeof reply.reply_to === "string") {
+        const parentHandle = handleByPostId.get(reply.reply_to);
+        if (parentHandle !== undefined) {
+          const ref = document.createElement("div");
+          ref.className = "stream-post__reply-ref";
+          ref.textContent = `replying to ${parentHandle}`;
+          item.append(ref);
+        }
+      }
+
+      const body = document.createElement("div");
+      body.className = "stream-post__reply-body";
+      body.textContent = reply.body ?? "";
+
+      const replyButton = document.createElement("button");
+      replyButton.type = "button";
+      replyButton.className = "stream-post__reply-action";
+      replyButton.dataset["replyAction"] = "open-nested";
+      replyButton.dataset["replyTarget"] = reply.post_id;
+      replyButton.textContent = "↩ reply";
+
+      item.append(arrow, meta, body, replyButton);
+      container.append(item);
+
+      // Render nested children one level deeper. If we're at max depth
+      // we still render them in a flat (non-indented) sub-list and
+      // they'll show "replying to @handle" instead of nesting further.
+      const childIds = byParent.get(reply.post_id);
+      if (childIds !== undefined && childIds.length > 0) {
+        const sublist = document.createElement("ul");
+        sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
+        item.append(sublist);
+        renderLevel(reply.post_id, depth + 1, sublist);
+      }
+    }
+  };
+
+  renderLevel(rootPostId, 1, list);
 }
 
-async function handleReplySubmit(postId: string, article: HTMLElement): Promise<void> {
+function toggleNestedComposer(article: HTMLElement, rootPostId: string, replyTargetPostId: string): void {
+  const replyItem = article.querySelector<HTMLElement>(
+    `.stream-post__reply-item[data-post-id="${cssEscape(replyTargetPostId)}"]`
+  );
+  if (replyItem === null) return;
+  // If a nested composer is already attached to this reply, close it.
+  const existing = replyItem.querySelector<HTMLElement>(":scope > .stream-post__reply-form--nested");
+  if (existing !== null) {
+    existing.remove();
+    return;
+  }
+  const form = document.createElement("div");
+  form.className = "stream-post__reply-form stream-post__reply-form--nested";
+  const textarea = document.createElement("textarea");
+  textarea.className = "stream-post__reply-input";
+  textarea.placeholder = "write a reply...";
+  textarea.rows = 2;
+  const submit = document.createElement("button");
+  submit.type = "button";
+  submit.className = "stream-post__reply-submit";
+  submit.dataset["replyTarget"] = replyTargetPostId;
+  submit.dataset["replyRoot"] = rootPostId;
+  submit.textContent = "reply";
+  form.append(textarea, submit);
+  replyItem.append(form);
+  textarea.focus();
+}
+
+function shortCanonicalForUi(canonical: string): string {
+  if (canonical.length <= 24) return canonical;
+  return `${canonical.slice(0, 18)}...${canonical.slice(-6)}`;
+}
+
+async function handleReplySubmit(
+  rootPostId: string,
+  replyTargetPostId: string,
+  submitButton: HTMLButtonElement,
+  article: HTMLElement
+): Promise<void> {
   if (currentIdentityDocument === null) {
     flashFeedback("sign in to reply");
     return;
   }
-  const panel = article.querySelector<HTMLElement>(`[data-replies-panel="${cssEscape(postId)}"]`);
-  const textarea = panel?.querySelector<HTMLTextAreaElement>(".stream-post__reply-input");
-  if (panel === null || panel === undefined || textarea === null || textarea === undefined) return;
+  const panel = article.querySelector<HTMLElement>(`[data-replies-panel="${cssEscape(rootPostId)}"]`);
+  if (panel === null) return;
+  // The composer that owns this submit can be the root composer
+  // (lives directly under .stream-post__replies) or a nested
+  // composer attached to a specific reply <li>. Either way the
+  // textarea is the closest sibling .stream-post__reply-input.
+  const form = submitButton.closest<HTMLElement>(".stream-post__reply-form");
+  const textarea = form?.querySelector<HTMLTextAreaElement>(".stream-post__reply-input");
+  if (form === null || form === undefined || textarea === null || textarea === undefined) return;
   const body = textarea.value.trim();
   if (body.length === 0) return;
   textarea.disabled = true;
+  submitButton.disabled = true;
+  // Surface inline error state under the form for rate-limit etc.,
+  // and clear it on each submit attempt.
+  let errorLine = form.querySelector<HTMLElement>(".stream-post__reply-error");
+  if (errorLine !== null) errorLine.remove();
   try {
     const newPostId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
@@ -1993,7 +2148,7 @@ async function handleReplySubmit(postId: string, article: HTMLElement): Promise<
       deleted_at: null,
       sequence: 1,
       kind: "reply" as const,
-      reply_to: postId
+      reply_to: replyTargetPostId
     };
     const signature = currentCryptoAccount === null
       ? undefined
@@ -2011,18 +2166,21 @@ async function handleReplySubmit(postId: string, article: HTMLElement): Promise<
       sequence: 1,
       signature,
       kind: "reply",
-      reply_to: postId
+      reply_to: replyTargetPostId
     });
     textarea.value = "";
-    // Collapse the composer: remove the reply-form, keep the replies
-    // list visible, and switch the panel into "list" mode. Clicking ↩
-    // again will re-open a fresh composer above the list.
-    const form = panel.querySelector<HTMLElement>(".stream-post__reply-form");
-    if (form !== null) form.remove();
-    panel.dataset["mode"] = "list";
-    await renderRepliesUnder(postId, panel);
+    // Collapse this composer (root or nested). The replies list
+    // stays visible — the new reply will be threaded into place by
+    // renderRepliesUnder below.
+    if (form.classList.contains("stream-post__reply-form--nested")) {
+      form.remove();
+    } else {
+      form.remove();
+      panel.dataset["mode"] = "list";
+    }
+    await renderRepliesUnder(rootPostId, panel);
     try {
-      const updated = await getDiscoveryPost(postId, currentIdentityDocument.canonical_id);
+      const updated = await getDiscoveryPost(rootPostId, currentIdentityDocument.canonical_id);
       const counter = article.querySelector<HTMLElement>(
         ".stream-post__action[data-reaction='reply'] .stream-post__action-count"
       );
@@ -2032,12 +2190,31 @@ async function handleReplySubmit(postId: string, article: HTMLElement): Promise<
       // fine; the reply still posted and the list shows it.
     }
   } catch (error) {
-    // Submit failed: leave composer open and surface the reason inline
-    // so the user can retry without losing their text.
+    // Preserve the user's typed text and re-enable the inputs so they
+    // can retry. Rate-limit and other typed errors render inline
+    // under the form.
     textarea.disabled = false;
-    flashFeedback(error instanceof Error ? error.message : "reply failed");
+    submitButton.disabled = false;
+    const message = describeFeedSubmitError(error);
+    errorLine = document.createElement("div");
+    errorLine.className = "stream-post__reply-error";
+    errorLine.textContent = message;
+    form.append(errorLine);
     return;
   }
+}
+
+function describeFeedSubmitError(error: unknown): string {
+  if (error instanceof FeedPostError) {
+    if (error.code === "rate_limited") {
+      const seconds = error.retry_after_seconds ?? 5;
+      return `wait ${seconds}s before posting again`;
+    }
+    if (error.code === "duplicate_repost") return "you've already reposted this post";
+    return error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return "post failed";
 }
 
 function cssEscape(value: string): string {
@@ -2057,21 +2234,25 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
   const handle = lookupState.identity.handle;
 
   try {
-    if (action === "set-known") {
+    if (action === "set-known" || action === "set-close") {
+      const tier = action === "set-known" ? "known" : "close";
       await upsertConnectionRelationship({
         owner_canonical_id: ownerCanonicalId,
         subject_canonical_id: subjectCanonicalId,
         subject_handle: handle,
-        tier: "known",
+        tier,
         subscribed: true
       });
-    } else if (action === "set-close") {
-      await upsertConnectionRelationship({
-        owner_canonical_id: ownerCanonicalId,
-        subject_canonical_id: subjectCanonicalId,
-        subject_handle: handle,
-        tier: "close",
-        subscribed: true
+      // Mirror the relationship in local contacts so the directory
+      // search row's add/remove state matches what the user actually
+      // chose in the lookup pane.
+      await upsertContact(ownerCanonicalId, {
+        canonical_id: subjectCanonicalId,
+        handle,
+        tier,
+        added_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        fingerprint: lookupState.identity.visual_fingerprint?.fingerprint
       });
     } else if (action === "set-block") {
       await upsertConnectionRelationship({
@@ -2081,8 +2262,24 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
         tier: "blocked",
         subscribed: false
       });
+      // Block hides the contact from the chat list (listConversations
+      // skips blocked) which lets the search row return to "+" when
+      // appropriate. The contact row is kept (with tier=blocked) so
+      // we can show "blocked" state if needed.
+      await upsertContact(ownerCanonicalId, {
+        canonical_id: subjectCanonicalId,
+        handle,
+        tier: "blocked",
+        added_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        fingerprint: lookupState.identity.visual_fingerprint?.fingerprint
+      });
     } else if (action === "set-unblock" || action === "set-unknown") {
       await deleteConnectionRelationship(ownerCanonicalId, subjectCanonicalId);
+      // Drop the local contact entirely — the user is back to
+      // "unknown" relationship, the chat row should disappear, and
+      // the directory "+" should return.
+      await deleteLocalContact(ownerCanonicalId, subjectCanonicalId);
     } else if (action === "set-subscribe") {
       await upsertFeedSubscription({
         owner_canonical_id: ownerCanonicalId,
@@ -2196,7 +2393,14 @@ async function submitFeedPost(): Promise<void> {
       broadcastLocalStateChange("feed", currentIdentityDocument.canonical_id);
     }
   } catch (error) {
-    feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
+    // Preserve the user's text on any failure so they can retry. Map
+    // common server errors to clear inline copy.
+    if (error instanceof FeedPostError && error.code === "rate_limited") {
+      const seconds = error.retry_after_seconds ?? 5;
+      feedComposerState.textContent = `wait ${seconds}s before posting again`;
+    } else {
+      feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
+    }
   }
 }
 
@@ -2407,6 +2611,10 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
   if (currentIdentityDocument !== null) {
     await deleteConnectionRelationship(currentIdentityDocument.canonical_id, canonical);
     await deleteFeedSubscription(currentIdentityDocument.canonical_id, canonical);
+    // Removing a connection should also drop the local contact so the
+    // chat list / search row re-renders the "+" button. Without this
+    // the row shows a stale "remove" and the user can't re-add.
+    await deleteLocalContact(currentIdentityDocument.canonical_id, canonical);
   }
   await refreshLocalChats();
   // Drop the removed author's posts from the personal feed.

@@ -283,6 +283,7 @@ export type DiscoveryPostIndex = {
   // the client can render the user's vote state. Not part of the
   // ranking model — purely a UX read-through.
   viewer_reaction?: "recommend" | "downrank" | "reply" | "repost" | "report" | null;
+  viewer_has_reposted?: boolean;
 };
 
 export type ChatSummary = {
