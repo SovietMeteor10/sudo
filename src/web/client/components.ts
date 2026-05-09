@@ -289,41 +289,43 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   article.dataset["postId"] = item.post_id;
   if (item.kind !== undefined) article.dataset["postKind"] = item.kind;
 
+  // The meta + body region is the post's "main" surface. Clicking
+  // anywhere inside it should open the focused thread view; clicking
+  // an action button or anything inside the replies panel should not.
+  const main = document.createElement("div");
+  main.className = "stream-post__main";
+  main.dataset["threadOpen"] = "true";
+
   const meta = document.createElement("div");
   meta.className = "stream-post__meta";
 
   const author = document.createElement("span");
   author.className = "stream-post__handle";
+  // Top-level cards never carry a "replied" suffix anymore: replies
+  // are nested-only and never surface as standalone cards. Reposts
+  // still get an inline "reposted" tag because the card itself
+  // wraps an embedded original.
   const authorLabel = item.author_handle ?? shortCanonical(item.author_canonical_id);
-  author.textContent = item.kind === "repost"
-    ? `${authorLabel} reposted`
-    : item.kind === "reply"
-      ? `${authorLabel} replied`
-      : authorLabel;
+  author.textContent = item.kind === "repost" ? `${authorLabel} reposted` : authorLabel;
 
   const time = document.createElement("span");
   time.className = "stream-post__time";
   time.textContent = formatPostTimestamp(item.created_at);
 
   meta.append(author, time);
-  article.append(meta);
+  main.append(meta);
 
-  // For replies, show parent context as a small "replying to @author"
-  // line so the reply makes sense inline.
-  if (item.kind === "reply" && item.reply_to !== undefined) {
-    article.append(renderEmbeddedRef(item.reply_to, "replying to"));
-  }
-
-  // Reply body: render the user's own reply text (their commentary)
-  // unless this is a quote-less repost.
   if (item.kind !== "repost" || item.body.length > 0 && item.body !== "[encrypted body]") {
     const body = document.createElement("div");
     body.className = "stream-post__body";
     mountTextSurface(body, item.body, { font: BODY_FONT, lineHeight: 23 });
-    article.append(body);
+    main.append(body);
   }
 
-  // Repost: show the embedded original card.
+  article.append(main);
+
+  // Repost: show the embedded original card outside the main click
+  // surface so clicking the embed doesn't open the wrong thread.
   if (item.kind === "repost" && item.repost_of !== undefined) {
     article.append(renderEmbeddedOriginal(item.repost_of));
   }
@@ -335,35 +337,16 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
   article.append(actions);
 
-  // Container for the inline reply composer / expanded replies list.
-  // For posts that already have replies we surface the panel in
-  // "list" mode immediately so all viewers — not just the post's
-  // author — see the threaded conversation under the parent.
+  // Comments live inside this panel and stay hidden until the user
+  // clicks ↩ (or opens the post in thread view). The renderer no
+  // longer auto-loads them — feeds stay clean by default.
   const repliesPanel = document.createElement("div");
   repliesPanel.className = "stream-post__replies";
   repliesPanel.dataset["repliesPanel"] = item.post_id;
-  if (item.counts.reply > 0) {
-    repliesPanel.hidden = false;
-    repliesPanel.dataset["mode"] = "list";
-    repliesPanel.dataset["needsReplies"] = "true";
-  } else {
-    repliesPanel.hidden = true;
-  }
+  repliesPanel.hidden = true;
   article.append(repliesPanel);
 
   return article;
-}
-
-function renderEmbeddedRef(ref: EmbeddedFeedItem, prefix: string): HTMLElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "stream-post__ref";
-  if (ref.unavailable === true) {
-    wrapper.textContent = `${prefix} (original post unavailable)`;
-    return wrapper;
-  }
-  const handle = ref.author_handle ?? shortCanonical(ref.author_canonical_id);
-  wrapper.textContent = `${prefix} ${handle}`;
-  return wrapper;
 }
 
 function renderEmbeddedOriginal(ref: EmbeddedFeedItem): HTMLElement {

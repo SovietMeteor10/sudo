@@ -286,16 +286,19 @@ lookupRoot.addEventListener("click", (event) => {
 
 // Both the personal feed and the discover feed render through the same
 // .stream-post component, so action clicks are delegated identically
-// from either root. The vote button cycles neutral → like → dislike →
-// neutral; reply opens an inline composer; repost creates a new feed
-// post that quotes the original.
+// from either root. Clicking the post's main surface (meta/body) opens
+// the focused thread view; action buttons trigger their own behavior.
 const handleFeedClick = (event: Event): void => {
   const target = event.target;
   if (!(target instanceof HTMLElement)) return;
-  // Walk to the root post article, not just any data-post-id (reply
-  // items inside the panel also carry data-post-id, so a plain
-  // [data-post-id] match would surface the reply-item instead of
-  // the article and break click delegation).
+  // Thread-view back button lives in the container, not in any
+  // particular .stream-post. Dispatch first.
+  const back = target.closest<HTMLButtonElement>("[data-thread-action='back']");
+  if (back !== null) {
+    exitThreadView();
+    return;
+  }
+
   const article = target.closest<HTMLElement>(".stream-post");
   const postId = article?.dataset["postId"];
   if (typeof postId !== "string") return;
@@ -304,6 +307,13 @@ const handleFeedClick = (event: Event): void => {
   if (voteButton !== null) {
     const state = voteButton.dataset["voteState"] ?? "neutral";
     void handleVoteCycle(postId, state);
+    return;
+  }
+
+  // Branch collapse/expand toggle on threaded comments.
+  const collapseButton = target.closest<HTMLButtonElement>(".stream-post__reply-collapse");
+  if (collapseButton !== null) {
+    toggleReplyBranch(collapseButton);
     return;
   }
 
@@ -319,30 +329,60 @@ const handleFeedClick = (event: Event): void => {
 
   const submit = target.closest<HTMLButtonElement>(".stream-post__reply-submit");
   if (submit !== null && article !== null) {
-    // The submit may belong to the root composer (no target) or a
-    // nested per-reply composer (data-reply-target set). The root
-    // composer replies to the article post; nested ones reply to the
-    // descendant reply they're attached to.
     const replyTarget = submit.dataset["replyTarget"] ?? postId;
     void handleReplySubmit(postId, replyTarget, submit, article);
     return;
   }
 
-  const button = target.closest<HTMLButtonElement>(".stream-post__action[data-reaction]");
-  if (button === null) return;
-  const reaction = button.dataset["reaction"];
-  if (reaction === "reply") {
-    if (article !== null) toggleReplyComposer(postId, article);
+  const actionButton = target.closest<HTMLButtonElement>(".stream-post__action[data-reaction]");
+  if (actionButton !== null) {
+    const reaction = actionButton.dataset["reaction"];
+    if (reaction === "reply") {
+      if (article !== null) toggleReplyComposer(postId, article);
+      return;
+    }
+    if (reaction === "repost") {
+      if (actionButton.dataset["alreadyReposted"] === "true") return;
+      void handleRepost(postId);
+      return;
+    }
     return;
   }
-  if (reaction === "repost") {
-    if (button.dataset["alreadyReposted"] === "true") return;
-    void handleRepost(postId);
+
+  // Fallthrough: clicks on the post's main click surface open the
+  // focused thread view. Suppressed when we're already in thread
+  // view — the parent post inside thread view shouldn't re-trigger
+  // navigation.
+  const main = target.closest<HTMLElement>(".stream-post__main[data-thread-open='true']");
+  if (main !== null && activeThreadPostId === null) {
+    void enterThreadView(postId);
     return;
   }
 };
+
 streamRoot.addEventListener("click", handleFeedClick);
 discoveryRoot.addEventListener("click", handleFeedClick);
+
+function toggleReplyBranch(button: HTMLButtonElement): void {
+  const targetId = button.dataset["collapseTarget"];
+  if (typeof targetId !== "string") return;
+  const item = button.closest<HTMLElement>(".stream-post__reply-item");
+  if (item === null) return;
+  const sublist = item.querySelector<HTMLElement>(`:scope > .stream-post__reply-list[data-sublist-for="${cssEscape(targetId)}"]`);
+  if (sublist === null) return;
+  const collapsed = button.dataset["collapsed"] === "true";
+  if (collapsed) {
+    sublist.hidden = false;
+    button.textContent = "[-]";
+    button.dataset["collapsed"] = "false";
+    button.setAttribute("aria-label", "collapse replies");
+  } else {
+    sublist.hidden = true;
+    button.textContent = "[+]";
+    button.dataset["collapsed"] = "true";
+    button.setAttribute("aria-label", "expand replies");
+  }
+}
 
 deviceList.addEventListener("click", (event) => {
   const target = event.target;
@@ -1696,7 +1736,127 @@ async function createEncryptedBootstrapPayload(
 // reflects the change without a page reload.
 const refreshPersonalFeed = (): Promise<void> => refreshFeedPosts();
 
+// activeThreadPostId, when non-null, means the center column is in
+// focused-thread mode for that post. Feed refreshes during this mode
+// no-op; exit returns to the normal feed.
+let activeThreadPostId: string | null = null;
+
+async function enterThreadView(postId: string): Promise<void> {
+  activeThreadPostId = postId;
+  // Hide the composer while in thread view — the focused view has
+  // its own reply composer for the parent post.
+  const composer = document.getElementById("feed-composer");
+  if (composer !== null) composer.hidden = true;
+  await renderThreadView(postId);
+}
+
+function exitThreadView(): void {
+  activeThreadPostId = null;
+  const composer = document.getElementById("feed-composer");
+  if (composer !== null) composer.hidden = false;
+  void refreshFeedPosts();
+}
+
+async function renderThreadView(postId: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    streamRoot.replaceChildren();
+    return;
+  }
+  // Build the focused container: back button + parent post + threaded
+  // replies + reply composer. The parent post reuses the stream-post
+  // shape so action buttons (vote/repost/reply) keep working.
+  const container = document.createElement("div");
+  container.className = "thread-view";
+  container.dataset["threadView"] = postId;
+
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "thread-view__back";
+  back.dataset["threadAction"] = "back";
+  back.textContent = "← back";
+  container.append(back);
+
+  const parentSlot = document.createElement("div");
+  parentSlot.className = "thread-view__parent";
+  parentSlot.textContent = "loading post...";
+  container.append(parentSlot);
+
+  streamRoot.replaceChildren(container);
+
+  try {
+    // Fetch the post + viewer enrichment in parallel.
+    const [post, index] = await Promise.all([
+      fetchFeedPost(postId).catch(() => null),
+      getDiscoveryPost(postId, currentIdentityDocument.canonical_id).catch(() => null)
+    ]);
+    if (post === null) {
+      parentSlot.textContent = "post unavailable";
+      return;
+    }
+    const item = index === null
+      ? feedPostToUnifiedItem(post)
+      : feedPostToUnifiedItem(post, {
+          counts: {
+            recommend: index.recommend_count ?? 0,
+            downrank: index.downrank_count ?? 0,
+            reply: index.reply_count ?? 0,
+            repost: index.repost_count ?? 0
+          },
+          vote: index.viewer_reaction === "recommend" ? "like"
+            : index.viewer_reaction === "downrank" ? "dislike"
+            : null,
+          viewerHasReposted: index.viewer_has_reposted === true
+        });
+    // Render the parent via the shared helper so action wiring
+    // matches the feed list.
+    const parentArticle = renderThreadParentArticle(item);
+    parentSlot.replaceChildren();
+    parentSlot.append(parentArticle);
+
+    // Open the replies panel inline with composer + threaded list.
+    const panel = parentArticle.querySelector<HTMLElement>(
+      `[data-replies-panel="${cssEscape(postId)}"]`
+    );
+    if (panel !== null) openReplyComposer(postId, panel);
+  } catch {
+    parentSlot.textContent = "post unavailable";
+  }
+}
+
+function renderThreadParentArticle(item: ReturnType<typeof feedPostToUnifiedItem>): HTMLElement {
+  // Use renderStream to draw the single parent into a temp container
+  // so we get the same stream-post DOM as the feed list (action row,
+  // replies panel slot). The component layer doesn't expose a direct
+  // single-item renderer.
+  const tmp = document.createElement("div");
+  renderStream(tmp, [item]);
+  const article = tmp.querySelector<HTMLElement>(".stream-post");
+  if (article === null) {
+    const fallback = document.createElement("div");
+    fallback.textContent = "post unavailable";
+    return fallback;
+  }
+  return article;
+}
+
+async function fetchFeedPost(postId: string): Promise<FeedPost | null> {
+  const url = new URL(`/api/feeds/posts/${encodeURIComponent(postId)}`, window.location.origin);
+  if (currentIdentityDocument !== null) {
+    url.searchParams.set("viewer", currentIdentityDocument.canonical_id);
+  }
+  const response = await fetch(url.toString(), { headers: { accept: "application/json" } });
+  if (!response.ok) return null;
+  const body = await response.json() as { post?: FeedPost };
+  return body.post ?? null;
+}
+
 async function refreshFeedPosts(): Promise<void> {
+  if (activeThreadPostId !== null) {
+    // Thread view owns the center column right now. Re-render the
+    // thread instead of clobbering it with the feed list.
+    await renderThreadView(activeThreadPostId);
+    return;
+  }
   if (currentIdentityDocument === null) {
     renderStream(streamRoot, []);
     return;
@@ -1774,7 +1934,6 @@ async function refreshFeedPosts(): Promise<void> {
         });
       });
     renderStream(streamRoot, items);
-    void hydrateAutoReplies(streamRoot);
   } catch {
     renderStream(streamRoot, []);
   }
@@ -1797,24 +1956,6 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
   }
 
   renderDiscoveryPanel(discoveryRoot, discoveryState);
-  void hydrateAutoReplies(discoveryRoot);
-}
-
-// After the stream/discover renderer marks panels with
-// data-needs-replies (because reply_count > 0), this fills each one
-// with the threaded reply subtree so all viewers — not just the
-// author — see replies nested under the parent.
-async function hydrateAutoReplies(root: HTMLElement): Promise<void> {
-  if (currentIdentityDocument === null) return;
-  const panels = Array.from(
-    root.querySelectorAll<HTMLElement>(".stream-post__replies[data-needs-replies='true']")
-  );
-  await Promise.all(panels.map(async (panel) => {
-    const postId = panel.dataset["repliesPanel"];
-    if (typeof postId !== "string") return;
-    delete panel.dataset["needsReplies"];
-    await renderRepliesUnder(postId, panel);
-  }));
 }
 
 async function postDiscoveryReaction(
@@ -2020,13 +2161,11 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
     bucket.sort((left, right) => left.created_at.localeCompare(right.created_at));
   }
 
-  // Beyond depth 2 we flatten with "replying to @handle" so the UI
-  // doesn't drift into infinite indentation.
+  // Two visible indent levels; deeper replies stack flat under
+  // level-2 with no "replying to @handle" copy. Each comment that
+  // has children gets a [-]/[+] toggle to collapse its descendants
+  // without removing the comment itself.
   const MAX_NEST_DEPTH = 2;
-  const handleByPostId = new Map<string, string>();
-  for (const reply of replies) {
-    handleByPostId.set(reply.post_id, reply.author_handle ?? shortCanonicalForUi(reply.author_canonical_id));
-  }
 
   const renderLevel = (parentId: string, depth: number, container: HTMLElement): void => {
     const children = byParent.get(parentId) ?? [];
@@ -2051,18 +2190,6 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
       time.textContent = formatPostTimestamp(reply.created_at);
       meta.append(handle, time);
 
-      // For replies past max depth, show the immediate parent's handle
-      // so the relationship stays legible after we flatten.
-      if (depth > MAX_NEST_DEPTH && typeof reply.reply_to === "string") {
-        const parentHandle = handleByPostId.get(reply.reply_to);
-        if (parentHandle !== undefined) {
-          const ref = document.createElement("div");
-          ref.className = "stream-post__reply-ref";
-          ref.textContent = `replying to ${parentHandle}`;
-          item.append(ref);
-        }
-      }
-
       const body = document.createElement("div");
       body.className = "stream-post__reply-body";
       body.textContent = reply.body ?? "";
@@ -2075,18 +2202,26 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
       replyButton.textContent = "↩ reply";
 
       item.append(arrow, meta, body, replyButton);
-      container.append(item);
 
-      // Render nested children one level deeper. If we're at max depth
-      // we still render them in a flat (non-indented) sub-list and
-      // they'll show "replying to @handle" instead of nesting further.
       const childIds = byParent.get(reply.post_id);
       if (childIds !== undefined && childIds.length > 0) {
+        const collapse = document.createElement("button");
+        collapse.type = "button";
+        collapse.className = "stream-post__reply-collapse";
+        collapse.dataset["collapseTarget"] = reply.post_id;
+        collapse.dataset["collapsed"] = "false";
+        collapse.setAttribute("aria-label", "collapse replies");
+        collapse.textContent = "[-]";
+        item.append(collapse);
+
         const sublist = document.createElement("ul");
         sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
+        sublist.dataset["sublistFor"] = reply.post_id;
         item.append(sublist);
         renderLevel(reply.post_id, depth + 1, sublist);
       }
+
+      container.append(item);
     }
   };
 

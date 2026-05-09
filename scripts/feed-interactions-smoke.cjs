@@ -700,22 +700,112 @@ async function postBody(page, postId) {
       fail("nested-only-toplevel", `top-level feed contains reply cards: ${JSON.stringify(replyTopLevel)}`);
     } else ok(`nested-only: no top-level "@X replied" cards in D's feed (top-level=${topLevelMeta.length})`);
 
-    // Replies should auto-render under the parent without the viewer
-    // having to click ↩. Verify B's reply is visible under postOne.
-    let dSeesNestedReply = false;
+    // Comments are hidden by default. The replies list/text should
+    // NOT be in the DOM until the viewer opens the comments panel.
+    const beforeOpen = await pageD.evaluate((rootId, needle) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      const panel = article?.querySelector(".stream-post__replies");
+      return {
+        panelHidden: panel?.hidden ?? true,
+        hasList: article?.querySelector(".stream-post__reply-list") !== null,
+        replyVisible: (article?.textContent || "").includes(needle)
+      };
+    }, postOne, replyText);
+    if (!beforeOpen.panelHidden) fail("comments-hidden", "replies panel not hidden by default");
+    else if (beforeOpen.hasList) fail("comments-hidden", "reply list rendered before viewer asked");
+    else if (beforeOpen.replyVisible) fail("comments-hidden", "reply body visible inside parent before opening comments");
+    else ok("comments-hidden: replies panel hidden by default; no reply text in parent card");
+
+    // No "replying to" / "@X replied" copy anywhere in D's feed.
+    const feedText = await pageD.evaluate(() =>
+      document.getElementById("stream-list")?.textContent || ""
+    );
+    if (/replying to/i.test(feedText)) fail("comments-copy", `'replying to' visible in D's feed: ${feedText.slice(0, 200)}`);
+    else if (/\breplied\b/i.test(feedText)) fail("comments-copy", `'replied' visible in D's feed: ${feedText.slice(0, 200)}`);
+    else ok("comments-copy: no 'replying to' / 'replied' visible in D's feed");
+
+    // Click the comment button → comments expand and the reply text
+    // appears under the parent.
+    await pageD.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      article?.querySelector(".stream-post__action[data-reaction='reply']")?.click();
+    }, postOne);
+    let dSeesAfterClick = false;
     for (let i = 0; i < 40; i++) {
-      await new Promise((r) => setTimeout(r, 200));
-      dSeesNestedReply = await pageD.evaluate((rootId, expected) => {
+      await new Promise((r) => setTimeout(r, 150));
+      dSeesAfterClick = await pageD.evaluate((rootId, expected) => {
         const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
         const list = article?.querySelector(".stream-post__reply-list");
-        if (!list) return false;
-        const arrow = list.querySelector(".stream-post__reply-arrow")?.textContent ?? "";
-        return arrow === "↳" && (list.textContent || "").includes(expected);
+        return list?.textContent.includes(expected) ?? false;
       }, postOne, replyText);
-      if (dSeesNestedReply) break;
+      if (dSeesAfterClick) break;
     }
-    if (!dSeesNestedReply) fail("nested-only-render", "D did not see B's reply nested under postOne (no click)");
-    else ok("nested-only: D sees B's reply nested under postOne automatically");
+    if (!dSeesAfterClick) fail("comments-open", "reply did not appear after clicking comment button");
+    else ok("comments-open: comment button reveals replies under parent");
+
+    // Click again → comments collapse (panel hidden).
+    await pageD.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      article?.querySelector(".stream-post__action[data-reaction='reply']")?.click();
+    }, postOne);
+    await new Promise((r) => setTimeout(r, 300));
+    const afterCollapse = await pageD.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      const panel = article?.querySelector(".stream-post__replies");
+      return panel?.hidden ?? false;
+    }, postOne);
+    if (afterCollapse !== true) fail("comments-collapse", "comments did not collapse on second click");
+    else ok("comments-collapse: second comment-button click hides the panel");
+
+    // Click the parent post body → thread view.
+    await pageD.evaluate((rootId) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+      article?.querySelector(".stream-post__main")?.click();
+    }, postOne);
+    let inThread = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      inThread = await pageD.evaluate((rootId) =>
+        document.querySelector(`.thread-view[data-thread-view="${rootId}"]`) !== null
+      , postOne);
+      if (inThread) break;
+    }
+    if (!inThread) fail("thread-enter", "thread view did not open after clicking post body");
+    else ok("thread-view: clicking post body opens focused thread view");
+
+    // Thread view shows the parent post + the reply nested under it.
+    const threadContents = await pageD.evaluate((rootId, expected) => {
+      const root = document.querySelector(`.thread-view[data-thread-view="${rootId}"]`);
+      if (!root) return { ok: false };
+      return {
+        ok: true,
+        hasBack: root.querySelector("[data-thread-action='back']") !== null,
+        hasParent: root.querySelector(`.stream-post[data-post-id="${rootId}"]`) !== null,
+        hasReply: (root.querySelector(".stream-post__reply-list")?.textContent || "").includes(expected)
+      };
+    }, postOne, replyText);
+    if (!threadContents.ok) fail("thread-contents", "thread view container missing");
+    else if (!threadContents.hasBack) fail("thread-contents", "back button missing in thread view");
+    else if (!threadContents.hasParent) fail("thread-contents", "parent post missing in thread view");
+    else if (!threadContents.hasReply) fail("thread-contents", "reply not visible in thread view");
+    else ok("thread-view: shows back button + parent post + nested reply");
+
+    // Back button restores the feed.
+    await pageD.evaluate(() => {
+      document.querySelector("[data-thread-action='back']")?.click();
+    });
+    let backRestored = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      backRestored = await pageD.evaluate((rootId) => {
+        const inThread = document.querySelector(".thread-view") !== null;
+        const article = document.querySelector(`#stream-list .stream-post[data-post-id="${rootId}"]`);
+        return !inThread && article !== null;
+      }, postOne);
+      if (backRestored) break;
+    }
+    if (!backRestored) fail("thread-back", "back button did not restore feed");
+    else ok("thread-view: back button returns to feed");
 
     // Discover should also exclude replies — only top-level
     // discoverable posts surface. The reply post id from B should
