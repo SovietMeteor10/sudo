@@ -608,6 +608,17 @@ export function renderSearchResults(
 
 
 
+// Pretty-print the connection tier for the lookup card. Defaults to
+// "no" (rather than the protocol-level "unknown" tier) so the user
+// sees "no connection" instead of jargon.
+function describeConnection(relationship?: ConnectionRelationship): string {
+  if (relationship === undefined || relationship === null) return "no";
+  if (relationship.tier === "known") return "connected";
+  if (relationship.tier === "close") return "close friend";
+  if (relationship.tier === "blocked") return "blocked";
+  return "no";
+}
+
 function renderResolvedIdentity(
   identity: IdentityDocument,
   fingerprint: string,
@@ -619,22 +630,32 @@ function renderResolvedIdentity(
     line(identity.handle, "lookup-card__handle"),
     line(`canonical: ${shortCanonical(identity.canonical_id)}`),
     line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? shortFingerprint}`),
-    line(`relationship: ${relationship?.tier ?? "unknown"}${relationship?.subscribed ? " / subscribed" : ""}`, "is-muted"),
-    line(`subscription: ${subscription === null ? "none" : subscription?.muted ? "muted" : "active"}`, "is-muted"),
+    line(`connection: ${describeConnection(relationship)}`, "is-muted"),
+    line(`follow: ${subscription === null ? "no" : subscription?.muted ? "muted" : "yes"}`, "is-muted"),
     line("trust: unverified", "is-muted"),
     line("onion: unknown", "is-muted"),
     line(`updated: ${formatTimestamp(identity.updated_at)}`, "is-muted"),
   ]);
 
+  // Two distinct concepts on this card:
+  //   - "follow" toggles whether the viewer's personal feed shows
+  //     this author's posts (server-canonical subscription row).
+  //   - "connect" / "close friend" set the trust tier (known | close)
+  //     used by relay policy and higher-trust visibility. A connection
+  //     also pulls the subject into the personal feed via the
+  //     known/close branch of listPersonalFeedForApi, so connecting
+  //     implies seeing posts even without a separate follow.
+  // "block" and "unblock" sit on the connection model (tier=blocked
+  // suppresses both feed and relay).
   const actions = document.createElement("div");
   actions.className = "lookup-card__actions";
   actions.append(
-    button("known", "set-known"),
-    button("close", "set-close"),
+    button("follow", "set-subscribe"),
+    button("unfollow", "set-unsubscribe"),
+    button("connect", "set-known"),
+    button("close friend", "set-close"),
     button("block", "set-block"),
     button("unblock", "set-unblock"),
-    button("subscribe", "set-subscribe"),
-    button("unsubscribe", "set-unsubscribe"),
   );
   card.append(actions);
 

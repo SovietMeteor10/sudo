@@ -24,6 +24,8 @@
     "smoke:contact-sync": "node scripts/contact-sync-smoke.cjs",
     "smoke:subscription-sync": "node scripts/subscription-sync-smoke.cjs",
     "smoke:message-sync": "node scripts/message-sync-smoke.cjs",
+    "smoke:feed-live-refresh": "node scripts/feed-live-refresh-smoke.cjs",
+    "smoke:feed-poller-regression": "node scripts/feed-poller-regression-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

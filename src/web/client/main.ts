@@ -789,7 +789,173 @@ function stopInboxPolling(): void {
 // tab takes over quickly instead of waiting out the full lease.
 window.addEventListener("beforeunload", () => {
   if (inboxPollOwner !== null) clearLeaderIfOwned(inboxPollOwner);
+  if (feedPollOwner !== null) clearFeedLeaderIfOwned(feedPollOwner);
 });
+
+// ---- personal-feed polling -------------------------------------------------
+// Same shape as inbox polling above: at most one tab per (browser profile,
+// owner) hits /api/feeds/personal on a timer. Followers receive new posts
+// via the existing local-state-changed `feed` broadcast that the leader
+// fires after detecting a real change. Conservative interval keeps the
+// server load proportional to the (small) viewer-author graph.
+const FEED_POLL_INTERVAL_MS = 12000;
+const FEED_LEADER_LEASE_MS = 20000;
+const FEED_LEADER_RENEW_MS = 8000;
+let feedPollTimer: number | null = null;
+let feedLeaderRenewTimer: number | null = null;
+let feedPollOwner: string | null = null;
+let feedPollInFlight = false;
+// "fingerprint" of the last successfully applied feed snapshot. Used by
+// the poller to detect *real* changes vs identical refetches so we
+// don't broadcast no-op `feed` events to sibling tabs.
+let lastFeedFingerprint: string | null = null;
+
+function feedLeaderKey(owner: string): string {
+  return `sudo.poll.feed-leader.${owner}`;
+}
+
+function readFeedLeader(owner: string): LeaderEntry | null {
+  try {
+    const raw = window.localStorage?.getItem(feedLeaderKey(owner));
+    if (typeof raw !== "string" || raw.length === 0) return null;
+    const parsed = JSON.parse(raw) as Partial<LeaderEntry>;
+    if (typeof parsed.tabId !== "string" || typeof parsed.expiresAt !== "number") return null;
+    return parsed as LeaderEntry;
+  } catch {
+    return null;
+  }
+}
+
+function writeFeedLeader(owner: string, entry: LeaderEntry): void {
+  try { window.localStorage?.setItem(feedLeaderKey(owner), JSON.stringify(entry)); } catch { /* ignore */ }
+}
+
+function clearFeedLeaderIfOwned(owner: string): void {
+  const current = readFeedLeader(owner);
+  if (current === null || current.tabId !== TAB_ID) return;
+  try { window.localStorage?.removeItem(feedLeaderKey(owner)); } catch { /* ignore */ }
+}
+
+function ensureFeedLeadership(owner: string): boolean {
+  const now = Date.now();
+  const current = readFeedLeader(owner);
+  if (current !== null && current.tabId !== TAB_ID && current.expiresAt > now) {
+    return false;
+  }
+  writeFeedLeader(owner, { tabId: TAB_ID, expiresAt: now + FEED_LEADER_LEASE_MS });
+  return true;
+}
+
+function startFeedPolling(canonicalId: string): void {
+  stopFeedPolling();
+  feedPollOwner = canonicalId;
+  // Poll immediately so the first cycle catches any posts that landed
+  // between the initial /personal fetch and signed-in setup.
+  void pollPersonalFeed();
+  feedPollTimer = window.setInterval(() => {
+    void pollPersonalFeed();
+  }, FEED_POLL_INTERVAL_MS);
+  feedLeaderRenewTimer = window.setInterval(() => {
+    if (feedPollOwner !== null) ensureFeedLeadership(feedPollOwner);
+  }, FEED_LEADER_RENEW_MS);
+}
+
+function stopFeedPolling(): void {
+  if (feedPollTimer !== null) {
+    window.clearInterval(feedPollTimer);
+    feedPollTimer = null;
+  }
+  if (feedLeaderRenewTimer !== null) {
+    window.clearInterval(feedLeaderRenewTimer);
+    feedLeaderRenewTimer = null;
+  }
+  if (feedPollOwner !== null) clearFeedLeaderIfOwned(feedPollOwner);
+  feedPollOwner = null;
+  lastFeedFingerprint = null;
+}
+
+// Compact, order-sensitive fingerprint used to detect whether a polled
+// snapshot differs from what's already on screen. We hash by post_id +
+// updated_at so edits and engagement count changes also trigger a
+// repaint, while identical snapshots are no-ops.
+function computeFeedFingerprint(posts: FeedPost[]): string {
+  if (posts.length === 0) return "empty";
+  return posts.map((post) => `${post.post_id}:${post.updated_at}`).join("|");
+}
+
+async function pollPersonalFeed(): Promise<void> {
+  if (feedPollOwner === null) return;
+  if (currentIdentityDocument === null) return;
+  if (feedPollOwner !== currentIdentityDocument.canonical_id) return;
+  if (feedPollInFlight) return;
+  // Don't fight the thread view for the center column.
+  if (activeThreadPostId !== null) return;
+  // Don't poll while the tab is backgrounded — the visibilitychange
+  // handler triggers an immediate poll when the user returns.
+  if (typeof document !== "undefined" && document.hidden) return;
+  // Followers rely on the leader's broadcast to learn about new posts.
+  if (!ensureFeedLeadership(feedPollOwner)) return;
+
+  feedPollInFlight = true;
+  try {
+    const response = await listPersonalFeed(feedPollOwner);
+    if (currentIdentityDocument === null) return;
+    if (feedPollOwner !== currentIdentityDocument.canonical_id) return;
+    const fingerprint = computeFeedFingerprint(response.posts);
+    if (fingerprint === lastFeedFingerprint) return;
+
+    // Only advance the fingerprint when we *actually* paint the new
+    // state. If we're not on the personal pane (or sitting in a
+    // thread view), bumping the fingerprint here would silently
+    // strand newer state — the next poll matches and renders
+    // nothing, and the user has to reload. Setting the fingerprint
+    // only after a render keeps "what's on screen" and "what we've
+    // committed to" the same.
+    if (activeThreadPostId === null && activeFeedTab === "personal") {
+      const items = response.posts.map((post) => feedPostToUnifiedItemFromEngagement(
+        post,
+        response.engagement[post.post_id]
+      ));
+      renderStream(streamRoot, items);
+      lastFeedFingerprint = fingerprint;
+    }
+    // Tell sibling tabs of this account to repaint from their own
+    // refresh path so they don't all double-poll the server. The
+    // broadcast still fires when the local pane was unrendered —
+    // sibling tabs that ARE on personal will repaint themselves.
+    broadcastLocalStateChange("feed", feedPollOwner);
+  } catch {
+    // Network blip; next tick retries.
+  } finally {
+    feedPollInFlight = false;
+  }
+}
+
+// Wake the poller whenever the user comes back to the tab. We listen
+// on both signals because they fire on different real-world paths:
+//   - visibilitychange: the tab moves between fully-rendered and
+//     fully-hidden (e.g. switched to a different tab in the same
+//     window, window minimized).
+//   - focus: the window receives focus from a peer browser window,
+//     which on most platforms does NOT fire visibilitychange because
+//     both windows remain visibilityState="visible".
+// The user's reported "I had to reload to see B's post" case looked
+// like the second path: two side-by-side browser windows, one
+// becomes focused, neither was ever document.hidden. Polling on
+// focus closes that gap.
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (feedPollOwner === null) return;
+    void pollPersonalFeed();
+  });
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    if (feedPollOwner === null) return;
+    void pollPersonalFeed();
+  });
+}
 
 async function pollInbox(): Promise<void> {
   if (inboxPollOwner === null) return;
@@ -1918,6 +2084,7 @@ async function refreshFeedPosts(): Promise<void> {
   }
   if (currentIdentityDocument === null) {
     renderStream(streamRoot, []);
+    lastFeedFingerprint = null;
     return;
   }
 
@@ -1932,6 +2099,9 @@ async function refreshFeedPosts(): Promise<void> {
       response.engagement[post.post_id]
     ));
     renderStream(streamRoot, items);
+    // Keep the poller's diff baseline in sync so the very next tick
+    // doesn't repaint identical content.
+    lastFeedFingerprint = computeFeedFingerprint(response.posts);
   } catch {
     renderStream(streamRoot, []);
   }
@@ -2923,6 +3093,7 @@ function setSignedIn(handle: string): void {
     void refreshLocalChats();
     void refreshFeedPosts();
     startInboxPolling(currentIdentityDocument.canonical_id);
+    startFeedPolling(currentIdentityDocument.canonical_id);
   }
 }
 
@@ -2984,6 +3155,7 @@ function openDevicesDialog(): void {
 function setSignedOut(): void {
   authSequence++;
   stopInboxPolling();
+  stopFeedPolling();
   currentIdentityDocument = null;
   currentIdentityFingerprint = null;
   currentCryptoAccount = null;
@@ -3272,6 +3444,13 @@ function setFeedTab(tab: FeedTab): void {
   }
   if (tab === "discover") {
     void refreshDiscoveryPosts().catch(() => null);
+  } else if (tab === "personal" && currentIdentityDocument !== null) {
+    // Returning to personal must always re-fetch — the poller will
+    // have seen any background updates while we were on discover but
+    // intentionally didn't paint them, so the pane is otherwise
+    // stale. Reset the fingerprint so the upcoming render commits.
+    lastFeedFingerprint = null;
+    void pollPersonalFeed();
   }
 }
 
