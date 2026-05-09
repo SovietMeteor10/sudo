@@ -147,6 +147,27 @@ export const schemaSql = `
     consumed_at TEXT
   );
 
+  -- Canonical trust object for trusted devices: the SignedDeviceMembership
+  -- doc, signed by the owner's identity key. trusted_devices above is an
+  -- index/cache derived from these rows so reads stay cheap; the index can
+  -- be rebuilt from device_memberships if it's lost.
+  CREATE TABLE IF NOT EXISTS device_memberships (
+    device_id TEXT NOT NULL,
+    owner_canonical_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    trust_state TEXT NOT NULL,
+    membership_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (device_id, sequence)
+  );
+
+  CREATE INDEX IF NOT EXISTS device_memberships_owner_idx
+    ON device_memberships(owner_canonical_id, updated_at);
+
+  CREATE INDEX IF NOT EXISTS device_memberships_device_idx
+    ON device_memberships(device_id, sequence);
+
   CREATE TABLE IF NOT EXISTS feed_posts (
     post_id TEXT PRIMARY KEY,
     author_canonical_id TEXT NOT NULL,

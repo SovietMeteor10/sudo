@@ -2,6 +2,7 @@ import type {
   DiscoveryReaction,
   FeedPost,
   RelayEnvelope,
+  SignableDeviceMembership,
   SignableIdentityDocument,
   SignableFeedPost,
   SigningKeyType
@@ -42,6 +43,14 @@ export async function signRelayEnvelope(
   keyType: SigningKeyType
 ): Promise<string> {
   return signCanonicalPayload(envelope, privateKey, keyType);
+}
+
+export async function signDeviceMembership(
+  membership: SignableDeviceMembership,
+  ownerIdentityPrivateKey: CryptoKey,
+  keyType: SigningKeyType
+): Promise<string> {
+  return signCanonicalPayload(membership, ownerIdentityPrivateKey, keyType);
 }
 
 async function signCanonicalPayload(payload: unknown, privateKey: CryptoKey, keyType: SigningKeyType): Promise<string> {

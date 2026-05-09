@@ -6,7 +6,9 @@ export {
 
 export {
   canonicalJson,
+  signDeviceMembership,
   signIdentityDocument,
+  verifyDeviceMembership,
   verifyIdentityDocument
 } from "./signatures.js";
 

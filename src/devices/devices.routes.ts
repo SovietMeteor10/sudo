@@ -1,19 +1,71 @@
 import { randomUUID } from "node:crypto";
 import { Router } from "express";
-import type { DeviceSyncEvent, TrustedDevice } from "../protocol/types.js";
+import { verifyDeviceMembership } from "../crypto/signatures.js";
+import { getIdentityByCanonicalId } from "../identity/registry.js";
+import type {
+  DeviceSyncEvent,
+  SignedDeviceMembership,
+  TrustedDevice
+} from "../protocol/types.js";
 import {
   consumePairingCode,
   createPairingToken,
+  getLatestDeviceMembership,
   insertDeviceSyncEvent,
+  listDeviceMemberships,
   listTrustedDevices,
   revokeTrustedDevice,
+  upsertDeviceMembership,
   upsertTrustedDevice
 } from "./devices.store.js";
 
 export const devicesRouter = Router();
 
+// Verify a SignedDeviceMembership submitted by a client. Looks up the
+// owner's identity public key from the registry and uses it to verify
+// the signature. Returns a structured result so the route can decide
+// what HTTP status to surface.
+type MembershipAcceptance =
+  | { ok: true; membership: SignedDeviceMembership }
+  | { ok: false; error: "owner_unknown" | "invalid_membership_signature" | "owner_mismatch" | "device_mismatch" | "sequence_regression" };
+
+function acceptSignedMembership(
+  candidate: unknown,
+  expected: { ownerCanonicalId: string; deviceId: string; trustState: SignedDeviceMembership["trust_state"] }
+): MembershipAcceptance {
+  if (typeof candidate !== "object" || candidate === null) {
+    return { ok: false, error: "invalid_membership_signature" };
+  }
+  const membership = candidate as SignedDeviceMembership;
+  if (membership.owner_canonical_id !== expected.ownerCanonicalId) return { ok: false, error: "owner_mismatch" };
+  if (membership.device_id !== expected.deviceId) return { ok: false, error: "device_mismatch" };
+  if (membership.trust_state !== expected.trustState) return { ok: false, error: "device_mismatch" };
+
+  const owner = getIdentityByCanonicalId(expected.ownerCanonicalId);
+  if (owner === null) return { ok: false, error: "owner_unknown" };
+  const ownerKey = owner.document.keys?.identity;
+  if (!ownerKey) return { ok: false, error: "owner_unknown" };
+
+  if (!verifyDeviceMembership(membership, ownerKey.public_key, ownerKey.type ?? "ed25519")) {
+    return { ok: false, error: "invalid_membership_signature" };
+  }
+
+  const latest = getLatestDeviceMembership(expected.deviceId);
+  if (latest !== null && membership.sequence < latest.sequence) {
+    return { ok: false, error: "sequence_regression" };
+  }
+
+  return { ok: true, membership };
+}
+
 devicesRouter.get("/:ownerCanonicalId", (request, response) => {
-  response.json({ devices: listTrustedDevices(request.params.ownerCanonicalId) });
+  // `devices` remains the trusted_devices cache (for current UI).
+  // `memberships` exposes the canonical signed docs alongside it; old
+  // clients that don't read this field are unaffected.
+  response.json({
+    devices: listTrustedDevices(request.params.ownerCanonicalId),
+    memberships: listDeviceMemberships(request.params.ownerCanonicalId)
+  });
 });
 
 devicesRouter.post("/register", (request, response) => {
@@ -24,6 +76,7 @@ devicesRouter.post("/register", (request, response) => {
     device_public_key?: unknown;
     trust_state?: unknown;
     capabilities?: unknown;
+    signed_membership?: unknown;
   };
 
   if (
@@ -36,6 +89,22 @@ devicesRouter.post("/register", (request, response) => {
     return;
   }
 
+  const trustState: "active" | "revoked" = body.trust_state === "revoked" ? "revoked" : "active";
+
+  let acceptedMembership: SignedDeviceMembership | null = null;
+  if (body.signed_membership !== undefined) {
+    const result = acceptSignedMembership(body.signed_membership, {
+      ownerCanonicalId: body.owner_canonical_id,
+      deviceId: body.device_id,
+      trustState
+    });
+    if (!result.ok) {
+      response.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    acceptedMembership = result.membership;
+  }
+
   const device: TrustedDevice = {
     type: "sudo_trusted_device",
     device_id: body.device_id,
@@ -43,13 +112,18 @@ devicesRouter.post("/register", (request, response) => {
     name: body.name,
     created_at: new Date().toISOString(),
     last_seen_at: new Date().toISOString(),
-    trust_state: body.trust_state === "revoked" ? "revoked" : "active",
+    trust_state: trustState,
     device_public_key: body.device_public_key,
     capabilities: normalizeCapabilities(body.capabilities)
   };
 
   upsertTrustedDevice(device);
-  response.status(201).json({ ok: true, device });
+
+  if (acceptedMembership !== null) {
+    upsertDeviceMembership(acceptedMembership);
+  }
+
+  response.status(201).json({ ok: true, device, membership: acceptedMembership });
 });
 
 devicesRouter.post("/pair/start", (request, response) => {
@@ -71,6 +145,7 @@ devicesRouter.post("/pair/complete", (request, response) => {
     name?: unknown;
     device_public_key?: unknown;
     encrypted_bootstrap_payload?: unknown;
+    signed_membership?: unknown;
   };
 
   if (
@@ -90,6 +165,20 @@ devicesRouter.post("/pair/complete", (request, response) => {
     return;
   }
 
+  let acceptedMembership: SignedDeviceMembership | null = null;
+  if (body.signed_membership !== undefined) {
+    const result = acceptSignedMembership(body.signed_membership, {
+      ownerCanonicalId: token.owner_canonical_id,
+      deviceId: body.device_id,
+      trustState: "active"
+    });
+    if (!result.ok) {
+      response.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    acceptedMembership = result.membership;
+  }
+
   const device: TrustedDevice = {
     type: "sudo_trusted_device",
     device_id: body.device_id,
@@ -106,6 +195,10 @@ devicesRouter.post("/pair/complete", (request, response) => {
   };
   upsertTrustedDevice(device);
 
+  if (acceptedMembership !== null) {
+    upsertDeviceMembership(acceptedMembership);
+  }
+
   const syncEvent: DeviceSyncEvent = {
     type: "sudo_device_sync_event",
     event_id: randomUUID(),
@@ -117,14 +210,33 @@ devicesRouter.post("/pair/complete", (request, response) => {
   };
   insertDeviceSyncEvent(syncEvent);
 
-  response.status(201).json({ ok: true, device, pairing_code: body.pairing_code });
+  response.status(201).json({
+    ok: true,
+    device,
+    pairing_code: body.pairing_code,
+    membership: acceptedMembership
+  });
 });
 
 devicesRouter.post("/:deviceId/revoke", (request, response) => {
-  const body = request.body as { owner_canonical_id?: unknown };
+  const body = request.body as { owner_canonical_id?: unknown; signed_membership?: unknown };
   if (typeof body.owner_canonical_id !== "string") {
     response.status(400).json({ ok: false, error: "invalid_owner" });
     return;
+  }
+
+  let acceptedMembership: SignedDeviceMembership | null = null;
+  if (body.signed_membership !== undefined) {
+    const result = acceptSignedMembership(body.signed_membership, {
+      ownerCanonicalId: body.owner_canonical_id,
+      deviceId: request.params.deviceId,
+      trustState: "revoked"
+    });
+    if (!result.ok) {
+      response.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+    acceptedMembership = result.membership;
   }
 
   const device = revokeTrustedDevice(body.owner_canonical_id, request.params.deviceId);
@@ -133,7 +245,11 @@ devicesRouter.post("/:deviceId/revoke", (request, response) => {
     return;
   }
 
-  response.json({ ok: true, device });
+  if (acceptedMembership !== null) {
+    upsertDeviceMembership(acceptedMembership);
+  }
+
+  response.json({ ok: true, device, membership: acceptedMembership });
 });
 
 function normalizeCapabilities(value: unknown): TrustedDevice["capabilities"] {

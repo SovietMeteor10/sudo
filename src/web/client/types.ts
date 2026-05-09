@@ -12,6 +12,8 @@ import type {
   RelayCapability as ProtocolRelayCapability,
   TrustedDevice as ProtocolTrustedDevice,
   SearchResult as ProtocolSearchResult,
+  SignableDeviceMembership as ProtocolSignableDeviceMembership,
+  SignedDeviceMembership as ProtocolSignedDeviceMembership,
   StreamPost as ProtocolStreamPost
 } from "../../protocol/types.js";
 
@@ -25,6 +27,8 @@ export type DiscoveryPostIndex = ProtocolDiscoveryPostIndex;
 export type DiscoveryReaction = ProtocolDiscoveryReaction;
 export type TrustedDevice = ProtocolTrustedDevice;
 export type DeviceSyncEvent = ProtocolDeviceSyncEvent;
+export type SignableDeviceMembership = ProtocolSignableDeviceMembership;
+export type SignedDeviceMembership = ProtocolSignedDeviceMembership;
 
 export type LocalIdentity = {
   handle: string;

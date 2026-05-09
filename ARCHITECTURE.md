@@ -67,6 +67,17 @@ uses the server as a relay and rendezvous point. The server stores signed
 public identity data and trusted-device metadata, but it is not the canonical
 owner of private user state.
 
+The canonical trust object for a trusted device is the **SignedDeviceMembership**
+doc — signed by the owner's identity key (the same key that signs the
+IdentityDocument) and stored in the `device_memberships` table. Anyone holding
+the owner's identity public key can verify a membership without trusting the
+server's index. The `trusted_devices` SQLite row is an index/cache derived
+from these signed docs so reads stay cheap; if the cache is wiped or skewed,
+`rebuildTrustedDevicesFromMemberships` can replay the canonical log to
+reconstruct it. Pairing and revocation accept an optional `signed_membership`
+on the API today; legacy clients that don't yet send one still work, and the
+cache row remains the read path for the current UI.
+
 Trusted devices are modeled separately so future encrypted event-diff sync can
 move between devices without turning the relay into the source of truth. That
 future sync layer should stream encrypted changes for messages, contacts,

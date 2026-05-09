@@ -8,6 +8,7 @@ import type {
   FeedSubscription,
   IdentityDocument,
   NodeCapabilityDocument,
+  SignedDeviceMembership,
   TrustedDevice,
   SearchResult
 } from "./types.js";
@@ -59,14 +60,17 @@ export async function listTrustedDevices(ownerCanonicalId: string): Promise<Trus
   return Array.isArray(body.devices) ? body.devices : [];
 }
 
-export async function registerTrustedDevice(input: TrustedDevice): Promise<TrustedDevice> {
+export async function registerTrustedDevice(
+  input: TrustedDevice,
+  signedMembership?: SignedDeviceMembership
+): Promise<TrustedDevice> {
   const response = await fetchWithTimeout("/api/devices/register", {
     method: "POST",
     headers: {
       accept: "application/json",
       "content-type": "application/json"
     },
-    body: JSON.stringify(input)
+    body: JSON.stringify(signedMembership === undefined ? input : { ...input, signed_membership: signedMembership })
   });
 
   const body = await response.json() as { ok?: boolean; device?: TrustedDevice; error?: string };

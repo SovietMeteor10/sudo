@@ -1,8 +1,10 @@
 import { createPublicKey, sign, verify } from "node:crypto";
 import type {
   IdentityDocument,
+  SignableDeviceMembership,
   SignableFeedPost,
   SignableIdentityDocument,
+  SignedDeviceMembership,
   SigningKeyType
 } from "../protocol/types.js";
 import { base64Url, base64UrlToBuffer } from "./hash.js";
@@ -20,6 +22,26 @@ export function signIdentityDocument(
 
 export function signFeedPost(post: SignableFeedPost, privateKey: string): string {
   return base64Url(sign(null, Buffer.from(canonicalJson(post)), privateKey));
+}
+
+export function signDeviceMembership(
+  membership: SignableDeviceMembership,
+  ownerIdentityPrivateKey: string
+): string {
+  return base64Url(sign(null, Buffer.from(canonicalJson(membership)), ownerIdentityPrivateKey));
+}
+
+// Verify a SignedDeviceMembership against the owner's identity public
+// key. The public key may be a base64url-encoded SPKI string (the
+// shape produced by IdentityDocument.keys.identity.public_key for
+// browser-issued ed25519 keys) or a PEM string.
+export function verifyDeviceMembership(
+  membership: SignedDeviceMembership,
+  ownerIdentityPublicKey: string,
+  keyType: SigningKeyType = "ed25519"
+): boolean {
+  const { signature, ...signable } = membership;
+  return verifyCanonicalSignature(signable, signature, ownerIdentityPublicKey, keyType);
 }
 
 export function verifyIdentityDocument(document: IdentityDocument): boolean {

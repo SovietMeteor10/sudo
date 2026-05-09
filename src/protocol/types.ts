@@ -242,6 +242,35 @@ export type DeviceSyncEvent = {
   encrypted_payload: string;
 };
 
+// SignedDeviceMembership is the canonical trust object for a trusted
+// device under a sudo account. It is signed by the owner's identity
+// key — the same key that signs the IdentityDocument — so any peer
+// holding the owner's identity public key can verify membership
+// without trusting the server's index. The trusted_devices SQLite row
+// is an index/cache derived from these signed docs; if the cache is
+// lost it can be rebuilt by re-reading the docs.
+export type SignableDeviceMembership = {
+  type: "sudo_device_membership";
+  protocol_version: string;
+  owner_canonical_id: CanonicalId;
+  device_id: string;
+  device_public_key: PublicKey;
+  device_key_type: SigningKeyType;
+  name: string;
+  capabilities: {
+    can_sync: boolean;
+    can_decrypt: boolean;
+  };
+  trust_state: "active" | "revoked";
+  created_at: string;
+  updated_at: string;
+  sequence: number;
+};
+
+export type SignedDeviceMembership = SignableDeviceMembership & {
+  signature: Signature;
+};
+
 export type StreamPost = {
   id: string;
   handle: Handle;

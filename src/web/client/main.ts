@@ -43,7 +43,7 @@ import {
   unlockBrowserCryptoAccount,
   type BrowserCryptoAccount
 } from "./crypto/key-storage.js";
-import { signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
+import { signDeviceMembership, signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
   feedPostToUnifiedItem,
   formatPostTimestamp,
@@ -1167,8 +1167,12 @@ async function doSignup(handle: string, password: string): Promise<void> {
   setSignedIn(identity.handle);
   flashFeedback("account created");
   setFeedTab("personal");
-  // Best-effort device sync; never blocks signup completion.
-  void syncCurrentDeviceToServer(trustedDevice).catch((error) => {
+  // Best-effort device sync; never blocks signup completion. We also
+  // mint a self-signed SignedDeviceMembership so this device can act
+  // as a sync origin (server requires an active membership for any
+  // origin device).
+  const selfMembership = await buildSelfSignedDeviceMembership(identity, draft.account, trustedDevice);
+  void syncCurrentDeviceToServer(trustedDevice, selfMembership ?? undefined).catch((error) => {
     console.warn("[auth] device sync after signup failed", error instanceof Error ? error.message : error);
     devicePanelFeedback.textContent = "device sync delayed; account created";
   });
@@ -1611,14 +1615,48 @@ async function refreshDevicePanel(): Promise<void> {
   renderDevicePanel(deviceList, currentDeviceId, devices, activePairingCode);
 }
 
-async function syncCurrentDeviceToServer(device: import("./types.js").TrustedDevice): Promise<void> {
+async function syncCurrentDeviceToServer(
+  device: import("./types.js").TrustedDevice,
+  signedMembership?: import("./types.js").SignedDeviceMembership
+): Promise<void> {
   if (currentIdentityDocument === null) return;
 
   try {
-    await registerTrustedDevice(device);
+    await registerTrustedDevice(device, signedMembership);
     devicePanelFeedback.textContent = "device saved";
   } catch {
     devicePanelFeedback.textContent = "device saved locally";
+  }
+}
+
+async function buildSelfSignedDeviceMembership(
+  identity: import("./types.js").IdentityDocument,
+  account: BrowserCryptoAccount,
+  device: import("./types.js").TrustedDevice
+): Promise<import("./types.js").SignedDeviceMembership | null> {
+  try {
+    const now = device.last_seen_at;
+    const signable: import("./types.js").SignableDeviceMembership = {
+      type: "sudo_device_membership",
+      protocol_version: "0.1.0",
+      owner_canonical_id: identity.canonical_id,
+      device_id: device.device_id,
+      device_public_key: device.device_public_key,
+      device_key_type: account.identity_key_type,
+      name: device.name,
+      capabilities: device.capabilities,
+      trust_state: device.trust_state,
+      created_at: device.created_at,
+      updated_at: now,
+      sequence: 1
+    };
+    const signature = await signDeviceMembership(signable, account.identity_key, account.identity_key_type);
+    return { ...signable, signature };
+  } catch (error) {
+    // Membership is required for sync but is best-effort to mint —
+    // signup must still complete if anything in this path fails.
+    console.warn("[sync] self-signed membership build failed", error instanceof Error ? error.message : error);
+    return null;
   }
 }
 

@@ -5,8 +5,13 @@ import type { LocalCryptoAccountRecord } from "../local/local-types.js";
 import { createIdentityDocumentDraft } from "./identity.js";
 import { generateDeviceKeyPair, generateMessagingKeyPair, generateSigningKeyPair, importMessagingKeyPair, importSigningKeyPair } from "./keys.js";
 import { signIdentityDocument } from "./signing.js";
+import { deriveSyncSymKey } from "./sync.js";
 
-const ACCOUNT_VERSION = 1;
+// ACCOUNT_VERSION 2 added the account_sync key to the bundle. v1
+// bundles are still readable: unlock generates a fresh sync key and
+// re-encrypts the bundle in place. There is no migration path that
+// moves any private sync key off-device.
+const ACCOUNT_VERSION = 2;
 const ACCOUNT_ITERATIONS = 250000;
 
 type StoredPrivateBundle = {
@@ -30,6 +35,15 @@ type StoredPrivateBundle = {
     publicKeySpki: string;
     privateKeyPkcs8: string;
   };
+  // Per-account signing key used to authenticate future encrypted
+  // device-to-device sync messages. The private half lives only inside
+  // this encrypted bundle; the public half can be advertised later
+  // (e.g. via SignedDeviceMembership) once the sync layer lands.
+  account_sync?: {
+    type: "ed25519" | "ecdsa-p256";
+    publicKeySpki: string;
+    privateKeyPkcs8: string;
+  };
 };
 
 export type BrowserCryptoAccount = {
@@ -40,6 +54,14 @@ export type BrowserCryptoAccount = {
   feed_key: CryptoKey;
   messaging_key: CryptoKey;
   device_key: CryptoKey;
+  account_sync_key: CryptoKey;
+  account_sync_public_key_spki: string;
+  account_sync_key_type: "ed25519" | "ecdsa-p256";
+  // AES-GCM key derived once at unlock from the account sync key's
+  // raw bytes. Same on every device that holds the bundle, so paired
+  // devices can decrypt each other's sync events without further
+  // negotiation. The bytes used to derive it never leave this module.
+  account_sync_sym_key: CryptoKey;
   identity_key_type: "ed25519" | "ecdsa-p256";
   messaging_key_type: "x25519" | "ecdh-p256";
 };
@@ -67,6 +89,7 @@ export async function createBrowserCryptoAccount(options: {
   const feed = await generateSigningKeyPair();
   const messaging = await generateMessagingKeyPair();
   const device = await generateDeviceKeyPair();
+  const accountSync = await generateSigningKeyPair();
 
   const unsigned = await createIdentityDocumentDraft({
     handle,
@@ -87,6 +110,8 @@ export async function createBrowserCryptoAccount(options: {
     signature
   };
 
+  const accountSyncSymKey = await deriveSyncSymKey(accountSync.privateKeyPkcs8);
+
   const account: BrowserCryptoAccount = {
     canonical_id: identityDocument.canonical_id,
     handle: identityDocument.handle,
@@ -95,6 +120,10 @@ export async function createBrowserCryptoAccount(options: {
     feed_key: feed.privateKey,
     messaging_key: messaging.privateKey,
     device_key: device.privateKey,
+    account_sync_key: accountSync.privateKey,
+    account_sync_public_key_spki: accountSync.publicKeySpki,
+    account_sync_key_type: accountSync.type,
+    account_sync_sym_key: accountSyncSymKey,
     identity_key_type: identity.type,
     messaging_key_type: messaging.type
   };
@@ -141,6 +170,30 @@ export async function unlockBrowserCryptoAccount(
     privateKeyPkcs8: bundle.device.privateKeyPkcs8
   });
 
+  // Legacy v1 bundles predate account_sync. Generate it here, mark
+  // the bundle as needing re-encryption, and persist the upgraded
+  // record back to local storage so the next unlock is a no-op. The
+  // private sync key never leaves the device.
+  let accountSync;
+  let accountSyncBundle = bundle.account_sync ?? null;
+  if (accountSyncBundle === null) {
+    const generated = await generateSigningKeyPair();
+    accountSync = generated;
+    accountSyncBundle = {
+      type: generated.type,
+      publicKeySpki: generated.publicKeySpki,
+      privateKeyPkcs8: generated.privateKeyPkcs8
+    };
+  } else {
+    accountSync = await importSigningKeyPair({
+      type: accountSyncBundle.type,
+      publicKeySpki: accountSyncBundle.publicKeySpki,
+      privateKeyPkcs8: accountSyncBundle.privateKeyPkcs8
+    });
+  }
+
+  const accountSyncSymKey = await deriveSyncSymKey(accountSyncBundle.privateKeyPkcs8);
+
   unlockedAccount = {
     canonical_id: identityDocument.canonical_id,
     handle: identityDocument.handle,
@@ -149,9 +202,18 @@ export async function unlockBrowserCryptoAccount(
     feed_key: feed.privateKey,
     messaging_key: messaging.privateKey,
     device_key: device.privateKey,
+    account_sync_key: accountSync.privateKey,
+    account_sync_public_key_spki: accountSyncBundle.publicKeySpki,
+    account_sync_key_type: accountSyncBundle.type,
+    account_sync_sym_key: accountSyncSymKey,
     identity_key_type: identity.type,
     messaging_key_type: messaging.type
   };
+
+  if (bundle.account_sync === undefined) {
+    const upgraded = await encryptAccountRecord(identityDocument, unlockedAccount, passphrase);
+    await saveCryptoAccount(upgraded);
+  }
 
   return unlockedAccount;
 }
@@ -192,6 +254,11 @@ async function encryptAccountRecord(
       type: account.identity_key_type,
       publicKeySpki: account.identity_document.keys.device?.public_key ?? account.identity_document.keys.identity.public_key,
       privateKeyPkcs8: base64Url(await crypto.subtle.exportKey("pkcs8", account.device_key))
+    },
+    account_sync: {
+      type: account.account_sync_key_type,
+      publicKeySpki: account.account_sync_public_key_spki,
+      privateKeyPkcs8: base64Url(await crypto.subtle.exportKey("pkcs8", account.account_sync_key))
     }
   };
   const ciphertext = await crypto.subtle.encrypt(
@@ -235,9 +302,13 @@ async function decryptAccountBundle(value: string, passphrase: string): Promise<
     ciphertext: string;
   };
 
+  // v1 bundles predate account_sync; unlock will detect the missing
+  // field and re-encrypt at v2 in place. Anything outside [1, 2] is
+  // rejected.
+  const acceptedVersions = new Set([1, ACCOUNT_VERSION]);
   if (
     envelope.type !== "sudo_crypto_account"
-    || envelope.version !== ACCOUNT_VERSION
+    || !acceptedVersions.has(envelope.version)
     || envelope.kdf?.name !== "PBKDF2"
     || envelope.kdf?.hash !== "SHA-256"
     || envelope.cipher?.name !== "AES-GCM"
