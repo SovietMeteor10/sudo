@@ -209,6 +209,43 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     else if (!/^\d{2}:\d{2} \d{2} [A-Z][a-z]{2}( \d{2})?$/.test(postShape.time.trim())) {
       fail("post-header", `expected 'HH:MM DD MMM' (with optional YY), got '${postShape.time}'`);
     } else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
+
+    // 3k. Personal feed posts expose the unified reaction action row
+    // (↑ ↓ ↩ ↻) — both tabs render through the same component now.
+    const actionShape = await page.evaluate(() => {
+      const post = document.querySelector(".stream-post");
+      if (!post) return { ok: false, reason: "no post rendered" };
+      const buttons = Array.from(post.querySelectorAll(".stream-post__action[data-reaction]"));
+      const reactions = buttons.map((b) => b.getAttribute("data-reaction"));
+      return { ok: true, reactions };
+    });
+    if (!actionShape.ok) fail("post-actions", actionShape.reason);
+    else if (actionShape.reactions.length !== 4) fail("post-actions", `expected 4 reaction buttons, got ${actionShape.reactions.length}`);
+    else if (actionShape.reactions.join(",") !== "recommend,downrank,reply,repost") {
+      fail("post-actions", `unexpected reaction order: ${actionShape.reactions.join(",")}`);
+    } else ok("3k. post exposes ↑ ↓ ↩ ↻ action row");
+
+    // 3l. Discover tab renders through .stream-post (unified card),
+    // does not expose recent/rising/hot toggle buttons, and does not
+    // surface the "public discovery index" debug label.
+    const discoverShape = await page.evaluate(() => {
+      const root = document.getElementById("discovery-list");
+      if (!root) return { ok: false, reason: "no discovery root" };
+      const text = root.textContent ?? "";
+      const buttons = Array.from(root.querySelectorAll("button"));
+      const hasModeButton = buttons.some((b) => {
+        const t = (b.textContent ?? "").trim().toLowerCase();
+        return t === "recent" || t === "rising" || t === "hot";
+      });
+      const hasDebugLabel = /public discovery index/i.test(text);
+      const usesUnifiedCard = root.querySelector(".discovery-card") === null;
+      return { ok: true, hasModeButton, hasDebugLabel, usesUnifiedCard };
+    });
+    if (!discoverShape.ok) fail("discover-shape", discoverShape.reason);
+    else if (discoverShape.hasModeButton) fail("discover-shape", "discover still exposes recent/rising/hot mode buttons");
+    else if (discoverShape.hasDebugLabel) fail("discover-shape", "discover still surfaces 'public discovery index' label");
+    else if (!discoverShape.usesUnifiedCard) fail("discover-shape", "discover still renders legacy .discovery-card layout");
+    else ok("3l. discover renders unified post card with no debug surface");
   }
 
   // ===== 4. Sign out / sign in same device =====

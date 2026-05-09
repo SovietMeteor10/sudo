@@ -16,8 +16,30 @@ import type {
   SearchState,
   SignupState,
   SigninState,
-  StreamPost
 } from "./types.js";
+
+// Unified feed item used by both the personal stream and the discover
+// stream. Either source produces this shape and the same renderer
+// draws it, so the two tabs feel like one feed with different sources.
+export type ReactionKind = "recommend" | "downrank" | "reply" | "repost";
+export type ReactionCounts = {
+  recommend: number;
+  downrank: number;
+  reply: number;
+  repost: number;
+};
+export type UnifiedFeedItem = {
+  post_id: string;
+  author_canonical_id: string;
+  author_handle?: string;
+  body: string;
+  created_at: string;
+  counts: ReactionCounts;
+};
+
+export type ReactionHandler = (postId: string, kind: ReactionKind) => void;
+
+const ZERO_COUNTS: ReactionCounts = { recommend: 0, downrank: 0, reply: 0, repost: 0 };
 
 const BODY_FONT = '15px "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace';
 
@@ -143,56 +165,143 @@ function renderWaitingForLocalData(): HTMLElement[] {
   ];
 }
 
-export function renderStream(root: HTMLElement, feedPosts: FeedPost[] = []): void {
+export function renderStream(root: HTMLElement, items: UnifiedFeedItem[] = []): void {
   unmountAllTextSurfaces();
-  if (feedPosts.length === 0) {
+  if (items.length === 0) {
     root.replaceChildren(line("no posts yet", "lookup__empty"));
     return;
   }
   const fragment = document.createDocumentFragment();
-  for (const post of feedPosts) {
-    fragment.append(renderFeedPost(post));
-  }
+  for (const item of items) fragment.append(renderUnifiedFeedItem(item));
   root.replaceChildren(fragment);
 }
 
-export function renderDiscoveryPanel(
-  root: HTMLElement,
-  state: DiscoveryState,
-  currentIdentityCanonicalId: string | null
-): void {
+export function renderDiscoveryPanel(root: HTMLElement, state: DiscoveryState): void {
+  // Discover is presented as a feed, not a debug ranking index. Mode
+  // toggles, score numbers, and reaction count strings have moved off
+  // the user-facing surface — the UI uses the same post card as the
+  // personal feed.
   if (state.status === "idle" || state.status === "loading") {
-    root.replaceChildren(
-      discoveryToolbar(state.mode),
-      line("loading discovery...", "lookup__empty")
-    );
+    root.replaceChildren(line("loading...", "lookup__empty"));
     return;
   }
 
   if (state.status === "error") {
-    root.replaceChildren(
-      discoveryToolbar(state.mode),
-      block("lookup-card lookup-card--error", [
-        line(state.message, "is-danger")
-      ]),
-    );
+    root.replaceChildren(line(state.message, "is-danger"));
+    return;
+  }
+
+  if (state.posts.length === 0) {
+    root.replaceChildren(line("no discoverable posts", "lookup__empty"));
     return;
   }
 
   const fragment = document.createDocumentFragment();
-  fragment.append(discoveryToolbar(state.mode));
-
-  if (state.posts.length === 0) {
-    fragment.append(line("no discoverable posts", "lookup__empty"));
-    root.replaceChildren(fragment);
-    return;
-  }
-
-  for (const post of state.posts) {
-    fragment.append(renderDiscoveryPost(post, currentIdentityCanonicalId));
-  }
-
+  for (const post of state.posts) fragment.append(renderUnifiedFeedItem(discoveryToUnifiedItem(post)));
   root.replaceChildren(fragment);
+}
+
+export function feedPostToUnifiedItem(post: FeedPost): UnifiedFeedItem {
+  const text = post.body
+    ?? post.public_metadata?.summary
+    ?? post.public_metadata?.title
+    ?? "[encrypted body]";
+  return {
+    post_id: post.post_id,
+    author_canonical_id: post.author_canonical_id,
+    author_handle: post.author_handle,
+    body: text,
+    created_at: post.created_at,
+    // Personal feed posts don't carry reaction counts in their backend
+    // shape; render zeros so the action row stays visually consistent.
+    counts: { ...ZERO_COUNTS }
+  };
+}
+
+function discoveryToUnifiedItem(post: DiscoveryPostIndex): UnifiedFeedItem {
+  const body = post.body_excerpt && post.body_excerpt.length > 0
+    ? post.body_excerpt
+    : "[no excerpt]";
+  return {
+    post_id: post.post_id,
+    author_canonical_id: post.author_canonical_id,
+    author_handle: post.author_handle,
+    body,
+    created_at: post.created_at,
+    counts: {
+      recommend: post.recommend_count ?? 0,
+      downrank: post.downrank_count ?? 0,
+      reply: post.reply_count ?? 0,
+      repost: post.repost_count ?? 0
+    }
+  };
+}
+
+const REACTION_GLYPHS: Record<ReactionKind, string> = {
+  recommend: "↑",
+  downrank: "↓",
+  reply: "↩",
+  repost: "↻"
+};
+
+const REACTION_LABELS: Record<ReactionKind, string> = {
+  recommend: "recommend",
+  downrank: "downrank",
+  reply: "reply",
+  repost: "repost"
+};
+
+function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
+  const article = document.createElement("article");
+  article.className = "stream-post";
+  article.dataset["postId"] = item.post_id;
+
+  const meta = document.createElement("div");
+  meta.className = "stream-post__meta";
+
+  const author = document.createElement("span");
+  author.className = "stream-post__handle";
+  author.textContent = item.author_handle ?? shortCanonical(item.author_canonical_id);
+
+  const time = document.createElement("span");
+  time.className = "stream-post__time";
+  time.textContent = formatPostTimestamp(item.created_at);
+
+  meta.append(author, time);
+
+  const body = document.createElement("div");
+  body.className = "stream-post__body";
+  mountTextSurface(body, item.body, { font: BODY_FONT, lineHeight: 23 });
+
+  const actions = document.createElement("div");
+  actions.className = "stream-post__actions";
+  const order: ReactionKind[] = ["recommend", "downrank", "reply", "repost"];
+  for (const kind of order) {
+    actions.append(renderReactionButton(kind, item.counts[kind]));
+  }
+
+  article.append(meta, body, actions);
+  return article;
+}
+
+function renderReactionButton(kind: ReactionKind, count: number): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `stream-post__action stream-post__action--${kind}`;
+  button.dataset["reaction"] = kind;
+  button.setAttribute("aria-label", REACTION_LABELS[kind]);
+
+  const glyph = document.createElement("span");
+  glyph.className = "stream-post__action-glyph";
+  glyph.setAttribute("aria-hidden", "true");
+  glyph.textContent = REACTION_GLYPHS[kind];
+
+  const counter = document.createElement("span");
+  counter.className = "stream-post__action-count";
+  counter.textContent = String(count);
+
+  button.append(glyph, counter);
+  return button;
 }
 
 export function renderLookupResult(root: HTMLElement, state: LookupState): void {
@@ -286,76 +395,7 @@ export function renderSearchResults(
   root.replaceChildren(fragment);
 }
 
-function renderPost(post: StreamPost): HTMLElement {
-  const article = document.createElement("article");
-  article.className = "stream-post";
 
-  const meta = document.createElement("div");
-  meta.className = "stream-post__meta";
-  meta.textContent = `${post.at}  ${post.handle}`;
-
-  const body = document.createElement("div");
-  body.className = "stream-post__body";
-  mountTextSurface(body, post.body, { font: BODY_FONT, lineHeight: 23 });
-
-  article.append(meta, body);
-  return article;
-}
-
-function renderFeedPost(post: FeedPost): HTMLElement {
-  const article = document.createElement("article");
-  article.className = "stream-post";
-
-  const meta = document.createElement("div");
-  meta.className = "stream-post__meta";
-
-  const author = document.createElement("span");
-  author.className = "stream-post__handle";
-  author.textContent = post.author_handle ?? shortCanonical(post.author_canonical_id);
-
-  const time = document.createElement("span");
-  time.className = "stream-post__time";
-  time.textContent = formatPostTimestamp(post.created_at);
-
-  meta.append(author, time);
-
-  const body = document.createElement("div");
-  body.className = "stream-post__body";
-  const text = post.body
-    ?? post.public_metadata.summary
-    ?? post.public_metadata.title
-    ?? "[encrypted body]";
-  mountTextSurface(body, text, { font: BODY_FONT, lineHeight: 23 });
-
-  article.append(meta, body);
-  return article;
-}
-
-function renderDiscoveryPost(post: DiscoveryPostIndex, currentIdentityCanonicalId: string | null): HTMLElement {
-  const article = block("discovery-card", [
-    line(`${post.author_handle ?? shortCanonical(post.author_canonical_id)}  [${post.visibility}]`, "discovery-card__handle"),
-    line(post.body_excerpt.length > 0 ? post.body_excerpt : "[no excerpt]", "discovery-card__excerpt"),
-    line(post.explanation, "is-muted"),
-    line(`hot ${post.hot_score.toFixed(3)}  rising ${post.rising_score.toFixed(3)}`, "is-muted"),
-    line(`reactions: +${post.recommend_count} -${post.downrank_count} replies ${post.reply_count} reposts ${post.repost_count} reports ${post.report_count}`, "is-muted"),
-  ]);
-  article.dataset["postId"] = post.post_id;
-
-  if (post.author_fingerprint_grid !== undefined) {
-    article.prepend(renderFingerprintGrid(post.author_fingerprint_grid));
-  }
-
-  const actions = document.createElement("div");
-  actions.className = "lookup-card__actions";
-  actions.append(
-    discoveryButton("recommend", "recommend", currentIdentityCanonicalId),
-    discoveryButton("downrank", "downrank", currentIdentityCanonicalId),
-    discoveryButton("repost", "repost", currentIdentityCanonicalId),
-    discoveryButton("report", "report", currentIdentityCanonicalId),
-  );
-  article.append(actions);
-  return article;
-}
 
 function renderResolvedIdentity(
   identity: IdentityDocument,
@@ -458,41 +498,6 @@ function button(label: string, action: string): HTMLButtonElement {
   return element;
 }
 
-function discoveryButton(label: string, reaction: string, currentIdentityCanonicalId: string | null): HTMLButtonElement {
-  const element = document.createElement("button");
-  element.type = "button";
-  element.className = "lookup-card__button";
-  element.dataset["discoveryReaction"] = reaction;
-  element.textContent = label;
-  element.disabled = currentIdentityCanonicalId === null;
-  if (currentIdentityCanonicalId === null) {
-    element.title = "sign in to react";
-  }
-  return element;
-}
-
-function discoveryToolbar(mode: DiscoveryState["mode"]): HTMLElement {
-  const wrapper = document.createElement("div");
-  wrapper.className = "discovery-toolbar";
-
-  const label = document.createElement("div");
-  label.className = "discovery-toolbar__label";
-  label.textContent = "public discovery index";
-
-  const modes = document.createElement("div");
-  modes.className = "discovery-toolbar__modes";
-  for (const item of ["recent", "rising", "hot"] as const) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = item === mode ? "lookup-card__button is-active" : "lookup-card__button";
-    button.dataset["discoveryMode"] = item;
-    button.textContent = item;
-    modes.append(button);
-  }
-
-  wrapper.append(label, modes);
-  return wrapper;
-}
 
 function rule(): HTMLElement {
   const element = document.createElement("div");

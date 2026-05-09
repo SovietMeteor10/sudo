@@ -10,6 +10,7 @@ import {
   listDiscoveryPosts,
   getConnectionRelationship,
   fingerprintPublicKey,
+  listConnections,
   listFeedSubscriptions,
   listUserFeedPosts,
   lookupHandle,
@@ -37,6 +38,7 @@ import {
 } from "./crypto/key-storage.js";
 import { signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
 import {
+  feedPostToUnifiedItem,
   renderChatList,
   renderDiscoveryPanel,
   renderDevicePanel,
@@ -45,7 +47,8 @@ import {
   renderSearchResults,
   renderSigninState,
   renderSignupState,
-  renderStream
+  renderStream,
+  type ReactionKind
 } from "./components.js";
 import {
   clearDevSessionToken,
@@ -175,7 +178,9 @@ let lookupState: LookupState = { status: "idle" };
 let signupState: SignupState = { status: "idle" };
 let signinState: SigninState = { status: "idle" };
 let searchState: SearchState = { status: "idle" };
-let discoveryState: DiscoveryState = { status: "idle", mode: "recent" };
+// Discover tab uses one default ordering and never exposes mode toggles
+// to the UI. "rising" is the closest to "trending right now".
+let discoveryState: DiscoveryState = { status: "idle", mode: "rising" };
 let currentIdentity: LocalIdentity = localIdentity;
 let currentIdentityDocument: IdentityDocument | null = null;
 let currentIdentityFingerprint: string | null = null;
@@ -208,7 +213,7 @@ renderLookupResult(lookupRoot, lookupState);
 renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
 renderChatList(chatsRoot, localChats);
-renderDiscoveryPanel(discoveryRoot, discoveryState, null);
+renderDiscoveryPanel(discoveryRoot, discoveryState);
 renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
 landingBrand.textContent = brandLabel;
@@ -272,22 +277,29 @@ lookupRoot.addEventListener("click", (event) => {
   void handleLookupRelationshipAction(action);
 });
 
-discoveryRoot.addEventListener("click", (event) => {
+// Both the personal feed and the discover feed render through the same
+// .stream-post component, so reaction clicks are delegated identically
+// from either root. The reply icon is currently a placeholder (no
+// thread UI yet) and is intentionally a no-op.
+const handleFeedClick = (event: Event): void => {
   const target = event.target;
-  if (!(target instanceof HTMLButtonElement)) return;
+  if (!(target instanceof HTMLElement)) return;
+  const button = target.closest<HTMLButtonElement>(".stream-post__action[data-reaction]");
+  if (button === null) return;
+  const reaction = button.dataset["reaction"];
+  const article = button.closest<HTMLElement>("[data-post-id]");
+  const postId = article?.dataset["postId"];
+  if (typeof reaction !== "string" || typeof postId !== "string") return;
+  if (reaction === "reply") return;
+  if (!isReactionKind(reaction)) return;
+  void handleFeedReaction(postId, reaction);
+};
+streamRoot.addEventListener("click", handleFeedClick);
+discoveryRoot.addEventListener("click", handleFeedClick);
 
-  const mode = target.dataset["discoveryMode"] as DiscoveryMode | undefined;
-  if (mode !== undefined) {
-    void setDiscoveryMode(mode);
-    return;
-  }
-
-  const reaction = target.dataset["discoveryReaction"];
-  const postId = target.closest("[data-post-id]")?.getAttribute("data-post-id");
-  if (reaction !== undefined && postId !== undefined && postId !== null && isDiscoveryReaction(reaction)) {
-    void handleDiscoveryReaction(postId, reaction);
-  }
-});
+function isReactionKind(value: string): value is ReactionKind {
+  return value === "recommend" || value === "downrank" || value === "reply" || value === "repost";
+}
 
 deviceList.addEventListener("click", (event) => {
   const target = event.target;
@@ -1637,21 +1649,52 @@ async function createEncryptedBootstrapPayload(
 
 async function refreshFeedPosts(): Promise<void> {
   if (currentIdentityDocument === null) {
-    renderStream(streamRoot);
+    renderStream(streamRoot, []);
     return;
   }
 
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  // Personal feed = own posts + posts from known/close connections +
+  // subscribed authors. Each fetch is best-effort; one failure does not
+  // sink the rest.
   try {
-    const posts = await listUserFeedPosts(currentIdentityDocument.canonical_id, currentIdentityDocument.canonical_id);
-    renderStream(streamRoot, posts);
+    const [connections, subscriptions] = await Promise.all([
+      listConnections(ownerCanonicalId).catch(() => []),
+      listFeedSubscriptions(ownerCanonicalId).catch(() => [])
+    ]);
+
+    const authors = new Set<string>([ownerCanonicalId]);
+    for (const connection of connections) {
+      if (connection.tier === "known" || connection.tier === "close") {
+        authors.add(connection.subject_canonical_id);
+      }
+    }
+    for (const subscription of subscriptions) {
+      if (subscription.muted) continue;
+      authors.add(subscription.author_canonical_id);
+    }
+
+    const fetched = await Promise.all([...authors].map((author) =>
+      listUserFeedPosts(author, ownerCanonicalId).catch(() => [])
+    ));
+    const merged = new Map<string, ReturnType<typeof feedPostToUnifiedItem>>();
+    for (const posts of fetched) {
+      for (const post of posts) {
+        if (!merged.has(post.post_id)) merged.set(post.post_id, feedPostToUnifiedItem(post));
+      }
+    }
+    const items = [...merged.values()].sort((left, right) =>
+      right.created_at.localeCompare(left.created_at)
+    );
+    renderStream(streamRoot, items);
   } catch {
-    renderStream(streamRoot);
+    renderStream(streamRoot, []);
   }
 }
 
 async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode): Promise<void> {
   discoveryState = { status: "loading", mode };
-  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+  renderDiscoveryPanel(discoveryRoot, discoveryState);
 
   try {
     const posts = await listDiscoveryPosts(mode, 20, 0);
@@ -1664,32 +1707,20 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
     };
   }
 
-  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+  renderDiscoveryPanel(discoveryRoot, discoveryState);
 }
 
-async function setDiscoveryMode(mode: DiscoveryMode): Promise<void> {
-  if (discoveryState.mode === mode && discoveryState.status === "loaded") {
-    renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
-    return;
-  }
-
-  await refreshDiscoveryPosts(mode);
-}
-
-async function handleDiscoveryReaction(postId: string, reaction: string): Promise<void> {
+async function handleFeedReaction(postId: string, reaction: ReactionKind): Promise<void> {
   if (currentIdentityDocument === null) {
     flashFeedback("sign in to react");
     return;
   }
-
-  if (!isDiscoveryReaction(reaction)) {
-    return;
-  }
+  // Reply has no thread UI yet — wired buttons are recommend/downrank/repost.
+  if (reaction === "reply") return;
 
   try {
     const reactionId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
-    const reactionType = reaction as "recommend" | "downrank" | "reply" | "repost" | "report";
     const signature = currentCryptoAccount === null
       ? undefined
       : await signDiscoveryReaction(
@@ -1700,7 +1731,7 @@ async function handleDiscoveryReaction(postId: string, reaction: string): Promis
             post_id: postId,
             actor_canonical_id: currentIdentityDocument.canonical_id,
             actor_handle: currentIdentityDocument.handle,
-            reaction: reactionType,
+            reaction,
             created_at: createdAt
           },
           currentCryptoAccount.identity_key,
@@ -1712,14 +1743,22 @@ async function handleDiscoveryReaction(postId: string, reaction: string): Promis
       post_id: postId,
       actor_canonical_id: currentIdentityDocument.canonical_id,
       actor_handle: currentIdentityDocument.handle,
-      reaction: reactionType,
+      reaction,
       created_at: createdAt,
       signature
     });
-    await refreshDiscoveryPosts(discoveryState.mode);
   } catch (error) {
-    flashFeedback(error instanceof Error ? error.message : "reaction failed");
+    // Backend rejects duplicate reactions; surface nothing for the
+    // common case so the UI doesn't yell at users for double-clicking.
+    const message = error instanceof Error ? error.message : "";
+    if (!/duplicate|already|conflict/i.test(message)) {
+      console.warn("[feed] reaction failed", message);
+    }
   }
+  // Refresh whichever feed is currently visible. Discover always shows
+  // counts; personal will pick up the post if it's the user's own.
+  await refreshDiscoveryPosts();
+  await refreshFeedPosts();
 }
 
 async function handleLookupRelationshipAction(action: string): Promise<void> {
@@ -1930,7 +1969,7 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   void refreshDevicePanel();
   void refreshLookupRelationship();
   void refreshFeedPosts();
-  renderDiscoveryPanel(discoveryRoot, discoveryState, currentIdentityDocument?.canonical_id ?? null);
+  renderDiscoveryPanel(discoveryRoot, discoveryState);
   if (searchState.status === "results") {
     void runSearch(searchState.query);
   }
@@ -2210,7 +2249,7 @@ function setSignedOut(): void {
   feedComposerState.textContent = "";
   closeChatPopup();
   void refreshDevicePanel();
-  renderDiscoveryPanel(discoveryRoot, discoveryState, null);
+  renderDiscoveryPanel(discoveryRoot, discoveryState);
   setAccountButtonHandle(null);
   setAccountMenuOpen(false);
   closeChatPopup();
@@ -2225,7 +2264,7 @@ function setSignedOut(): void {
     void runSearch(searchState.query);
   }
   if (discoveryState.status === "loaded") {
-    renderDiscoveryPanel(discoveryRoot, discoveryState, null);
+    renderDiscoveryPanel(discoveryRoot, discoveryState);
   }
 }
 
@@ -2698,10 +2737,3 @@ function getRequiredDialog(id: string): HTMLDialogElement {
 }
 
 
-function isDiscoveryReaction(value: string): value is "recommend" | "downrank" | "reply" | "repost" | "report" {
-  return value === "recommend"
-    || value === "downrank"
-    || value === "reply"
-    || value === "repost"
-    || value === "report";
-}

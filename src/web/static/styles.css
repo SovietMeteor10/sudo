@@ -486,6 +486,52 @@ body[data-auth-state="auth-restore"] .landing {
   color: var(--text);
 }
 
+.stream-post__actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.stream-post__action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  margin: 0;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.stream-post__action:hover,
+.stream-post__action:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+.stream-post__action-glyph {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.stream-post__action-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  min-width: 1ch;
+}
+
+.stream-post__empty {
+  padding: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .text-surface {
   white-space: pre;
 }
