@@ -291,6 +291,38 @@ async function postBody(page, postId) {
     if (!replyShown) fail("reply-render", `reply '${replyText}' did not appear under post`);
     else ok("reply: reply text visible under parent post");
 
+    // Composer should collapse after a successful submit. The replies
+    // list stays visible so the user sees the reply they just posted.
+    const composerAfterSubmit = await pageB.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      return {
+        hasInput: article?.querySelector(".stream-post__reply-input") !== null,
+        hasForm: article?.querySelector(".stream-post__reply-form") !== null,
+        hasList: article?.querySelector(".stream-post__reply-list") !== null,
+        panelMode: article?.querySelector(".stream-post__replies")?.dataset.mode ?? ""
+      };
+    }, postOne);
+    if (composerAfterSubmit.hasInput || composerAfterSubmit.hasForm) {
+      fail("reply-collapse", `composer still visible after submit (mode='${composerAfterSubmit.panelMode}')`);
+    } else if (!composerAfterSubmit.hasList) {
+      fail("reply-collapse", "replies list disappeared after submit");
+    } else ok("reply: composer collapses after submit; replies list remains");
+
+    // Clicking ↩ again should reopen a fresh empty composer.
+    await clickAction(pageB, postOne, ".stream-post__action[data-reaction='reply']");
+    await new Promise((r) => setTimeout(r, 200));
+    const reopened = await pageB.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      const input = article?.querySelector(".stream-post__reply-input");
+      return {
+        present: input !== null && input !== undefined,
+        value: input?.value ?? "non-empty-fallback"
+      };
+    }, postOne);
+    if (!reopened.present) fail("reply-reopen", "composer did not reopen after second click");
+    else if (reopened.value !== "") fail("reply-reopen", `reopened composer not empty: '${reopened.value}'`);
+    else ok("reply: composer reopens empty on second click");
+
     // Reply count on the parent should reflect the new reply.
     const replyCount = await pageB.evaluate((id) => {
       const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
@@ -317,6 +349,79 @@ async function postBody(page, postId) {
     if (bIdsAfter.includes(postOne)) {
       fail("removal", `B still sees A's postOne after disconnect. visible=${bIdsAfter.join(", ")}`);
     } else ok("removal: B's personal feed no longer shows A's posts after disconnect");
+
+    // ===== Directory-search add path =====
+    // The lookup pane is one place to add a connection; the directory
+    // search row's "+" button is another, and it has its own handler
+    // (addChatTarget) that must also trigger the feed refresh. First
+    // unblock A so adding works again, then exercise the search row.
+    await pageB.evaluate(() => {
+      const btn = document.querySelector("[data-relationship-action='set-unblock']");
+      btn?.click();
+    });
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Re-trigger the directory search so the results populate (the
+    // search runs on input). Clear the field first to force a re-fetch.
+    await pageB.evaluate(() => {
+      const input = document.getElementById("lookup-input");
+      input.value = "";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await pageB.type("#lookup-input", `@${handleA}`);
+    await new Promise((r) => setTimeout(r, 600));
+    let searchRowReady = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      searchRowReady = await pageB.evaluate(() =>
+        document.querySelector("#search-results .search-result__add") !== null
+      );
+      if (searchRowReady) break;
+    }
+    if (!searchRowReady) fail("dir-search", "directory search did not surface A's row");
+    // Click the search-result toggle ("+" → "added"). This calls
+    // addChatTarget which now refreshes the personal feed.
+    await pageB.evaluate(() => {
+      const btn = document.querySelector("#search-results .search-result__add");
+      btn?.click();
+    });
+    let bIdsViaSearch = [];
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      bIdsViaSearch = await feedPostIds(pageB);
+      if (bIdsViaSearch.includes(postOne) && bIdsViaSearch.includes(postTwo)) break;
+    }
+    if (!bIdsViaSearch.includes(postOne) || !bIdsViaSearch.includes(postTwo)) {
+      fail("dir-add-backfill", `directory-add did not backfill A's posts; visible=${bIdsViaSearch.join(", ")}`);
+    } else ok("directory: '+' on search row backfills A's posts into B's feed");
+
+    // The same search row toggles to "remove" once the
+    // pending-added timer clears (2s after add). Wait for that label,
+    // then click.
+    let removeReady = false;
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      removeReady = await pageB.evaluate(() => {
+        const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
+        return buttons.some((b) => b.textContent === "remove");
+      });
+      if (removeReady) break;
+    }
+    if (!removeReady) fail("dir-remove-button", "search row never showed 'remove' label after add");
+    await pageB.evaluate(() => {
+      const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
+      const removeBtn = buttons.find((b) => b.textContent === "remove");
+      removeBtn?.click();
+    });
+    let bIdsAfterDirRemove = [];
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      bIdsAfterDirRemove = await feedPostIds(pageB);
+      if (!bIdsAfterDirRemove.includes(postOne) && !bIdsAfterDirRemove.includes(postTwo)) break;
+    }
+    if (bIdsAfterDirRemove.includes(postOne) || bIdsAfterDirRemove.includes(postTwo)) {
+      fail("dir-remove-depopulate", `directory-remove did not drop A's posts; visible=${bIdsAfterDirRemove.join(", ")}`);
+    } else ok("directory: 'remove' on search row depopulates A's posts from B's feed");
   } finally {
     await browser.close();
   }

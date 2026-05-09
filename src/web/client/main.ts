@@ -1667,6 +1667,12 @@ async function createEncryptedBootstrapPayload(
   });
 }
 
+// Single source of truth for rebuilding the signed-in user's feed
+// from current connection/subscription state. Every code path that
+// changes "who's in B's network" must call this so the personal feed
+// reflects the change without a page reload.
+const refreshPersonalFeed = (): Promise<void> => refreshFeedPosts();
+
 async function refreshFeedPosts(): Promise<void> {
   if (currentIdentityDocument === null) {
     renderStream(streamRoot, []);
@@ -1881,12 +1887,22 @@ async function handleRepost(postId: string): Promise<void> {
 function toggleReplyComposer(postId: string, article: HTMLElement): void {
   const panel = article.querySelector<HTMLElement>(`[data-replies-panel="${cssEscape(postId)}"]`);
   if (panel === null) return;
+  // Three states: hidden (no panel), "list" (replies visible, no
+  // composer — shown after a successful submit), "compose" (composer
+  // open with replies visible). Tap-toggle behavior:
+  //   hidden  → compose
+  //   list    → compose (re-open empty composer)
+  //   compose → hidden (collapse)
   if (!panel.hidden && panel.dataset["mode"] === "compose") {
     panel.hidden = true;
     panel.replaceChildren();
     panel.dataset["mode"] = "";
     return;
   }
+  openReplyComposer(postId, panel);
+}
+
+function openReplyComposer(postId: string, panel: HTMLElement): void {
   panel.hidden = false;
   panel.dataset["mode"] = "compose";
   const form = document.createElement("div");
@@ -1900,7 +1916,11 @@ function toggleReplyComposer(postId: string, article: HTMLElement): void {
   submit.className = "stream-post__reply-submit";
   submit.textContent = "reply";
   form.append(textarea, submit);
+  // If we already have a list rendered (we're moving from "list"
+  // back to "compose"), keep it; otherwise build a fresh container.
+  const existingList = panel.querySelector<HTMLElement>(".stream-post__reply-list");
   panel.replaceChildren(form);
+  if (existingList !== null) panel.append(existingList);
 
   // Pre-fetch the existing replies so the user sees prior context.
   void renderRepliesUnder(postId, panel);
@@ -1994,9 +2014,12 @@ async function handleReplySubmit(postId: string, article: HTMLElement): Promise<
       reply_to: postId
     });
     textarea.value = "";
-    // Keep the composer open; refresh just the replies list and the
-    // parent post's reply count. Re-rendering the whole feed would
-    // close this panel and lose the user's place.
+    // Collapse the composer: remove the reply-form, keep the replies
+    // list visible, and switch the panel into "list" mode. Clicking ↩
+    // again will re-open a fresh composer above the list.
+    const form = panel.querySelector<HTMLElement>(".stream-post__reply-form");
+    if (form !== null) form.remove();
+    panel.dataset["mode"] = "list";
     await renderRepliesUnder(postId, panel);
     try {
       const updated = await getDiscoveryPost(postId, currentIdentityDocument.canonical_id);
@@ -2009,9 +2032,11 @@ async function handleReplySubmit(postId: string, article: HTMLElement): Promise<
       // fine; the reply still posted and the list shows it.
     }
   } catch (error) {
-    flashFeedback(error instanceof Error ? error.message : "reply failed");
-  } finally {
+    // Submit failed: leave composer open and surface the reason inline
+    // so the user can retry without losing their text.
     textarea.disabled = false;
+    flashFeedback(error instanceof Error ? error.message : "reply failed");
+    return;
   }
 }
 
@@ -2079,7 +2104,7 @@ async function handleLookupRelationshipAction(action: string): Promise<void> {
     // Adding a connection should backfill the new author's posts;
     // removing one should drop them. Refreshing the personal feed
     // immediately reflects the change without a manual reload.
-    await refreshFeedPosts();
+    await refreshPersonalFeed();
     // Tell sibling tabs to refresh their feed too. We deliberately
     // don't broadcast "contacts" here — that fires for chat-partner
     // writes and would pile feed refreshes onto every incoming
@@ -2358,6 +2383,10 @@ async function addChatTarget(result: SearchResult): Promise<void> {
     fingerprint: result.fingerprint
   }).then(refreshLocalStorageStatus);
   await refreshLocalChats();
+  // Backfill the new connection's posts into B's personal feed
+  // immediately, and notify sibling tabs of the same account.
+  await refreshPersonalFeed();
+  broadcastLocalStateChange("feed", ownerCanonicalId);
   setSearchState(searchState);
 
   const existingTimer = pendingAddedTimers.get(result.canonical);
@@ -2380,6 +2409,11 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
     await deleteFeedSubscription(currentIdentityDocument.canonical_id, canonical);
   }
   await refreshLocalChats();
+  // Drop the removed author's posts from the personal feed.
+  await refreshPersonalFeed();
+  if (currentIdentityDocument !== null) {
+    broadcastLocalStateChange("feed", currentIdentityDocument.canonical_id);
+  }
   setSearchState(searchState);
 }
 
