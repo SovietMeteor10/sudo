@@ -1034,46 +1034,60 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 /* Notifications panel — lower-left column. Sparse terminal style
-   matching the rest of the column. */
+   matching the rest of the column. Horizontal padding lines up with
+   .column__title (16px) and the .lookup__input row above it; rows
+   wrap their text and their action button strip independently so
+   long handles never push action buttons off-screen. */
 .notifications {
   display: flex;
   flex-direction: column;
+  padding: 4px 0 12px;
   font-size: 12px;
   color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .notifications__empty {
   color: var(--muted);
-  padding: 6px 0;
+  padding: 8px 16px;
 }
 
 .notifications__list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  /* No external gap — each row carries its own border-top + padding. */
 }
 
 .notification-row {
   border-top: 1px solid var(--line-soft);
-  padding: 8px 0 6px;
+  padding: 8px 16px;
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
 }
 
 .notification-row__line {
   color: var(--text);
   font-size: 12px;
+  /* Long handles + canonical_id fragments must wrap inside the
+     panel rather than push the action row off-screen. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .notification-row__sub {
   color: var(--muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .notification-row__actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  margin-top: 2px;
 }
 
 .notification-row__action {
@@ -1081,8 +1095,10 @@ body[data-auth-state="auth-restore"] .landing {
   border: 1px solid var(--line-soft);
   color: var(--text);
   font: inherit;
-  padding: 2px 6px;
+  padding: 2px 8px;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .notification-row__action:hover,
@@ -1937,6 +1953,15 @@ body[data-auth-state="signed-in"] .shell {
 /* ============================================================
  * Responsive
  * ============================================================ */
+
+/* Bottom tab bar — hidden on desktop, shown on the mobile breakpoint
+   below. The tabs map directly onto data-mobile-region attributes
+   on each column section so the same layout primitives drive both
+   desktop (three columns) and mobile (one pane at a time). */
+.mobile-tabs {
+  display: none;
+}
+
 @media (max-width: 1100px) {
   :root {
     --column-side: 220px;
@@ -1955,6 +1980,9 @@ body[data-auth-state="signed-in"] .shell {
 @media (max-width: 760px) {
   body {
     font-size: 15px;
+    /* Reserve room at the bottom for the mobile tab bar so content
+       doesn't sit under it. The bar is 52px tall plus safe-area. */
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
   }
 
   .shell {
@@ -1962,13 +1990,73 @@ body[data-auth-state="signed-in"] .shell {
     grid-template-rows: minmax(0, 1fr);
   }
 
-  .column--left,
+  /* Single-pane mode: each .column--* contains regions with
+     data-mobile-region. We display only the region matching
+     body[data-mobile-pane]. Defaults to "feed" if unset. */
+  .column--left {
+    display: none;
+  }
   .column--right {
     display: none;
   }
-
   .column--center {
+    display: none;
+  }
+
+  body[data-mobile-pane="feed"] .column--center,
+  body:not([data-mobile-pane]) .column--center {
     display: flex;
+  }
+  body[data-mobile-pane="chats"] .column--right {
+    display: flex;
+  }
+  body[data-mobile-pane="directory"] .column--left,
+  body[data-mobile-pane="notifications"] .column--left {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+  }
+  body[data-mobile-pane="directory"] .column--left .column__bottom,
+  body[data-mobile-pane="notifications"] .column--left .column__top {
+    display: none;
+  }
+  body[data-mobile-pane="notifications"] .column--left .column__bottom {
+    border-top: 0;
+  }
+
+  .mobile-tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 52px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    z-index: 200;
+  }
+
+  .mobile-tab {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: lowercase;
+    cursor: pointer;
+  }
+
+  .mobile-tab.is-active {
+    color: var(--text);
+    background: var(--panel-soft);
+  }
+
+  /* Auth screen owns the viewport; hide the mobile tab bar until
+     the user is signed in. */
+  body:not([data-auth-state="signed-in"]) .mobile-tabs {
+    display: none;
   }
 
   .composer__input {
@@ -1977,9 +2065,9 @@ body[data-auth-state="signed-in"] .shell {
 
   .chat-popup {
     right: 8px;
-    bottom: 8px;
+    bottom: calc(60px + env(safe-area-inset-bottom, 0px));
     width: calc(100vw - 16px);
-    height: min(70vh, 480px);
+    height: min(60vh, 420px);
   }
 
   .signup-dialog__grid {

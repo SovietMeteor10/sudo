@@ -609,6 +609,28 @@ for (const button of feedTabButtons) {
   });
 }
 
+// ----- mobile bottom tabs -----
+// Each button maps to a data-mobile-region on a column section; CSS
+// at <=760px shows only the active region. Desktop layout ignores
+// the data-mobile-pane attribute entirely, so this code does no harm
+// at desktop widths.
+const mobileTabButtons = [...document.querySelectorAll<HTMLButtonElement>("[data-mobile-tab]")];
+function setMobilePane(pane: string): void {
+  document.body.dataset["mobilePane"] = pane;
+  for (const button of mobileTabButtons) {
+    button.classList.toggle("is-active", button.dataset["mobileTab"] === pane);
+  }
+}
+for (const button of mobileTabButtons) {
+  button.addEventListener("click", () => {
+    const target = button.dataset["mobileTab"];
+    if (typeof target !== "string" || target.length === 0) return;
+    setMobilePane(target);
+  });
+}
+// Default to feed.
+setMobilePane(document.body.dataset["mobilePane"] ?? "feed");
+
 // ----- chat popup -----
 chatPopupClose.addEventListener("click", () => {
   closeChatPopup();

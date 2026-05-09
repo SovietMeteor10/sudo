@@ -38,7 +38,7 @@
 
   <main class="shell" id="app-shell" aria-label="sudo client">
     <aside class="column column--left" aria-labelledby="directory-title">
-      <div class="column__top">
+      <div class="column__top" data-mobile-region="directory">
         <div class="column__title" id="directory-title">directory</div>
         <form class="column__search" id="lookup-form" autocomplete="off" data-lpignore="true">
           <label class="sr-only" for="lookup-input">search users</label>
@@ -60,7 +60,7 @@
         <div class="search-results" id="search-results" aria-live="polite"></div>
         <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
       </div>
-      <div class="column__bottom">
+      <div class="column__bottom" data-mobile-region="notifications">
         <div class="column__title" id="notifications-title">notifications</div>
         <div class="notifications" id="notifications-panel" aria-live="polite">
           <div class="notifications__empty" id="notifications-empty">no notifications</div>
@@ -69,7 +69,7 @@
       </div>
     </aside>
 
-    <section class="column column--center" aria-labelledby="feed-title">
+    <section class="column column--center" data-mobile-region="feed" aria-labelledby="feed-title">
       <h1 class="sr-only" id="feed-title">feed</h1>
       <nav class="feed-tabs" aria-label="feed mode">
         <button class="feed-tab is-active" type="button" data-feed-tab="personal">personal</button>
@@ -97,7 +97,7 @@
       </div>
     </section>
 
-    <aside class="column column--right" aria-labelledby="chats-title">
+    <aside class="column column--right" data-mobile-region="chats" aria-labelledby="chats-title">
       <div class="column__title" id="chats-title">chats</div>
       <form class="column__search" id="chats-search-form" autocomplete="off" data-lpignore="true">
         <label class="sr-only" for="chats-search">search chats or users</label>
@@ -118,6 +118,13 @@
       <div class="chat-list" id="chat-list"></div>
     </aside>
   </main>
+
+  <nav class="mobile-tabs" id="mobile-tabs" aria-label="navigate">
+    <button class="mobile-tab" type="button" data-mobile-tab="directory" aria-label="directory">directory</button>
+    <button class="mobile-tab is-active" type="button" data-mobile-tab="feed" aria-label="feed">feed</button>
+    <button class="mobile-tab" type="button" data-mobile-tab="chats" aria-label="chats">chats</button>
+    <button class="mobile-tab" type="button" data-mobile-tab="notifications" aria-label="notifications">notifs</button>
+  </nav>
 
   <section class="account-menu" id="account-menu" hidden role="menu" aria-label="account">
     <div class="account-menu__head">
