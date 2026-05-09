@@ -1007,26 +1007,32 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .chat-message {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  /* Block layout (not nested flex) clamps reliably on Safari/WebKit:
+   * Safari was letting bubbles inside a column-flex chat-message exceed
+   * the wrapper's max-width when the bubble's intrinsic content was long.
+   * fit-content + max-width keeps the wrapper at content width, capped at
+   * 75%, no matter what the bubble inside wants. */
+  display: block;
+  width: fit-content;
   max-width: 75%;
   min-width: 0;
 }
 
 .chat-message--received {
   align-self: flex-start;
-  align-items: flex-start;
 }
 
 .chat-message--sent {
   align-self: flex-end;
-  align-items: flex-end;
 }
 
 .chat-message__bubble {
+  display: block;
+  width: 100%;
   max-width: 100%;
+  box-sizing: border-box;
   padding: 6px 10px;
+  margin: 0 0 2px;
   border-radius: 4px;
   border: 1px solid var(--line);
   background: var(--panel-soft);
@@ -1049,9 +1055,18 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .chat-message__meta {
+  display: block;
   color: var(--dim);
   font-size: 11px;
   padding: 0 2px;
+}
+
+.chat-message--sent .chat-message__meta {
+  text-align: right;
+}
+
+.chat-message--received .chat-message__meta {
+  text-align: left;
 }
 
 .chat-popup__empty {

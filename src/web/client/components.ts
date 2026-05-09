@@ -134,12 +134,11 @@ export function renderSigninState(root: HTMLElement, state: SigninState): void {
 }
 
 function renderWaitingForLocalData(): HTMLElement[] {
-  // Calm, non-destructive copy. Local-first state is durable: we keep
-  // retrying, we never wipe anything, and we don't dangle a scary reset
-  // button in front of the user.
+  // Calm, non-destructive copy. Local-first state is durable, multi-tab
+  // usage is normal, and we don't blame other tabs for transient open
+  // delays.
   return [
     line("opening local data...", "is-muted"),
-    line("this can happen if sudo is open in another tab.", "is-muted"),
     line("retrying automatically.", "is-muted")
   ];
 }

@@ -68,7 +68,7 @@ import {
   saveTrustedDevice,
   upsertContact
 } from "./local/local-store.js";
-import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, releaseLocalDbConnection } from "./local/local-db.js";
+import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, resetCachedLocalDb, subscribeLocalStateBroadcasts, broadcastLocalStateChange, type LocalStateChangeKind } from "./local/local-db.js";
 import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
 import type {
   ChatSummary,
@@ -218,6 +218,33 @@ void refreshNodeDocument();
 void renderStreamWhenReady();
 void refreshDiscoveryPosts();
 void restoreStoredSession();
+
+// Listen for sibling tabs (same owner) signalling local-state changes.
+// Cross-tab updates keep two open tabs of the same account in sync
+// without each one re-polling the server independently.
+subscribeLocalStateBroadcasts((event) => {
+  if (currentIdentityDocument === null) return;
+  if (event.ownerCanonicalId !== currentIdentityDocument.canonical_id) return;
+  void onSiblingLocalStateChange(event.kind);
+});
+
+async function onSiblingLocalStateChange(kind: LocalStateChangeKind): Promise<void> {
+  if (kind === "messages") {
+    await refreshLocalChats();
+    if (chatTarget !== null && !chatPopup.hidden) {
+      await renderChatPopupBody(chatTarget.canonical);
+    }
+    return;
+  }
+  if (kind === "contacts") {
+    await refreshLocalChats();
+    return;
+  }
+  if (kind === "feed") {
+    await refreshFeedPosts();
+    return;
+  }
+}
 
 searchForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -546,11 +573,63 @@ async function refreshLocalChats(): Promise<void> {
 }
 
 // ---- inbox polling ---------------------------------------------------------
+// Multi-tab safe: at most one tab per (browser profile, owner) is the
+// inbox-poll leader at any moment. The leader claims a localStorage
+// lease keyed by owner_canonical_id and renews it every few seconds.
+// Followers skip the relay fetch entirely; they pick up new messages
+// via the local-state-changed broadcast that the leader fires after
+// saving each envelope. This eliminates duplicate ACKs and duplicate
+// notification beeps when the same account is open in multiple tabs.
 const INBOX_POLL_INTERVAL_MS = 5000;
+const INBOX_LEADER_LEASE_MS = 9000;     // leader entry expires after this
+const INBOX_LEADER_RENEW_MS = 4000;     // leader renews this often
+const TAB_ID = (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+  ? crypto.randomUUID()
+  : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 let inboxPollTimer: number | null = null;
 let inboxPollOwner: string | null = null;
 let inboxInitialPollDone = false;
 let inboxPollInFlight = false;
+
+function leaderKey(owner: string): string {
+  return `sudo.poll.leader.${owner}`;
+}
+
+type LeaderEntry = { tabId: string; expiresAt: number };
+
+function readLeader(owner: string): LeaderEntry | null {
+  try {
+    const raw = window.localStorage?.getItem(leaderKey(owner));
+    if (typeof raw !== "string" || raw.length === 0) return null;
+    const parsed = JSON.parse(raw) as Partial<LeaderEntry>;
+    if (typeof parsed.tabId !== "string" || typeof parsed.expiresAt !== "number") return null;
+    return parsed as LeaderEntry;
+  } catch {
+    return null;
+  }
+}
+
+function writeLeader(owner: string, entry: LeaderEntry): void {
+  try { window.localStorage?.setItem(leaderKey(owner), JSON.stringify(entry)); } catch { /* ignore */ }
+}
+
+function clearLeaderIfOwned(owner: string): void {
+  const current = readLeader(owner);
+  if (current === null || current.tabId !== TAB_ID) return;
+  try { window.localStorage?.removeItem(leaderKey(owner)); } catch { /* ignore */ }
+}
+
+// Try to become the inbox-poll leader for this owner, or renew the lease
+// if we already are. Returns true iff we hold the lease afterwards.
+function ensureInboxLeadership(owner: string): boolean {
+  const now = Date.now();
+  const current = readLeader(owner);
+  if (current !== null && current.tabId !== TAB_ID && current.expiresAt > now) {
+    return false; // someone else is leading; back off until their lease expires
+  }
+  writeLeader(owner, { tabId: TAB_ID, expiresAt: now + INBOX_LEADER_LEASE_MS });
+  return true;
+}
 
 function startInboxPolling(canonicalId: string): void {
   stopInboxPolling();
@@ -560,6 +639,12 @@ function startInboxPolling(canonicalId: string): void {
   inboxPollTimer = window.setInterval(() => {
     void pollInbox();
   }, INBOX_POLL_INTERVAL_MS);
+  // Attempt to claim leadership at a faster cadence than the poll
+  // interval so handoff to a follower happens quickly when the leader
+  // closes its tab.
+  window.setInterval(() => {
+    if (inboxPollOwner !== null) ensureInboxLeadership(inboxPollOwner);
+  }, INBOX_LEADER_RENEW_MS);
 }
 
 function stopInboxPolling(): void {
@@ -567,15 +652,28 @@ function stopInboxPolling(): void {
     window.clearInterval(inboxPollTimer);
     inboxPollTimer = null;
   }
+  if (inboxPollOwner !== null) clearLeaderIfOwned(inboxPollOwner);
   inboxPollOwner = null;
   inboxInitialPollDone = false;
 }
+
+// Best-effort: release the leader lease when the tab closes so a sibling
+// tab takes over quickly instead of waiting out the full lease.
+window.addEventListener("beforeunload", () => {
+  if (inboxPollOwner !== null) clearLeaderIfOwned(inboxPollOwner);
+});
 
 async function pollInbox(): Promise<void> {
   if (inboxPollOwner === null) return;
   if (currentIdentityDocument === null) return;
   if (inboxPollOwner !== currentIdentityDocument.canonical_id) return;
   if (inboxPollInFlight) return;
+  // Only the elected leader actually fetches the relay. Followers rely
+  // on local-state broadcasts from the leader to notice new messages.
+  if (!ensureInboxLeadership(inboxPollOwner)) {
+    inboxInitialPollDone = true;
+    return;
+  }
   inboxPollInFlight = true;
   try {
     const newMessages = await retrieveRelayInboxAfterLocalSave(inboxPollOwner);
@@ -1209,7 +1307,9 @@ function decorateAuthStateWithDbRecovery(
   retry.className = "text-button";
   retry.textContent = "retry now";
   retry.addEventListener("click", () => {
-    releaseLocalDbConnection("user-retry");
+    // Same-account multi-tab usage is normal: don't ask peers to close.
+    // Just retry our own open.
+    resetCachedLocalDb();
     triggerLocalDbRetryNow();
   });
 
@@ -1299,7 +1399,10 @@ async function waitForLocalDbWritable(
     } catch (error) {
       if (!isLocalDatabaseError(error)) throw error;
       // Ask peer tabs to release their connection before we sleep.
-      releaseLocalDbConnection("retry");
+      // Don't broadcast release-db here. Sibling sudo tabs holding the
+      // same account's DB are not the problem during normal use. Drop
+      // our own cached open and let openLocalDb retry from scratch.
+      resetCachedLocalDb();
       const delay = delays[Math.min(attempt - 1, delays.length - 1)] ?? 5000;
       if (delay > 0) await waitWithRetryWaker(delay, signal);
     }
@@ -1753,6 +1856,10 @@ async function submitFeedPost(): Promise<void> {
     // new post appearing in the stream is the confirmation.
     feedComposerState.textContent = "";
     await refreshFeedPosts();
+    // Tell sibling tabs of this account to refresh their feed.
+    if (currentIdentityDocument !== null) {
+      broadcastLocalStateChange("feed", currentIdentityDocument.canonical_id);
+    }
   } catch (error) {
     feedComposerState.textContent = error instanceof Error ? error.message : "post failed";
   }

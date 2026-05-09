@@ -1,4 +1,4 @@
-import { clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName } from "./local-db.js";
+import { broadcastLocalStateChange, clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName } from "./local-db.js";
 import type {
   LocalCryptoAccountRecord,
   LocalContact,
@@ -42,6 +42,7 @@ export async function appendLocalEvent(ownerCanonicalId: string, event: Omit<Loc
 
 export async function saveLocalMessage(ownerCanonicalId: string, message: Omit<LocalMessage, "owner_canonical_id">): Promise<void> {
   await putRecord("messages", { ...message, owner_canonical_id: ownerCanonicalId });
+  broadcastLocalStateChange("messages", ownerCanonicalId);
 }
 
 export async function listLocalMessagesByConversation(
@@ -189,6 +190,7 @@ export async function upsertContact(
     subject_id: contact.canonical_id,
     data: { handle: contact.handle, tier: contact.tier }
   });
+  broadcastLocalStateChange("contacts", ownerCanonicalId);
 }
 
 export async function listContacts(ownerCanonicalId: string): Promise<LocalContact[]> {

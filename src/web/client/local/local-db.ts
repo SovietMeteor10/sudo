@@ -44,10 +44,34 @@ let cachedDb: IDBDatabase | null = null;
 // to release their database connections. Each tab listens on the same
 // channel and closes its cached IDB on request.
 const BROADCAST_CHANNEL_NAME = "sudo_local_db";
+
+// Local-state changes are broadcast so sibling tabs of the same account
+// can refresh their UI without re-polling the server. The owner stamp
+// keeps account isolation intact: sibling tabs ignore changes from
+// owners they aren't currently signed into.
+export type LocalStateChangeKind = "messages" | "contacts" | "feed" | "auth";
+
 type DbBroadcastMessage =
   | { type: "release-db"; reason?: string }
   | { type: "db-released" }
-  | { type: "db-open-retry" };
+  | { type: "db-open-retry" }
+  | { type: "local-state-changed"; kind: LocalStateChangeKind; ownerCanonicalId: string };
+
+type LocalStateSubscriber = (event: { kind: LocalStateChangeKind; ownerCanonicalId: string }) => void;
+const localStateSubscribers = new Set<LocalStateSubscriber>();
+
+export function subscribeLocalStateBroadcasts(handler: LocalStateSubscriber): () => void {
+  localStateSubscribers.add(handler);
+  // Eagerly attach the broadcast listener if we haven't already so the
+  // subscriber actually receives messages.
+  getBroadcastChannel();
+  return () => { localStateSubscribers.delete(handler); };
+}
+
+export function broadcastLocalStateChange(kind: LocalStateChangeKind, ownerCanonicalId: string): void {
+  if (typeof ownerCanonicalId !== "string" || ownerCanonicalId.length === 0) return;
+  broadcast({ type: "local-state-changed", kind, ownerCanonicalId });
+}
 
 let broadcastChannel: BroadcastChannel | null = null;
 function getBroadcastChannel(): BroadcastChannel | null {
@@ -68,6 +92,13 @@ function getBroadcastChannel(): BroadcastChannel | null {
         cachedDb = null;
         openPromise = null;
         try { channel.postMessage({ type: "db-released" } satisfies DbBroadcastMessage); } catch { /* ignore */ }
+      } else if (message.type === "local-state-changed") {
+        // Forward to in-process subscribers (UI). The handler is
+        // responsible for ignoring events that don't match the current
+        // signed-in owner.
+        for (const handler of [...localStateSubscribers]) {
+          try { handler({ kind: message.kind, ownerCanonicalId: message.ownerCanonicalId }); } catch { /* ignore */ }
+        }
       }
     };
     broadcastChannel = channel;
@@ -87,14 +118,25 @@ function broadcast(message: DbBroadcastMessage): void {
 // release the DB when a sibling tab needs to migrate.
 getBroadcastChannel();
 
-// Public so the auth flow can ask peer tabs to release their connections
-// before retrying an open. Safe to call even if no peers exist.
-export function releaseLocalDbConnection(reason: string = "unknown"): void {
+// Reset our own cached open. Used by retry paths that want a fresh
+// indexedDB.open without coercing other tabs to close — same-account
+// multi-tab usage is normal and supported.
+export function resetCachedLocalDb(): void {
   if (cachedDb !== null) {
     try { cachedDb.close(); } catch { /* ignore */ }
   }
   cachedDb = null;
   openPromise = null;
+}
+
+// Ask peer tabs (in addition to our own connection) to release the local
+// database. ONLY appropriate when a genuine schema-version upgrade is in
+// progress: a fresh upgrade attempt blocked because peers hold stale
+// connections. The onblocked handler calls this; ordinary retries should
+// not, because closing siblings would interrupt other tabs of the same
+// account.
+export function releaseLocalDbConnection(reason: string = "unknown"): void {
+  resetCachedLocalDb();
   broadcast({ type: "release-db", reason });
 }
 
@@ -276,9 +318,11 @@ export async function retryOpenLocalDb(options: RetryOpenOptions = {}): Promise<
       if (!isLocalDatabaseError(error)) throw error;
       lastError = error;
       attempt += 1;
-      // Ask peer tabs (if any) to release their connection so the next
-      // attempt can win the upgrade. No-op if BroadcastChannel is absent.
-      releaseLocalDbConnection("retry");
+      // Don't broadcast release-db on every retry — siblings holding the
+      // same account's DB are not the problem during normal use. Only the
+      // onblocked path (real version-upgrade conflict) asks peers to
+      // close. Just drop our cached open and try again.
+      resetCachedLocalDb();
       const delay = delays[Math.min(attempt - 1, delays.length - 1)] ?? 5000;
       if (delay > 0) await waitOrAbort(delay, options.signal);
     }
