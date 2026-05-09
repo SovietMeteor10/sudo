@@ -604,10 +604,14 @@ body[data-auth-state="auth-restore"] .landing {
   display: flex;
   gap: 6px;
   align-items: flex-start;
+  flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .stream-post__reply-input {
-  flex: 1 1 auto;
+  flex: 1 1 12rem;
+  min-width: 0;
   background: transparent;
   border: 1px solid var(--line-soft);
   color: var(--text);
@@ -615,6 +619,7 @@ body[data-auth-state="auth-restore"] .landing {
   font-size: 13px;
   padding: 6px 8px;
   resize: vertical;
+  box-sizing: border-box;
 }
 
 .stream-post__reply-submit {
@@ -640,26 +645,25 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .stream-post__reply-list--nested {
+  /* Indent only — no border-left / connector line. The arrow on each
+   * reply is the sole nesting cue. */
   margin: 6px 0 0 14px;
   padding-left: 12px;
-  border-left: 1px solid var(--line-soft);
 }
 
 .stream-post__reply-item {
   display: grid;
   grid-template-columns: 16px 1fr;
   grid-column-gap: 8px;
-  padding: 8px 10px;
-  margin-top: 6px;
+  padding: 8px 0;
   font-size: 13px;
   color: var(--text);
-  background: var(--panel-soft);
-  border: 1px solid var(--line-soft);
-  border-radius: 2px;
+  background: transparent;
+  border-bottom: 1px solid var(--line-soft);
 }
 
-.stream-post__reply-item:first-child {
-  margin-top: 0;
+.stream-post__reply-item:last-child {
+  border-bottom: 0;
 }
 
 .stream-post__reply-arrow {
@@ -724,11 +728,13 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .stream-post__reply-form--nested {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
+  /* Inline composer for replying to a specific reply. Sits in the
+   * reply row's content column (not the arrow gutter) and stretches
+   * to fill it; inherits flex-wrap from .stream-post__reply-form so
+   * the submit stacks below the textarea on narrow widths. */
   grid-column: 2;
   margin-top: 6px;
+  width: 100%;
 }
 
 .stream-post__reply-error {
