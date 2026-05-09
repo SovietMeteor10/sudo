@@ -58,6 +58,11 @@ export type UnifiedFeedItem = {
   reply_to?: EmbeddedFeedItem;
   kind?: "post" | "repost" | "reply";
   viewer_has_reposted?: boolean;
+  // True when the viewer is the normalized original author (own post,
+  // or somebody else's repost that traces back to one of yours). The
+  // renderer hides the repost button in that case; the server also
+  // rejects with cannot_repost_own_post if forced.
+  viewer_is_author?: boolean;
 };
 
 export type ReactionHandler = (postId: string, kind: ReactionKind) => void;
@@ -199,7 +204,11 @@ export function renderStream(root: HTMLElement, items: UnifiedFeedItem[] = []): 
   root.replaceChildren(fragment);
 }
 
-export function renderDiscoveryPanel(root: HTMLElement, state: DiscoveryState): void {
+export function renderDiscoveryPanel(
+  root: HTMLElement,
+  state: DiscoveryState,
+  viewerCanonicalId?: string
+): void {
   // Discover is presented as a feed, not a debug ranking index. Mode
   // toggles, score numbers, and reaction count strings have moved off
   // the user-facing surface — the UI uses the same post card as the
@@ -220,18 +229,35 @@ export function renderDiscoveryPanel(root: HTMLElement, state: DiscoveryState): 
   }
 
   const fragment = document.createDocumentFragment();
-  for (const post of state.posts) fragment.append(renderUnifiedFeedItem(discoveryToUnifiedItem(post)));
+  for (const post of state.posts) {
+    fragment.append(renderUnifiedFeedItem(discoveryToUnifiedItem(post, viewerCanonicalId)));
+  }
   root.replaceChildren(fragment);
 }
 
 export function feedPostToUnifiedItem(
   post: FeedPost,
-  enrichment: { counts?: ReactionCounts; vote?: VoteKind; viewerHasReposted?: boolean } = {}
+  enrichment: {
+    counts?: ReactionCounts;
+    vote?: VoteKind;
+    viewerHasReposted?: boolean;
+    viewerCanonicalId?: string;
+  } = {}
 ): UnifiedFeedItem {
   const text = post.body
     ?? post.public_metadata?.summary
     ?? post.public_metadata?.title
     ?? "[encrypted body]";
+  // Normalize "is this post mine?" check across plain posts and reposts.
+  // For a repost, the relevant author is the embedded original's author
+  // (the server hydrates repost_of_post for personal/thread responses).
+  // For a plain post, it's the post's author.
+  const normalizedAuthor = post.kind === "repost" && post.repost_of_post != null
+    ? post.repost_of_post.author_canonical_id
+    : post.author_canonical_id;
+  const viewerIsAuthor = enrichment.viewerCanonicalId !== undefined
+    && enrichment.viewerCanonicalId.length > 0
+    && enrichment.viewerCanonicalId === normalizedAuthor;
   return {
     post_id: post.post_id,
     author_canonical_id: post.author_canonical_id,
@@ -245,7 +271,8 @@ export function feedPostToUnifiedItem(
       : embeddedFromMaybe(post.repost_of_post),
     reply_to: post.reply_to === undefined ? undefined
       : embeddedFromMaybe(post.reply_to_post),
-    viewer_has_reposted: enrichment.viewerHasReposted ?? false
+    viewer_has_reposted: enrichment.viewerHasReposted ?? false,
+    viewer_is_author: viewerIsAuthor
   };
 }
 
@@ -273,7 +300,7 @@ function embeddedFromMaybe(post: FeedPost | null | undefined): EmbeddedFeedItem 
   };
 }
 
-function discoveryToUnifiedItem(post: DiscoveryPostIndex): UnifiedFeedItem {
+function discoveryToUnifiedItem(post: DiscoveryPostIndex, viewerCanonicalId?: string): UnifiedFeedItem {
   const body = post.body_excerpt && post.body_excerpt.length > 0
     ? post.body_excerpt
     : "[no excerpt]";
@@ -293,7 +320,14 @@ function discoveryToUnifiedItem(post: DiscoveryPostIndex): UnifiedFeedItem {
       : post.viewer_reaction === "downrank" ? "dislike"
       : null,
     kind: "post",
-    viewer_has_reposted: post.viewer_has_reposted ?? false
+    viewer_has_reposted: post.viewer_has_reposted ?? false,
+    // Discovery doesn't hydrate repost_of_post, so this is a
+    // best-effort literal-author check. For the typical case (your
+    // own post in discover) the literal author IS the normalized
+    // author. The server enforces the rule for the corner cases.
+    viewer_is_author: viewerCanonicalId !== undefined
+      && viewerCanonicalId.length > 0
+      && viewerCanonicalId === post.author_canonical_id
   };
 }
 
@@ -348,7 +382,12 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   actions.className = "stream-post__actions";
   actions.append(renderVoteButton(item.counts, item.vote));
   actions.append(renderActionButton("reply", "↩", item.counts.reply));
-  actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
+  // Self-repost is blocked end-to-end; the button only renders when
+  // the viewer didn't author the normalized original. The backend
+  // also rejects with cannot_repost_own_post if forced.
+  if (item.viewer_is_author !== true) {
+    actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
+  }
   article.append(actions);
 
   // Comments live inside this panel and stay hidden until the user

@@ -260,6 +260,93 @@ async function postBody(page, postId) {
     if (repostCount !== "1") fail("repost-count", `expected repost count 1 on original, got '${repostCount}'`);
     else ok("repost: original post shows ↻ 1");
 
+    // ===== Self-repost guard =====
+    // A is viewing their own posts in the personal feed. The repost
+    // button must be omitted on those cards (frontend prevention) and
+    // any forged API call from A to repost their own post must be
+    // rejected with cannot_repost_own_post (backend enforcement).
+    const aOwnRepostButton = await pageA.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      return article?.querySelector(".stream-post__action--repost") !== null;
+    }, postOne);
+    if (aOwnRepostButton) fail("self-repost-ui", "A's feed still shows a repost button on A's own post");
+    else ok("self-repost: A's personal feed has no repost button on A's own posts");
+
+    // Open A's own post in thread view; the parent card's action row
+    // should also omit the repost button.
+    await pageA.evaluate((id) => {
+      const article = document.querySelector(`#stream-list .stream-post[data-post-id="${id}"]`);
+      article?.querySelector(".stream-post__main")?.click();
+    }, postOne);
+    let aInThread = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 150));
+      aInThread = await pageA.evaluate((id) =>
+        document.querySelector(`.thread-view[data-thread-view="${id}"]`) !== null,
+        postOne);
+      if (aInThread) break;
+    }
+    if (!aInThread) fail("self-repost-thread-enter", "A could not open own post in thread view");
+    else {
+      const inThreadButton = await pageA.evaluate((id) => {
+        const article = document.querySelector(`.thread-view .stream-post[data-post-id="${id}"]`);
+        return article?.querySelector(".stream-post__action--repost") !== null;
+      }, postOne);
+      if (inThreadButton) fail("self-repost-thread", "thread view shows a repost button on A's own post");
+      else ok("self-repost: thread view has no repost button on A's own post");
+      await pageA.evaluate(() => {
+        document.querySelector("[data-thread-action='back']")?.click();
+      });
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 150));
+        const restored = await pageA.evaluate(() => document.querySelector(".thread-view") === null);
+        if (restored) break;
+      }
+    }
+
+    // Forced API: A repost their own postOne directly. Backend must
+    // reject with cannot_repost_own_post regardless of UI state.
+    const selfRepostResp = await fetch(`${BASE}/api/feeds/posts`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        author_canonical_id: canonicalA,
+        author_handle: `@${handleA}`,
+        visibility: "public",
+        kind: "repost",
+        repost_of: postOne,
+        public_metadata: { tags: [] },
+        sequence: 1
+      })
+    });
+    const selfRepostBody = await selfRepostResp.json();
+    if (selfRepostResp.status !== 409 || selfRepostBody.error !== "cannot_repost_own_post") {
+      fail("self-repost-api", `expected 409 cannot_repost_own_post, got ${selfRepostResp.status} ${JSON.stringify(selfRepostBody)}`);
+    } else ok("self-repost: API rejects A reposting A's own post (409 cannot_repost_own_post)");
+
+    // Forced API: A reposts B's repost of A's postTwo. The backend
+    // collapses the chain to postTwo, sees author=A, and rejects.
+    // foundRepost.postId is B's repost id from the earlier step.
+    if (foundRepost !== null) {
+      const normalizedSelfResp = await fetch(`${BASE}/api/feeds/posts`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          author_canonical_id: canonicalA,
+          author_handle: `@${handleA}`,
+          visibility: "public",
+          kind: "repost",
+          repost_of: foundRepost.postId,
+          public_metadata: { tags: [] },
+          sequence: 1
+        })
+      });
+      const normalizedSelfBody = await normalizedSelfResp.json();
+      if (normalizedSelfResp.status !== 409 || normalizedSelfBody.error !== "cannot_repost_own_post") {
+        fail("self-repost-normalized", `expected 409 cannot_repost_own_post for normalized chain, got ${normalizedSelfResp.status} ${JSON.stringify(normalizedSelfBody)}`);
+      } else ok("self-repost: API rejects A reposting B's repost that normalizes back to A's post");
+    }
+
     // ===== Reply =====
     // Wait 5s for rate limit to clear after B's repost feed post.
     await new Promise((r) => setTimeout(r, 5500));
@@ -898,6 +985,93 @@ async function postBody(page, postId) {
       if (dInThread) break;
     }
     if (typeof bReplyId === "string" && bReplyId.length > 0 && dInThread) {
+      // The collapse control must live inside the SAME action row as
+      // the ↩ reply button — not on its own line. Both buttons share
+      // .stream-post__reply-actions; a positive parentClass match
+      // proves they're inline.
+      const actionRow = await pageD.evaluate((replyId) => {
+        const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+        const actions = item?.querySelector(".stream-post__reply-actions");
+        const replyBtn = actions?.querySelector(".stream-post__reply-action[data-reply-action='open-nested']");
+        const collapseBtn = actions?.querySelector(".stream-post__reply-collapse");
+        return {
+          hasActions: actions !== null && actions !== undefined,
+          replyInActions: replyBtn !== null && replyBtn !== undefined,
+          collapseInActions: collapseBtn !== null && collapseBtn !== undefined
+        };
+      }, bReplyId);
+      if (!actionRow.hasActions) fail("actions-row", "no .stream-post__reply-actions on parent reply");
+      else if (!actionRow.replyInActions) fail("actions-row", "↩ reply button not inside actions row");
+      else if (!actionRow.collapseInActions) fail("actions-row", "[-] collapse not inside actions row");
+      else ok("actions-row: ↩ reply and [-]/[+] collapse share one action row");
+
+      // Composer flow: clicking the ↩ on a reply with children should
+      // insert the inline composer between the action row and the
+      // child sublist, in normal flow. Verify by reading bounding
+      // rectangles: composer.top > actions.bottom and sublist.top >
+      // composer.bottom.
+      await pageD.evaluate((replyId) => {
+        const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+        item?.querySelector(".stream-post__reply-action[data-reply-action='open-nested']")?.click();
+      }, bReplyId);
+      let composerProbeReady = false;
+      let composerProbe = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        composerProbe = await pageD.evaluate((replyId) => {
+          const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+          const actions = item?.querySelector(".stream-post__reply-actions");
+          const body = item?.querySelector(".stream-post__reply-body");
+          const meta = item?.querySelector(".stream-post__reply-meta");
+          const form = item?.querySelector(".stream-post__reply-form--nested");
+          const sublist = item?.querySelector(".stream-post__reply-list--nested");
+          if (form === null || form === undefined) return null;
+          const r = (el) => {
+            if (!el) return null;
+            const rect = el.getBoundingClientRect();
+            return { top: rect.top, bottom: rect.bottom };
+          };
+          return {
+            actions: r(actions),
+            body: r(body),
+            meta: r(meta),
+            form: r(form),
+            sublist: r(sublist)
+          };
+        }, bReplyId);
+        if (composerProbe !== null && composerProbe.form !== null) {
+          composerProbeReady = true;
+          break;
+        }
+      }
+      if (!composerProbeReady) fail("composer-flow", "nested composer did not appear after clicking ↩ on B's reply");
+      else {
+        const formTop = composerProbe.form.top;
+        const formBottom = composerProbe.form.bottom;
+        if (composerProbe.actions === null || formTop < composerProbe.actions.bottom - 1) {
+          fail("composer-flow", "composer overlaps the action row (form.top < actions.bottom)");
+        } else if (composerProbe.body === null || formTop < composerProbe.body.bottom - 1) {
+          fail("composer-flow", "composer overlaps the reply body (form.top < body.bottom)");
+        } else if (composerProbe.meta === null || formTop < composerProbe.meta.bottom - 1) {
+          fail("composer-flow", "composer overlaps the reply header (form.top < meta.bottom)");
+        } else {
+          ok("composer-flow: composer sits below header/body/actions, no overlap");
+        }
+        if (composerProbe.sublist !== null && composerProbe.sublist.top < formBottom - 1) {
+          fail("composer-flow", "child sublist not pushed below the composer");
+        } else if (composerProbe.sublist !== null) {
+          ok("composer-flow: child replies are pushed down by the composer");
+        }
+      }
+
+      // Close the composer so it doesn't interfere with the collapse
+      // assertion below. Toggling the same ↩ button removes the form.
+      await pageD.evaluate((replyId) => {
+        const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
+        item?.querySelector(".stream-post__reply-action[data-reply-action='open-nested']")?.click();
+      }, bReplyId);
+      await new Promise((r) => setTimeout(r, 200));
+
       const collapseProbe = await pageD.evaluate((replyId) => {
         const item = document.querySelector(`.thread-view .stream-post__reply-item[data-post-id="${replyId}"]`);
         const collapse = item?.querySelector(".stream-post__reply-collapse");

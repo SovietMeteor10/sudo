@@ -211,7 +211,9 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     } else ok(`3j. post header has @handle '${postShape.handle}' and time '${postShape.time}'`);
 
     // 3k. Personal feed posts expose the unified action row: vote
-    // control (single button) + reply ↩ + repost ↻.
+    // control (single button) + reply ↩. The repost button is
+    // intentionally absent on the viewer's own posts (self-repost is
+    // blocked end-to-end) — its presence here would be a regression.
     const actionShape = await page.evaluate(() => {
       const post = document.querySelector(".stream-post");
       if (!post) return { ok: false, reason: "no post rendered" };
@@ -231,10 +233,10 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     if (!actionShape.ok) fail("post-actions", actionShape.reason);
     else if (!actionShape.hasVote) fail("post-actions", "missing vote control");
     else if (!actionShape.hasReply) fail("post-actions", "missing reply button");
-    else if (!actionShape.hasRepost) fail("post-actions", "missing repost button");
+    else if (actionShape.hasRepost) fail("post-actions", "repost button present on own post (self-repost is blocked)");
     else if (actionShape.hasLegacyUpDown) fail("post-actions", "legacy up/down buttons still present");
     else if (actionShape.voteState !== "neutral") fail("post-actions", `vote starts in '${actionShape.voteState}', expected 'neutral'`);
-    else ok("3k. post exposes vote + reply + repost action row");
+    else ok("3k. post exposes vote + reply action row (repost hidden on own posts)");
 
     // 3l. Discover tab renders through .stream-post (unified card),
     // does not expose recent/rising/hot toggle buttons, and does not

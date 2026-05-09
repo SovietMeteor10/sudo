@@ -223,7 +223,7 @@ renderLookupResult(lookupRoot, lookupState);
 renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
 renderChatList(chatsRoot, localChats);
-renderDiscoveryPanel(discoveryRoot, discoveryState);
+renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
 renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
 landingBrand.textContent = brandLabel;
@@ -385,7 +385,12 @@ function toggleReplyBranch(button: HTMLButtonElement): void {
   if (typeof targetId !== "string") return;
   const item = button.closest<HTMLElement>(".stream-post__reply-item");
   if (item === null) return;
-  const sublist = item.querySelector<HTMLElement>(`:scope > .stream-post__reply-list[data-sublist-for="${cssEscape(targetId)}"]`);
+  // The sublist now lives inside the reply's content wrapper rather
+  // than directly under the grid item; selector traverses the content
+  // column for the matching sublist marker.
+  const sublist = item.querySelector<HTMLElement>(
+    `:scope > .stream-post__reply-content > .stream-post__reply-list[data-sublist-for="${cssEscape(targetId)}"]`
+  );
   if (sublist === null) return;
   const collapsed = button.dataset["collapsed"] === "true";
   if (collapsed) {
@@ -1844,6 +1849,13 @@ function renderThreadParentArticle(item: ReturnType<typeof feedPostToUnifiedItem
   return article;
 }
 
+// Tiny helper that returns the viewer's canonical id or undefined.
+// Wraps the optional-chain so callers don't have to repeat the
+// runtime null check at every render site.
+function viewerCanonicalIdOrUndefined(): string | undefined {
+  return currentIdentityDocument === null ? undefined : currentIdentityDocument.canonical_id;
+}
+
 async function refreshFeedPosts(): Promise<void> {
   if (activeThreadPostId !== null) {
     // Thread view owns the center column right now. Re-render the
@@ -1879,7 +1891,10 @@ function feedPostToUnifiedItemFromEngagement(
   post: FeedPost,
   engagement: FeedEngagement | undefined
 ): ReturnType<typeof feedPostToUnifiedItem> {
-  if (engagement === undefined) return feedPostToUnifiedItem(post);
+  const viewerCanonicalId = currentIdentityDocument?.canonical_id;
+  if (engagement === undefined) {
+    return feedPostToUnifiedItem(post, { viewerCanonicalId });
+  }
   return feedPostToUnifiedItem(post, {
     counts: {
       recommend: engagement.counts.recommend,
@@ -1890,13 +1905,14 @@ function feedPostToUnifiedItemFromEngagement(
     vote: engagement.viewer_reaction === "recommend" ? "like"
       : engagement.viewer_reaction === "downrank" ? "dislike"
       : null,
-    viewerHasReposted: engagement.viewer_has_reposted === true
+    viewerHasReposted: engagement.viewer_has_reposted === true,
+    viewerCanonicalId
   });
 }
 
 async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode): Promise<void> {
   discoveryState = { status: "loading", mode };
-  renderDiscoveryPanel(discoveryRoot, discoveryState);
+  renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
 
   const viewer = currentIdentityDocument?.canonical_id;
   try {
@@ -1910,7 +1926,7 @@ async function refreshDiscoveryPosts(mode: DiscoveryMode = discoveryState.mode):
     };
   }
 
-  renderDiscoveryPanel(discoveryRoot, discoveryState);
+  renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
 }
 
 async function postDiscoveryReaction(
@@ -2022,6 +2038,8 @@ async function handleRepost(postId: string): Promise<void> {
   } catch (error) {
     if (error instanceof FeedPostError && error.code === "duplicate_repost") {
       flashFeedback("you've already reposted this post");
+    } else if (error instanceof FeedPostError && error.code === "cannot_repost_own_post") {
+      flashFeedback("you can't repost your own post");
     } else if (error instanceof FeedPostError && error.code === "rate_limited") {
       const seconds = error.retry_after_seconds ?? 5;
       flashFeedback(`wait ${seconds}s before posting again`);
@@ -2149,29 +2167,29 @@ function renderReplyTree(
 ): void {
   const children = byParent.get(parentId) ?? [];
   for (const reply of children) {
-    const item = renderReply(reply, depth);
-    const childIds = byParent.get(reply.post_id);
-    if (childIds !== undefined && childIds.length > 0) {
-      const collapse = document.createElement("button");
-      collapse.type = "button";
-      collapse.className = "stream-post__reply-collapse";
-      collapse.dataset["collapseTarget"] = reply.post_id;
-      collapse.dataset["collapsed"] = "false";
-      collapse.setAttribute("aria-label", "collapse replies");
-      collapse.textContent = "[-]";
-      item.append(collapse);
-
-      const sublist = document.createElement("ul");
-      sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
-      sublist.dataset["sublistFor"] = reply.post_id;
-      item.append(sublist);
-      renderReplyTree(reply.post_id, depth + 1, sublist, byParent);
+    const grandchildren = byParent.get(reply.post_id) ?? [];
+    const item = renderReply(reply, depth, grandchildren.length);
+    if (grandchildren.length > 0) {
+      const content = item.querySelector<HTMLElement>(":scope > .stream-post__reply-content");
+      if (content !== null) {
+        const sublist = document.createElement("ul");
+        sublist.className = "stream-post__reply-list stream-post__reply-list--nested";
+        sublist.dataset["sublistFor"] = reply.post_id;
+        content.append(sublist);
+        renderReplyTree(reply.post_id, depth + 1, sublist, byParent);
+      }
     }
     container.append(item);
   }
 }
 
-function renderReply(reply: FeedPost, depth: number): HTMLLIElement {
+function renderReply(reply: FeedPost, depth: number, childCount: number): HTMLLIElement {
+  // Reply layout: a 2-column grid of [arrow gutter | content column].
+  // Everything that belongs to this reply (header, body, actions,
+  // inline composer, child replies) lives inside the content column
+  // so it flows vertically — that's what keeps the inline composer
+  // from overlapping the body and ensures children are pushed down
+  // when one is appended.
   const item = document.createElement("li");
   item.className = "stream-post__reply-item";
   item.dataset["postId"] = reply.post_id;
@@ -2181,6 +2199,9 @@ function renderReply(reply: FeedPost, depth: number): HTMLLIElement {
   arrow.className = "stream-post__reply-arrow";
   arrow.setAttribute("aria-hidden", "true");
   arrow.textContent = "↳";
+
+  const content = document.createElement("div");
+  content.className = "stream-post__reply-content";
 
   const meta = document.createElement("div");
   meta.className = "stream-post__reply-meta";
@@ -2196,14 +2217,33 @@ function renderReply(reply: FeedPost, depth: number): HTMLLIElement {
   body.className = "stream-post__reply-body";
   body.textContent = reply.body ?? "";
 
+  const actions = document.createElement("div");
+  actions.className = "stream-post__reply-actions";
+
   const replyButton = document.createElement("button");
   replyButton.type = "button";
   replyButton.className = "stream-post__reply-action";
   replyButton.dataset["replyAction"] = "open-nested";
   replyButton.dataset["replyTarget"] = reply.post_id;
   replyButton.textContent = "↩ reply";
+  actions.append(replyButton);
 
-  item.append(arrow, meta, body, replyButton);
+  if (childCount > 0) {
+    // Collapse control sits inline with the reply action, not on a
+    // dedicated row. Keeps the action surface compact and matches
+    // how X-style threads handle expand/collapse.
+    const collapse = document.createElement("button");
+    collapse.type = "button";
+    collapse.className = "stream-post__reply-collapse";
+    collapse.dataset["collapseTarget"] = reply.post_id;
+    collapse.dataset["collapsed"] = "false";
+    collapse.setAttribute("aria-label", "collapse replies");
+    collapse.textContent = "[-]";
+    actions.append(collapse);
+  }
+
+  content.append(meta, body, actions);
+  item.append(arrow, content);
   return item;
 }
 
@@ -2212,8 +2252,13 @@ function toggleNestedComposer(article: HTMLElement, rootPostId: string, replyTar
     `.stream-post__reply-item[data-post-id="${cssEscape(replyTargetPostId)}"]`
   );
   if (replyItem === null) return;
-  // If a nested composer is already attached to this reply, close it.
-  const existing = replyItem.querySelector<HTMLElement>(":scope > .stream-post__reply-form--nested");
+  const content = replyItem.querySelector<HTMLElement>(":scope > .stream-post__reply-content");
+  if (content === null) return;
+  // The composer goes into the reply's content column so it sits
+  // below the meta/body/actions and pushes any sublist of children
+  // downward in normal flow. If one's already attached, toggle it
+  // closed.
+  const existing = content.querySelector<HTMLElement>(":scope > .stream-post__reply-form--nested");
   if (existing !== null) {
     existing.remove();
     return;
@@ -2231,7 +2276,15 @@ function toggleNestedComposer(article: HTMLElement, rootPostId: string, replyTar
   submit.dataset["replyRoot"] = rootPostId;
   submit.textContent = "reply";
   form.append(textarea, submit);
-  replyItem.append(form);
+  // Insert before the sublist (if present) so the composer always
+  // sits between the actions and the child replies, never on top of
+  // a child.
+  const sublist = content.querySelector<HTMLElement>(":scope > .stream-post__reply-list");
+  if (sublist !== null) {
+    content.insertBefore(form, sublist);
+  } else {
+    content.append(form);
+  }
   textarea.focus();
 }
 
@@ -2606,7 +2659,7 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   void refreshDevicePanel();
   void refreshLookupRelationship();
   void refreshFeedPosts();
-  renderDiscoveryPanel(discoveryRoot, discoveryState);
+  renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
   if (searchState.status === "results") {
     void runSearch(searchState.query);
   }
@@ -2899,7 +2952,7 @@ function setSignedOut(): void {
   feedComposerState.textContent = "";
   closeChatPopup();
   void refreshDevicePanel();
-  renderDiscoveryPanel(discoveryRoot, discoveryState);
+  renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
   setAccountButtonHandle(null);
   setAccountMenuOpen(false);
   closeChatPopup();
@@ -2914,7 +2967,7 @@ function setSignedOut(): void {
     void runSearch(searchState.query);
   }
   if (discoveryState.status === "loaded") {
-    renderDiscoveryPanel(discoveryRoot, discoveryState);
+    renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
   }
 }
 

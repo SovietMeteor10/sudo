@@ -77,15 +77,44 @@ export function createFeedPost(input: CreateFeedPostInput): FeedPost {
   // Repost-of-repost normalization: collapse repost chains so the
   // repost_of always points at the canonical original. Prevents the
   // duplicate-repost guard from being bypassed by reposting someone
-  // else's repost of the same source.
+  // else's repost of the same source. Iterates until we land on a
+  // non-repost; the safety bound keeps a malformed cycle from
+  // spinning forever.
   if (kind === "repost" && repostOf !== undefined) {
-    const target = getFeedPost(repostOf);
-    if (target !== null && target.kind === "repost" && typeof target.repost_of === "string") {
+    let target = getFeedPost(repostOf);
+    let safety = 8;
+    while (
+      target !== null
+      && target.kind === "repost"
+      && typeof target.repost_of === "string"
+      && target.repost_of !== repostOf
+      && safety > 0
+    ) {
       repostOf = target.repost_of;
+      target = getFeedPost(repostOf);
+      safety -= 1;
     }
   }
 
   validatePostContent(input.visibility, body, encryptedBody, metadata, allowedRecipients, kind, replyTo, repostOf);
+
+  // Self-repost guard: a user can't repost a post whose normalized
+  // original author is themselves. Covers two cases:
+  //   1. directly reposting one's own post
+  //   2. reposting somebody else's repost that normalizes back to
+  //      one of your own posts
+  // Backend-enforced because the UI hides the button but a forged
+  // request would otherwise still create a row.
+  if (kind === "repost" && repostOf !== undefined) {
+    const original = getFeedPost(repostOf);
+    if (original !== null && original.author_canonical_id === input.author_canonical_id) {
+      throw new FeedError(
+        "cannot_repost_own_post",
+        "you cannot repost your own post",
+        409
+      );
+    }
+  }
 
   // One repost per (author, original) — the second click should not
   // create another feed post. Clients can use this signal to flip

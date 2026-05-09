@@ -46,6 +46,7 @@ export class FeedError extends Error {
       | "missing_reply_to"
       | "invalid_kind"
       | "duplicate_repost"
+      | "cannot_repost_own_post"
       | "rate_limited",
     message: string,
     readonly status = 400

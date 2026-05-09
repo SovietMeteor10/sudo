@@ -666,6 +666,14 @@ body[data-auth-state="auth-restore"] .landing {
   border-bottom: 0;
 }
 
+.stream-post__reply-content {
+  /* Content column is a normal block container; meta, body, actions,
+   * inline composer, and the child sublist stack vertically and push
+   * each other down without overlap. */
+  display: block;
+  min-width: 0;
+}
+
 .stream-post__reply-arrow {
   color: var(--dim);
   font-size: 13px;
@@ -689,31 +697,36 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .stream-post__reply-ref {
-  grid-column: 2;
   color: var(--dim);
   font-size: 11px;
   margin-bottom: 2px;
 }
 
 .stream-post__reply-body {
-  grid-column: 2;
   color: var(--text);
   white-space: pre-wrap;
   margin-top: 2px;
 }
 
+.stream-post__reply-actions {
+  /* Inline action row: ↩ reply lives next to the [-]/[+] collapse
+   * toggle when there are descendants, separated by a small gap.
+   * Aligned against the content column (not the arrow gutter). */
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-top: 4px;
+}
+
 .stream-post__reply-action {
-  grid-column: 2;
   background: transparent;
   border: 0;
-  padding: 4px 0 0;
+  padding: 0;
   margin: 0;
   color: var(--muted);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  align-self: start;
-  justify-self: start;
 }
 
 .stream-post__reply-action:hover,
@@ -722,23 +735,17 @@ body[data-auth-state="auth-restore"] .landing {
   outline: none;
 }
 
-.stream-post__reply-list .stream-post__reply-form {
-  grid-column: 2;
-  margin-top: 6px;
-}
-
 .stream-post__reply-form--nested {
-  /* Inline composer for replying to a specific reply. Sits in the
-   * reply row's content column (not the arrow gutter) and stretches
-   * to fill it; inherits flex-wrap from .stream-post__reply-form so
+  /* Inline composer for replying to a specific reply. Lives in the
+   * content column under the action row, in normal flow, so it
+   * never overlaps the meta/body and pushes any child sublist
+   * downward. Inherits flex-wrap from .stream-post__reply-form so
    * the submit stacks below the textarea on narrow widths. */
-  grid-column: 2;
   margin-top: 6px;
   width: 100%;
 }
 
 .stream-post__reply-error {
-  grid-column: 2;
   color: var(--dim);
   font-size: 12px;
   margin-top: 4px;
@@ -771,13 +778,11 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .stream-post__reply-collapse {
-  grid-column: 2;
-  align-self: start;
-  justify-self: start;
+  /* Sits inline with the ↩ reply action inside .stream-post__reply-actions. */
   background: transparent;
   border: 0;
   padding: 0;
-  margin: 4px 0 0;
+  margin: 0;
   color: var(--dim);
   font: inherit;
   font-size: 12px;
