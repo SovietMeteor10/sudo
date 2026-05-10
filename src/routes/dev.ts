@@ -180,12 +180,14 @@ devRouter.get("/dev/search-handles", (request, response) => {
 });
 
 // Operator/dev diagnostic: counts of stored encrypted sync events
-// grouped by (owner, slice, kind). Exposes ONLY plaintext metadata
-// (counts, latest server_seq, latest server_received_at) — no
-// event_ids and no encrypted_payload. Lives under /dev so it ships
-// disabled in production deployments that don't expose the dev
-// router.
+// grouped by (owner, slice, kind). Exposes plaintext owner canonical
+// IDs alongside counts, so it must not be reachable on production
+// nodes. Gated on isLocalDevelopment — production returns 404.
 devRouter.get("/dev/sync/counts", (_request, response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
   response.json({ counts: listSyncCounts() });
 });
 

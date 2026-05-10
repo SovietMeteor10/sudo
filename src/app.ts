@@ -19,6 +19,14 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
+  app.use((_request, response, next) => {
+    response.setHeader("X-Content-Type-Options", "nosniff");
+    response.setHeader("Referrer-Policy", "no-referrer");
+    response.setHeader("X-Frame-Options", "DENY");
+    response.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    response.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+    next();
+  });
   app.use(express.json({ limit: "64kb" }));
 
   app.get("/health", (_request, response) => {
