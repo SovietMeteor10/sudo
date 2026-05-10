@@ -55,6 +55,16 @@ for h in "X-Content-Type-Options" "Referrer-Policy" "X-Frame-Options"; do
   fi
 done
 
+# CSP must include a sha256 hash for the inline importmap. If this
+# slot is empty, either CSP regressed or the importmap edit broke the
+# hash and the page won't load in browsers.
+if echo "$headers" | grep -qi "^Content-Security-Policy:.*'sha256-"; then
+  echo "ok    header Content-Security-Policy with sha256 importmap hash"
+else
+  echo "FAIL  Content-Security-Policy missing or has no sha256 importmap hash" >&2
+  failed=$((failed + 1))
+fi
+
 if [ "$failed" -gt 0 ]; then
   echo "smoke failed: ${failed} hardening check(s) failed" >&2
   exit 1

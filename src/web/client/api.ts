@@ -235,7 +235,7 @@ export async function signupDevHandle(
   recoveryQuestion: string,
   recoveryAnswer: string
 ): Promise<SignupDevResponse> {
-  const response = await fetchWithTimeout("/dev/signup", {
+  const response = await fetchWithTimeout("/api/identity/signup", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -258,7 +258,7 @@ export async function recoverDevHandle(
   recoveryQuestion: string,
   recoveryAnswer: string
 ): Promise<SigninDevResponse> {
-  const response = await fetchWithTimeout("/dev/recover", {
+  const response = await fetchWithTimeout("/api/identity/recover", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -276,7 +276,7 @@ export async function recoverDevHandle(
 }
 
 export async function signinDevHandle(handle: string, password: string): Promise<SigninDevResponse> {
-  const response = await fetchWithTimeout("/dev/signin", {
+  const response = await fetchWithTimeout("/api/identity/signin", {
     method: "POST",
     headers: {
       accept: "application/json",
@@ -297,7 +297,7 @@ export async function signinDevHandle(handle: string, password: string): Promise
 }
 
 export async function restoreDevSession(token: string): Promise<IdentityDocument> {
-  const response = await fetchWithTimeout("/dev/session", {
+  const response = await fetchWithTimeout("/api/identity/session", {
     headers: {
       accept: "application/json",
       authorization: `Bearer ${token}`,
@@ -336,7 +336,7 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
 
 export async function searchHandles(query: string, signal: AbortSignal): Promise<SearchResult[]> {
   const handle = normalizeLookupInput(query);
-  const response = await fetchWithTimeout(`/dev/search-handles?q=${encodeURIComponent(handle)}`, {
+  const response = await fetchWithTimeout(`/api/identity/search?q=${encodeURIComponent(handle)}`, {
     headers: { accept: "application/json" },
     signal,
   });

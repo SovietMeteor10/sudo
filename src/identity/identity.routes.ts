@@ -5,9 +5,26 @@ import {
   resolveIdentityByHandle,
   resolveIdentityFingerprintByCanonicalId
 } from "./identity.service.js";
+import {
+  handleIdentityRecover,
+  handleIdentitySearch,
+  handleIdentitySession,
+  handleIdentitySignin,
+  handleIdentitySignup
+} from "./identity-auth.handlers.js";
 import type { IdentityDocument } from "../protocol/types.js";
 
 export const identityRouter = Router();
+
+// Canonical auth + search surface. These are mounted BEFORE the
+// /:canonicalId wildcard routes below so /signup, /signin, etc. don't
+// get captured by the wildcard. Same handlers back the deprecated
+// /dev/* aliases in src/routes/dev.ts.
+identityRouter.post("/signup", handleIdentitySignup);
+identityRouter.post("/signin", handleIdentitySignin);
+identityRouter.post("/recover", handleIdentityRecover);
+identityRouter.get("/session", handleIdentitySession);
+identityRouter.get("/search", handleIdentitySearch);
 
 identityRouter.post("/register", (request, response) => {
   try {

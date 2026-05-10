@@ -6,6 +6,7 @@ import { discoveryRouter } from "./discovery/discovery.routes.js";
 import { feedRouter } from "./feeds/feed.routes.js";
 import { identityRouter } from "./identity/identity.routes.js";
 import { mountStaticClientPortal } from "./portal/clientPortal.js";
+import { CONTENT_SECURITY_POLICY } from "./portal/csp.js";
 import { notificationsRouter } from "./notifications/notifications.routes.js";
 import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
 import { relayRouter } from "./relay/relay.routes.js";
@@ -25,6 +26,7 @@ export function createApp() {
     response.setHeader("X-Frame-Options", "DENY");
     response.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
     response.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+    response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
     next();
   });
   app.use(express.json({ limit: "64kb" }));

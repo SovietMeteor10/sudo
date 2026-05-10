@@ -4,6 +4,19 @@ sudo binds to `127.0.0.1:3000` by default. nginx terminates TLS and
 forwards requests on the loopback. Replace `example.com` with your own
 domain everywhere below.
 
+## 1. Disable version leakage (host-wide)
+
+Edit `/etc/nginx/nginx.conf` and add inside the `http { ... }` block:
+
+```nginx
+server_tokens off;
+```
+
+Without this, nginx advertises its exact version in the `Server:`
+response header, which is unnecessary attack-surface intel.
+
+## 2. Site config
+
 Save as `/etc/nginx/sites-available/sudo` and symlink into
 `sites-enabled`.
 
@@ -57,6 +70,17 @@ server {
 ```sh
 sudo nginx -t
 sudo systemctl reload nginx
+```
+
+Verify the version leak is gone and the site still serves:
+
+```sh
+curl -sSI https://example.com/ | grep -i '^Server:'
+# want:    Server: nginx
+# not:     Server: nginx/1.24.0 (Ubuntu)
+
+curl -sS  https://example.com/health
+# want:    {"ok":true,"protocol":"sudo","version":"..."}
 ```
 
 ## Notes

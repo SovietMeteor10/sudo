@@ -1873,7 +1873,7 @@ async function restoreStoredSession(): Promise<void> {
 
   try {
     const identity = await restoreDevSession(token);
-    // Defense in depth: even if /dev/session returned a usable
+    // Defense in depth: even if /api/identity/session returned a usable
     // identity, confirm the canonical_id is still in the public
     // registry. Catches the case where the dev_sessions row survived
     // a partial reset but the identities row did not.
