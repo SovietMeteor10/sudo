@@ -70,9 +70,14 @@ casually.
 
 ### Backups
 
-Take regular backups of `data/` (the SQLite database and the DEV-ONLY
-`data/keys/`). See [BACKUPS.md](./BACKUPS.md). Restore drills are
-worth doing once, before you need them.
+Take regular backups of `data/sudo.sqlite` (the registry, relay
+envelopes, feed posts, sessions). See [BACKUPS.md](./BACKUPS.md).
+**Do not back up plaintext private key material.** As of 7128bd3 the
+server no longer writes to `data/keys/`; user account secrets live in
+the browser and the user is responsible for exporting their
+encrypted `.sudo-backup.json` to survive device loss.
+
+Restore drills are worth doing once, before you need them.
 
 ### TLS and reverse proxy
 
@@ -101,3 +106,48 @@ npm run check:env     # prints resolved config + warnings
 ```
 
 Run both after every deploy.
+
+## Post-7128bd3 cleanup
+
+Commit 7128bd3 stopped server keygen for the legacy signup path. New
+accounts no longer produce private-key files under `data/keys/`. On
+nodes that ran prior versions, prune the dormant artifacts once you
+confirm a current build is live.
+
+```sh
+# Confirm the build (response includes signature_required posture)
+curl -fsS https://example.com/health
+
+# Preview what would be removed
+sudo find /home/sudo-node/apps/sudo/data/keys -type f \
+  \( -name "*.dev-private-key.pem" \
+     -o -name "*.dev-feed-private-key.pem" \
+     -o -name "*.identity.json" \
+     -o -name "*.fingerprint.json" \) -print
+
+# Review the list. If everything is dormant dev-signup material
+# (which is the only thing the old path ever wrote), delete:
+sudo find /home/sudo-node/apps/sudo/data/keys -type f \
+  \( -name "*.dev-private-key.pem" \
+     -o -name "*.dev-feed-private-key.pem" \
+     -o -name "*.identity.json" \
+     -o -name "*.fingerprint.json" \) -delete
+
+# Verify the directory is now empty (or only contains a .gitkeep)
+sudo ls -la /home/sudo-node/apps/sudo/data/keys
+```
+
+After pruning, an HTTP-direct unsigned feed post on the production
+node returns `400 missing_signature` (the production browser portal
+always signs client-side, so this only affects HTTP-direct callers
+without a valid signature):
+
+```sh
+# Should return: {"ok":false,"error":"missing_signature",...}
+curl -fsS -X POST -H 'content-type: application/json' \
+  -d '{"author_canonical_id":"sudo:ed25519:...","author_handle":"@x","visibility":"public","body":"ping","public_metadata":{"tags":[]},"created_at":"...","updated_at":"...","deleted_at":null,"sequence":1}' \
+  https://example.com/api/feeds/posts
+```
+
+Also apply the nginx version-leak fix from [NGINX.md](./NGINX.md) if
+the `Server:` response header still advertises `nginx/1.x.y`.

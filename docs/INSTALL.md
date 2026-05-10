@@ -64,7 +64,11 @@ BASE_URL=https://example.com npm run smoke
 
 - `data/sudo.sqlite` — the SQLite database (path overridable via
   `SUDO_DB_PATH`, default derived from `SUDO_DATA_DIR`).
-- `data/keys/` — DEV-ONLY local key material from the dev signup flow.
+- `data/keys/` — dormant pre-migration artifact directory. As of
+  7128bd3 no signup path writes here. Existing nodes should prune
+  any leftover `*.dev-private-key.pem`, `*.dev-feed-private-key.pem`,
+  `*.identity.json`, and `*.fingerprint.json` files (see
+  [OPERATOR.md](./OPERATOR.md) §post-7128bd3 cleanup).
 - `data/backups/` — destination for `npm run backup:sqlite`.
 
 The whole `data/` directory is gitignored. Treat it as the

@@ -1,17 +1,24 @@
 # Backups
 
-sudo's persistent state is one directory: `data/` (configurable via
-`SUDO_DATA_DIR`). The most important file is the SQLite database at
-`SUDO_DB_PATH` (default `data/sudo.sqlite`). Back up the directory and
-you have a working copy of the node.
+sudo's persistent server state is essentially one file: the SQLite
+database at `SUDO_DB_PATH` (default `data/sudo.sqlite`). Back up that
+file and you have a working copy of the node.
+
+User account backups are a separate thing — they live in the browser
+and are exported by the user, not the operator. See below.
 
 ## What lives in `data/`
 
 - `sudo.sqlite` (+ `-wal`, `-shm`) — identities, relay envelopes, feed
-  posts, discovery indexes, sessions
-- `keys/` — DEV-ONLY plaintext key material from the dev signup flow.
-  Treat this as sensitive. Never share. Future client-side keys live
-  in the browser, not on the server.
+  posts, discovery indexes, sessions. **This is what to back up.**
+- `keys/` — dormant pre-migration directory. As of commit 7128bd3 the
+  server no longer writes private key material anywhere. Any
+  `*.dev-private-key.pem`, `*.dev-feed-private-key.pem`,
+  `*.identity.json`, or `*.fingerprint.json` files left here on
+  upgraded nodes are leftovers from the old codepath and should be
+  pruned (see [OPERATOR.md](./OPERATOR.md) §post-7128bd3 cleanup).
+  Do **not** back this directory up — copying plaintext private-key
+  material was always a bad backup practice.
 - `backups/` — output of `npm run backup:sqlite`
 
 ## Server backups vs user backups
@@ -19,11 +26,20 @@ you have a working copy of the node.
 Two different things share the word "backup":
 
 - **Server/node backups** — what an operator takes to recover a node
-  after disk loss. SQLite database + key material.
+  after disk loss. The SQLite database is sufficient. The server does
+  not hold any user's private key material; user secrets live in the
+  browser.
 - **User account backups** — encrypted `.sudo-backup.json` files
   produced by the browser portal's account export. These are encrypted
-  with the user's passphrase via Web Crypto and have nothing to do with
-  what the operator stores.
+  with the user's passphrase via Web Crypto and contain the user's
+  private identity / feed / messaging / device / account-sync keys.
+  The user is responsible for exporting and storing these. The server
+  never sees the contents.
+
+If a user clears their browser data without an exported
+`.sudo-backup.json` and without a paired trusted device, the account
+is unrecoverable from the server side. That is the intended posture:
+the server does not hold a recovery shortcut.
 
 Operator backups never decrypt user content. They preserve only what
 the node already holds (identity registry, ciphertext envelopes,
@@ -47,26 +63,34 @@ This calls `scripts/backup-sqlite.sh`, which:
 
 Output looks like `data/backups/sudo-20260508T145501Z.sqlite`.
 
-## Full directory backup
+## Full directory backup (optional, advanced)
 
-For a complete operator backup, also copy `data/keys/` and any other
-files you have placed in `data/`:
+For most nodes, just backing up the SQLite database is enough. If you
+want a tarball of `data/` for a dedicated archive (operator notes,
+out-of-band config, etc.), explicitly exclude both `data/keys/` and
+`data/backups/`:
 
 ```sh
-tar --exclude='data/backups' -czf sudo-data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz data
+tar --exclude='data/backups' --exclude='data/keys' \
+    -czf sudo-data-$(date -u +%Y%m%dT%H%M%SZ).tar.gz data
 ```
 
-Move the tarball off the host. `keys/` is sensitive; encrypt the
-archive at rest if you store it externally.
+Excluding `data/keys/` is deliberate. On nodes running 7128bd3 or
+later it is empty; on older nodes it holds dormant plaintext
+private-key material that should be pruned, not archived.
 
 ## Restore
 
 1. Stop the service: `sudo systemctl stop sudo.service`
 2. Move the broken database aside: `mv data/sudo.sqlite data/sudo.sqlite.broken`
 3. Copy a backup into place: `cp data/backups/sudo-<stamp>.sqlite data/sudo.sqlite`
-4. If you also lost `keys/`, restore from the tarball.
-5. Start the service: `sudo systemctl start sudo.service`
-6. Smoke test: `npm run smoke`
+4. Start the service: `sudo systemctl start sudo.service`
+5. Smoke test: `npm run smoke`
+
+Note: there is intentionally no step that restores private key
+material from a server backup. User secrets live in the browser. A
+user who has lost their device must restore from their own
+`.sudo-backup.json` or via a paired trusted device.
 
 ## Schedule
 

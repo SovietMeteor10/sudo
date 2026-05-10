@@ -13,21 +13,29 @@ The intended long-term model is:
 
 ## Current weaknesses
 
-- Dev signup and sign-in are local-development only.
-- The server currently generates and stores plaintext private keys under `data/keys`.
+- Dev sessions are opaque bearer tokens stored by hash in SQLite and cached in browser `localStorage`. (Migration target: client-signed challenge.)
 - Recovery backup codes exist only as local-dev scaffolding.
 - Recovery question and answer exist only as local-dev scaffolding.
-- Dev sessions are opaque bearer tokens stored by hash in SQLite and cached in browser `localStorage`.
 - Inbox reads remain dev-only and unauthenticated.
 - There is no key-rotation or key-continuity history UI yet.
 - There is no Tor/onion deployment automation yet.
 - There is no client-side encryption UI yet.
 
+## Key custody (what changed in 7128bd3)
+
+Browser signup creates Ed25519 identity, feed, messaging, device, and account-sync keypairs entirely in the browser via WebCrypto, encrypts the private bundle under the user's passphrase (PBKDF2 250000 iters → AES-GCM), and stores it in the `crypto_accounts` IndexedDB store. The server only ever sees the signed identity document (public keys + handle), which it validates via `/api/identity/register` and stores in the `identities` table.
+
+Legacy server-mediated signup (`/api/identity/signup` and the `/dev/signup` alias) generates a keypair in memory, signs the identity document the registry stores, and immediately discards the private key. **No process now writes to `data/keys/`.** The legacy path is kept for HTTP-direct fixture smokes and any pre-7128bd3 callers; new code should call `/api/identity/register` instead.
+
+`data/keys/` on existing deployments may still hold dormant artifacts from before this commit (`*.dev-private-key.pem`, `*.dev-feed-private-key.pem`, `*.identity.json`, `*.fingerprint.json`). Operators should prune those once they confirm 7128bd3 (or later) is live — see [BACKUPS.md](./BACKUPS.md) and [OPERATOR.md](./OPERATOR.md).
+
+Production feed posts must arrive client-signed. The server verifies the signature on the way in. Unsigned posts in production are rejected with `400 missing_signature`. In local development the legacy server-side fallback (or a `dev-placeholder:feed-signature-unavailable` string) still fires so existing fixture smokes keep working.
+
 ## Secrets handling
 
 Treat these as secrets:
 
-- Dev private keys
+- Browser-held private identity / feed / messaging / device / account-sync keys (encrypted in IndexedDB; user must back up via `.sudo-backup.json` to survive losing the device)
 - Passwords
 - Backup codes
 - Recovery answers
@@ -40,6 +48,7 @@ Policy:
 - Never place them in `localStorage` or `sessionStorage`.
 - Never print them in docs or screenshots.
 - Keep runtime material under `data/` and ignore it in Git.
+- The server must never persist plaintext private keys. The legacy `data/keys/` directory should be empty on any node running 7128bd3 or later.
 
 ## Password hashing
 
@@ -63,9 +72,11 @@ Future work should warn when a handle changes keys or when a canonical identity 
 
 ## Client-held keys
 
-The long-term design should move key generation and private key storage to the client device using passkeys, WebAuthn, Secure Enclave, or another hardware-backed mechanism.
+Production browser signup generates and stores all private keys in the browser as of 7128bd3. The server never receives them. Sign-in unlocks the encrypted IndexedDB bundle locally with the user's passphrase; the server-side credential path is a fallback for legacy accounts only.
 
-The server should never need the private key in the final design.
+Future hardening: move local-unlock from passphrase-derived AES-GCM to a passkey/WebAuthn-backed credential, and eliminate the bearer `sessionToken` entirely in favor of a client-signed challenge so the server's session table stops being a single trust point.
+
+The server must never need the private key. There is no longer a code path that writes one to disk.
 
 ## Passkeys and WebAuthn
 
