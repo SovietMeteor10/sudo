@@ -169,3 +169,84 @@ Anything HTTP-direct that still POSTs `/api/identity/signin` will
 now get a 404 from the catch-all route — that's the death-watch
 signal. The smoke `client-signed-session` Phase 3 explicitly
 asserts this 404.
+
+## Tracking legacy /api/identity/signup and /api/identity/recover usage
+
+These two routes are the last password/recovery surfaces still
+backed by `dev_account_access`. Before retiring them we want
+evidence that no real callers depend on them. Each request emits a
+single-line structured log so an operator can grep, group, and
+count without parsing multi-line records.
+
+Every `POST /api/identity/signup` (and the `/dev/signup` alias)
+emits one `[legacy-signup]` line. Every `POST /api/identity/recover`
+(and the `/dev/recover` alias) emits one `[legacy-recover]` line.
+Shape:
+
+```
+[legacy-signup] {"timestamp":"2026-05-10T19:00:00.000Z","route":"/api/identity/signup","outcome":"ok","handle":"alice","user_agent":"Mozilla/5.0 ...","remote_ip":"203.0.113.4","canonical_id_prefix":"sudo:ed25519","canonical_id":"sudo:ed25519:abcd..."}
+[legacy-recover] {"timestamp":"2026-05-10T19:00:01.000Z","route":"/api/identity/recover","outcome":"invalid_credentials","handle":"alice","user_agent":"curl/8.7.1","remote_ip":"203.0.113.4"}
+```
+
+`outcome` values:
+
+- `[legacy-signup]`: `ok`, `signups_disabled`, `invite_required`,
+  `invalid_handle`, `weak_password`, `invalid_recovery_question`,
+  `invalid_recovery_answer`, `duplicate_handle` (and any other
+  `DevSignupError` code).
+- `[legacy-recover]`: `ok`, `invalid_payload`, `invalid_credentials`,
+  `recovery_unavailable` (and any other `AccountAccessError` code).
+
+What is **never** in the line: the password, the backup code, the
+recovery answer, the minted session token, or any private key
+material. The smoke `client-signed-session` Phase 4 asserts each
+of these never appears in the local server log after exercising
+both routes end to end.
+
+```sh
+# Count signup attempts in the last 24h.
+journalctl -u sudo.service --since "24 hours ago" \
+  | grep -F '[legacy-signup]' | wc -l
+
+# Count recover attempts in the last 24h.
+journalctl -u sudo.service --since "24 hours ago" \
+  | grep -F '[legacy-recover]' | wc -l
+
+# Group signup events by user agent (best signal for "are real
+# browsers still hitting this, or only smokes/curl/bots?").
+journalctl -u sudo.service --since "7 days ago" \
+  | grep -F '[legacy-signup]' \
+  | sed -n 's/.*"user_agent":"\([^"]*\)".*/\1/p' \
+  | sort | uniq -c | sort -rn
+
+# Group recover events by user agent.
+journalctl -u sudo.service --since "7 days ago" \
+  | grep -F '[legacy-recover]' \
+  | sed -n 's/.*"user_agent":"\([^"]*\)".*/\1/p' \
+  | sort | uniq -c | sort -rn
+
+# Group by outcome (signup).
+journalctl -u sudo.service --since "7 days ago" \
+  | grep -F '[legacy-signup]' \
+  | sed -n 's/.*"outcome":"\([^"]*\)".*/\1/p' \
+  | sort | uniq -c | sort -rn
+
+# Group by outcome (recover).
+journalctl -u sudo.service --since "7 days ago" \
+  | grep -F '[legacy-recover]' \
+  | sed -n 's/.*"outcome":"\([^"]*\)".*/\1/p' \
+  | sort | uniq -c | sort -rn
+
+# Pretty-print one event for inspection.
+journalctl -u sudo.service --since "1 hour ago" \
+  | grep -F '[legacy-signup]' | tail -1 \
+  | sed 's/^.*\[legacy-signup\] //' | jq .
+```
+
+Decommission criterion: zero non-fixture user agents (no `Mozilla/*`,
+no unfamiliar HTTP clients) on either route across a release cycle.
+At that point a follow-up commit can remove the handlers, the
+`/dev/signup` and `/dev/recover` aliases, the `accountAccessProvider.
+createCredential` and `recoverCredential` paths in
+`src/localState/accountAccess.ts`, and the `dev_account_access`
+table from `src/storage/schema.ts`.

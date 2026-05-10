@@ -377,6 +377,168 @@ async function getJson(path) {
     fail("legacy-alias-removed", `expected 404, got ${removedAliasResp.status}`);
   }
 
+  // ===== Phase 4: legacy signup + recover telemetry =====
+  // Migration tracker. Every /api/identity/signup and /api/identity/recover
+  // attempt should emit a single-line [legacy-signup] or [legacy-recover]
+  // JSON event in the server log. Each event must include the outcome
+  // and handle, must NEVER carry the password, recovery answer, backup
+  // code, or session token, and must be greppable as one line so
+  // `wc -l` works as a usage counter before deletion.
+  //
+  // The log file lives on the *server*. When BASE points at a local
+  // dev server the smoke knows where the log file is (/tmp/sudo-local.log
+  // or SUDO_LOG_FILE override) and can read it directly. When BASE
+  // points at a remote droplet there's no way to read the log over
+  // HTTP, so we skip the log assertions cleanly.
+  const legacyHandle = `legtelem${Date.now().toString().slice(-6)}`;
+  const legacyPassword = `LegacyPhrase!_${Date.now().toString().slice(-6)}A`;
+  const legacyAnswer = `kettle_${Date.now().toString().slice(-6)}`;
+  const recoveryQuestion = "first object?";
+
+  // 4a. Successful signup → 201 + [legacy-signup]:ok
+  const sigResp = await postJson("/api/identity/signup", {
+    handle: legacyHandle,
+    password: legacyPassword,
+    recoveryQuestion,
+    recoveryAnswer: legacyAnswer
+  });
+  let legacyBackupCode = null;
+  let legacyCanonicalId = null;
+  let signupSessionToken = null;
+  if (sigResp.status !== 201) {
+    fail("legacy-signup-201", `expected 201, got ${sigResp.status}: ${JSON.stringify(sigResp.body)}`);
+  } else {
+    legacyBackupCode = sigResp.body?.backupCode;
+    legacyCanonicalId = sigResp.body?.identity?.canonical_id;
+    signupSessionToken = sigResp.body?.sessionToken;
+    if (typeof legacyBackupCode !== "string" || typeof legacyCanonicalId !== "string") {
+      fail("legacy-signup-shape", `signup body missing fields: ${JSON.stringify(sigResp.body).slice(0, 200)}`);
+    } else {
+      ok(`legacy POST /api/identity/signup → 201 (canonical=${legacyCanonicalId.slice(0, 24)}...)`);
+    }
+  }
+
+  // 4b. Weak-password signup → 400 + [legacy-signup]:weak_password
+  const weakResp = await postJson("/api/identity/signup", {
+    handle: `${legacyHandle}weak`,
+    password: "shortpw",
+    recoveryQuestion,
+    recoveryAnswer: "a"
+  });
+  if (weakResp.status === 400 && weakResp.body?.error === "weak_password") {
+    ok(`legacy signup with weak password → 400 weak_password`);
+  } else {
+    fail("legacy-signup-weak", `expected 400 weak_password, got ${weakResp.status}: ${JSON.stringify(weakResp.body)}`);
+  }
+
+  // 4c. Successful recover → 200 + [legacy-recover]:ok
+  let recoverOkResp = null;
+  if (typeof legacyBackupCode === "string") {
+    recoverOkResp = await postJson("/api/identity/recover", {
+      handle: legacyHandle,
+      backupCode: legacyBackupCode,
+      recoveryQuestion,
+      recoveryAnswer: legacyAnswer
+    });
+    if (recoverOkResp.status === 200 && typeof recoverOkResp.body?.sessionToken === "string") {
+      ok(`legacy POST /api/identity/recover → 200 + new sessionToken`);
+    } else {
+      fail("legacy-recover-200", `expected 200 with sessionToken, got ${recoverOkResp.status}: ${JSON.stringify(recoverOkResp.body)}`);
+    }
+  }
+
+  // 4d. Wrong backup code → 401 + [legacy-recover]:invalid_credentials
+  const recoverBadResp = await postJson("/api/identity/recover", {
+    handle: legacyHandle,
+    backupCode: "definitely-not-the-real-backup-code",
+    recoveryQuestion,
+    recoveryAnswer: legacyAnswer
+  });
+  if (recoverBadResp.status === 401) {
+    ok(`legacy recover with wrong backup code → 401`);
+  } else {
+    fail("legacy-recover-bad", `expected 401, got ${recoverBadResp.status}: ${JSON.stringify(recoverBadResp.body)}`);
+  }
+
+  // 4e. Malformed recover body → 400 + [legacy-recover]:invalid_payload
+  const recoverMalResp = await postJson("/api/identity/recover", { handle: legacyHandle });
+  if (recoverMalResp.status === 400) {
+    ok(`legacy recover with malformed body → 400 invalid_credentials`);
+  } else {
+    fail("legacy-recover-malformed", `expected 400, got ${recoverMalResp.status}`);
+  }
+
+  // 4f. Server-log assertions: events present, no secrets leaked.
+  const isLocalBase = /^http:\/\/127\.0\.0\.1(:|\/|$)|^http:\/\/localhost(:|\/|$)/.test(BASE);
+  const logPath = process.env.SUDO_LOG_FILE || "/tmp/sudo-local.log";
+  let logBody = "";
+  if (!isLocalBase && process.env.SUDO_LOG_FILE === undefined) {
+    ok(`legacy-signup/recover log assertion skipped (BASE=${BASE} is not local; server log is on the droplet)`);
+  } else {
+    try {
+      logBody = require("node:fs").readFileSync(logPath, "utf-8");
+    } catch (e) {
+      ok(`legacy-signup/recover log assertion skipped (cannot read ${logPath}: ${(e || {}).message})`);
+    }
+  }
+  if (logBody.length > 0) {
+    const signupLines = logBody.split("\n").filter((l) => l.includes("[legacy-signup]"));
+    const recoverLines = logBody.split("\n").filter((l) => l.includes("[legacy-recover]"));
+    if (signupLines.length === 0) fail("legacy-signup-log", `expected at least one [legacy-signup] line in ${logPath}; found 0`);
+    else ok(`server log carries ${signupLines.length} [legacy-signup] event(s)`);
+    if (recoverLines.length === 0) fail("legacy-recover-log", `expected at least one [legacy-recover] line in ${logPath}; found 0`);
+    else ok(`server log carries ${recoverLines.length} [legacy-recover] event(s)`);
+
+    const signupOk = signupLines.filter((l) => l.includes(`"outcome":"ok"`) && l.includes(`"handle":"${legacyHandle}"`));
+    if (signupOk.length >= 1) ok(`[legacy-signup] success event present for @${legacyHandle}`);
+    else fail("legacy-signup-ok", `no [legacy-signup] success event for @${legacyHandle}: ${signupLines.slice(-5).join(" | ").slice(0, 400)}`);
+
+    const signupWeak = signupLines.filter((l) => l.includes(`"outcome":"weak_password"`) && l.includes(`"handle":"${legacyHandle}weak"`));
+    if (signupWeak.length >= 1) ok(`[legacy-signup] weak_password event present for @${legacyHandle}weak`);
+    else fail("legacy-signup-weak-event", `no [legacy-signup] weak_password event matched`);
+
+    const recoverOkEv = recoverLines.filter((l) => l.includes(`"outcome":"ok"`) && l.includes(`"handle":"${legacyHandle}"`));
+    if (recoverOkEv.length >= 1) ok(`[legacy-recover] success event present for @${legacyHandle}`);
+    else fail("legacy-recover-ok-event", `no [legacy-recover] success event for @${legacyHandle}`);
+
+    const recoverInvalid = recoverLines.filter((l) => l.includes(`"outcome":"invalid_credentials"`) && l.includes(`"handle":"${legacyHandle}"`));
+    if (recoverInvalid.length >= 1) ok(`[legacy-recover] invalid_credentials event present for @${legacyHandle}`);
+    else fail("legacy-recover-invalid-event", `no [legacy-recover] invalid_credentials event for @${legacyHandle}`);
+
+    // Secret-leak assertions. None of these values may ever appear
+    // in the server log: not in the legacy events, not anywhere else
+    // (e.g. an exception stack trace) the server might write.
+    if (logBody.includes(legacyPassword)) fail("legacy-password-leak", `password value leaked into server log`);
+    else ok(`legacy events never log the submitted password`);
+    if (typeof legacyBackupCode === "string" && logBody.includes(legacyBackupCode)) {
+      fail("legacy-backupcode-leak", `backup code leaked into server log`);
+    } else {
+      ok(`legacy events never log the backup code`);
+    }
+    if (logBody.includes(legacyAnswer)) fail("legacy-answer-leak", `recovery answer leaked into server log`);
+    else ok(`legacy events never log the recovery answer`);
+    if (typeof signupSessionToken === "string" && signupSessionToken.length >= 16 && logBody.includes(signupSessionToken)) {
+      fail("legacy-signup-session-leak", `signup session token leaked into server log`);
+    } else {
+      ok(`legacy signup events never log the minted session token`);
+    }
+    const recoverToken = recoverOkResp?.body?.sessionToken;
+    if (typeof recoverToken === "string" && recoverToken.length >= 16 && logBody.includes(recoverToken)) {
+      fail("legacy-recover-session-leak", `recover session token leaked into server log`);
+    } else {
+      ok(`legacy recover events never log the minted session token`);
+    }
+
+    // One-line greppability: every [legacy-*] occurrence must be
+    // followed by a `{` on the same line (not a multi-line dump).
+    const malformedSignup = signupLines.filter((l) => !/\[legacy-signup\] \{/.test(l));
+    const malformedRecover = recoverLines.filter((l) => !/\[legacy-recover\] \{/.test(l));
+    if (malformedSignup.length === 0) ok(`every [legacy-signup] event is one line (grep + wc -l friendly)`);
+    else fail("legacy-signup-multiline", `${malformedSignup.length} multi-line event(s)`);
+    if (malformedRecover.length === 0) ok(`every [legacy-recover] event is one line (grep + wc -l friendly)`);
+    else fail("legacy-recover-multiline", `${malformedRecover.length} multi-line event(s)`);
+  }
+
   if (failures.length > 0) {
     console.error(`CLIENT-SIGNED-SESSION SMOKE FAILED (${failures.length})`);
     process.exit(1);

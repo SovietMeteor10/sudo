@@ -38,12 +38,17 @@ type RecoverBody = {
 
 export function handleIdentitySignup(request: Request, response: Response): void {
   const config = readNodeRuntimeConfig();
+  const handleField = (request.body as SignupBody | undefined)?.handle;
+  const handleForLog = typeof handleField === "string" ? handleField : "(missing)";
+
   if (!config.allowSignups) {
+    logLegacyAuth("legacy-signup", request, { outcome: "signups_disabled", handle: handleForLog });
     response.status(403).json({ error: "signups_disabled", message: "signups are disabled on this node" });
     return;
   }
 
   if (config.requireInvite) {
+    logLegacyAuth("legacy-signup", request, { outcome: "invite_required", handle: handleForLog });
     response.status(403).json({ error: "invite_required", message: "this node requires an invite" });
     return;
   }
@@ -51,21 +56,25 @@ export function handleIdentitySignup(request: Request, response: Response): void
   const body = request.body as SignupBody;
 
   if (typeof body.handle !== "string") {
+    logLegacyAuth("legacy-signup", request, { outcome: "invalid_handle", handle: handleForLog });
     response.status(400).json({ error: "invalid_handle", message: "handle is required" });
     return;
   }
 
   if (typeof body.password !== "string" || !isStrongPassword(body.password)) {
+    logLegacyAuth("legacy-signup", request, { outcome: "weak_password", handle: body.handle });
     response.status(400).json({ error: "weak_password", message: "password does not meet requirements" });
     return;
   }
 
   if (typeof body.recoveryQuestion !== "string" || body.recoveryQuestion.trim().length < 1) {
+    logLegacyAuth("legacy-signup", request, { outcome: "invalid_recovery_question", handle: body.handle });
     response.status(400).json({ error: "invalid_recovery_question", message: "recovery question is required" });
     return;
   }
 
   if (typeof body.recoveryAnswer !== "string" || body.recoveryAnswer.trim().length < 1) {
+    logLegacyAuth("legacy-signup", request, { outcome: "invalid_recovery_answer", handle: body.handle });
     response.status(400).json({ error: "invalid_recovery_answer", message: "recovery answer is required" });
     return;
   }
@@ -82,6 +91,11 @@ export function handleIdentitySignup(request: Request, response: Response): void
       host
     });
 
+    logLegacyAuth("legacy-signup", request, {
+      outcome: "ok",
+      handle: body.handle,
+      canonical_id: result.canonicalId
+    });
     response.status(201).json({
       identity: result.identity,
       backupCode: result.backupCode,
@@ -89,6 +103,7 @@ export function handleIdentitySignup(request: Request, response: Response): void
     });
   } catch (error) {
     if (error instanceof DevSignupError) {
+      logLegacyAuth("legacy-signup", request, { outcome: error.code, handle: body.handle });
       response
         .status(error.code === "duplicate_handle" ? 409 : 400)
         .json({ error: error.code, message: error.message });
@@ -101,6 +116,7 @@ export function handleIdentitySignup(request: Request, response: Response): void
 
 export function handleIdentityRecover(request: Request, response: Response): void {
   const body = request.body as RecoverBody;
+  const handleForLog = typeof body.handle === "string" ? body.handle : "(missing)";
 
   if (
     typeof body.handle !== "string"
@@ -108,6 +124,7 @@ export function handleIdentityRecover(request: Request, response: Response): voi
     || typeof body.recoveryQuestion !== "string"
     || typeof body.recoveryAnswer !== "string"
   ) {
+    logLegacyAuth("legacy-recover", request, { outcome: "invalid_payload", handle: handleForLog });
     response.status(400).json({ error: "invalid_credentials", message: "handle, backup code, recovery question, and recovery answer are required" });
     return;
   }
@@ -118,6 +135,11 @@ export function handleIdentityRecover(request: Request, response: Response): voi
       body.backupCode,
       body.recoveryAnswer
     );
+    logLegacyAuth("legacy-recover", request, {
+      outcome: "ok",
+      handle: body.handle,
+      canonical_id: result.identity.canonical_id
+    });
     response.json({
       identity: result.identity,
       sessionToken: result.session.token,
@@ -125,12 +147,50 @@ export function handleIdentityRecover(request: Request, response: Response): voi
     });
   } catch (error) {
     if (error instanceof AccountAccessError) {
+      logLegacyAuth("legacy-recover", request, { outcome: error.code, handle: body.handle });
       response.status(401).json({ error: error.code, message: error.message });
       return;
     }
 
     throw error;
   }
+}
+
+// Migration-tracking log line for the remaining legacy auth/recovery
+// surfaces — POST /api/identity/signup and POST /api/identity/recover
+// (and their /dev/* aliases). Same shape as the retired [legacy-signin]
+// instrumentation: a single-line JSON event so an operator can grep
+// `[legacy-signup]` or `[legacy-recover]` and `wc -l` to see whether
+// real callers still exist before retiring the routes.
+//
+// What we deliberately NEVER log: passwords, recovery answers, backup
+// codes, session tokens, or private key material. Only the handle
+// (already a public identifier), the resolved canonical_id on success,
+// the outcome code, and request-source metadata that nginx already
+// sets in headers (user_agent, remote_ip).
+function logLegacyAuth(
+  tag: "legacy-signup" | "legacy-recover",
+  request: Request,
+  fields: { outcome: string; handle: string; canonical_id?: string }
+): void {
+  const userAgent = request.get("user-agent") ?? "";
+  // Trust X-Forwarded-For only when the deployment doc says nginx
+  // sets it (DEPLOY_UBUNTU.md). Falls back to req.ip otherwise.
+  const remoteIp = request.get("x-real-ip")
+    ?? (request.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.ip ?? "");
+  const payload: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    route: request.originalUrl.split("?")[0] ?? request.path,
+    outcome: fields.outcome,
+    handle: fields.handle,
+    user_agent: userAgent,
+    remote_ip: remoteIp
+  };
+  if (typeof fields.canonical_id === "string" && fields.canonical_id.length > 0) {
+    payload["canonical_id_prefix"] = fields.canonical_id.split(":").slice(0, 2).join(":");
+    payload["canonical_id"] = fields.canonical_id;
+  }
+  console.info(`[${tag}] ${JSON.stringify(payload)}`);
 }
 
 // Legacy POST /api/identity/signin handler removed in migration step 5.

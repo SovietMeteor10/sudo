@@ -147,6 +147,35 @@ function identitiesCount() {
       fail("network", `unexpected: no signup-related POST observed. saw: ${[...signupNetworkPaths].join(", ")}`);
     }
 
+    // The network assertion above pins the *client* side: the browser
+    // never POSTed to the legacy signup route. The server-side
+    // [legacy-signup] log is the symmetric proof — no log line should
+    // exist for this browser handle, because the server only emits
+    // the event from handleIdentitySignup which the browser never hit.
+    // Skipped if the local server log isn't readable (remote BASE).
+    const isLocalBaseForLog = /^http:\/\/127\.0\.0\.1(:|\/|$)|^http:\/\/localhost(:|\/|$)/.test(BASE);
+    const browserLogPath = process.env.SUDO_LOG_FILE || "/tmp/sudo-local.log";
+    let browserLogBody = "";
+    if (!isLocalBaseForLog && process.env.SUDO_LOG_FILE === undefined) {
+      ok(`browser-signup [legacy-signup] log assertion skipped (BASE=${BASE} is not local)`);
+    } else {
+      try {
+        browserLogBody = fs.readFileSync(browserLogPath, "utf-8");
+      } catch (e) {
+        ok(`browser-signup [legacy-signup] log assertion skipped (cannot read ${browserLogPath}: ${(e || {}).message})`);
+      }
+    }
+    if (browserLogBody.length > 0) {
+      const browserSignupLines = browserLogBody
+        .split("\n")
+        .filter((l) => l.includes("[legacy-signup]") && l.includes(`"handle":"${handle}"`));
+      if (browserSignupLines.length === 0) {
+        ok(`server log carries zero [legacy-signup] events for browser handle @${handle}`);
+      } else {
+        fail("browser-legacy-signup-event", `unexpected [legacy-signup] event(s) for browser handle @${handle}: ${browserSignupLines.slice(0, 2).join(" | ").slice(0, 400)}`);
+      }
+    }
+
     // Sign out and reload. For client-key accounts today, reload
     // intentionally lands on the menu (no session token is written
     // at signup), so the user must explicitly unlock with their
