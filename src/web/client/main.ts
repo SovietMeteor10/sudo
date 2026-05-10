@@ -2149,9 +2149,18 @@ const refreshPersonalFeed = (): Promise<void> => refreshFeedPosts();
 // focused-thread mode for that post. Feed refreshes during this mode
 // no-op; exit returns to the normal feed.
 let activeThreadPostId: string | null = null;
+// When the user navigates from a reply notification we pin the new
+// reply at the top of the comments panel and add a brief highlight.
+// Stored alongside activeThreadPostId so the polling re-render
+// (refreshFeedPosts → renderThreadView) preserves focus until the
+// user navigates away.
+let focusedCommentId: string | null = null;
 
-async function enterThreadView(postId: string): Promise<void> {
+async function enterThreadView(postId: string, focusedReplyId?: string): Promise<void> {
   activeThreadPostId = postId;
+  focusedCommentId = typeof focusedReplyId === "string" && focusedReplyId.length > 0
+    ? focusedReplyId
+    : null;
   // Hide the composer while in thread view — the focused view has
   // its own reply composer for the parent post.
   const composer = document.getElementById("feed-composer");
@@ -2161,6 +2170,7 @@ async function enterThreadView(postId: string): Promise<void> {
 
 function exitThreadView(): void {
   activeThreadPostId = null;
+  focusedCommentId = null;
   const composer = document.getElementById("feed-composer");
   if (composer !== null) composer.hidden = false;
   void refreshFeedPosts();
@@ -2212,8 +2222,10 @@ async function renderThreadView(postId: string): Promise<void> {
     );
     if (panel !== null) {
       // Thread payload already includes replies — pass them straight
-      // through so the panel doesn't re-fetch from the server.
-      openReplyComposer(postId, panel, thread.replies);
+      // through so the panel doesn't re-fetch from the server. The
+      // focused-comment hint pins the relevant reply at the top of
+      // the panel so the user lands on it immediately.
+      openReplyComposer(postId, panel, thread.replies, focusedCommentId ?? undefined);
     }
   } catch {
     parentSlot.textContent = "post unavailable";
@@ -2463,7 +2475,8 @@ function toggleReplyComposer(postId: string, article: HTMLElement): void {
 function openReplyComposer(
   postId: string,
   panel: HTMLElement,
-  preloadedReplies?: FeedPost[]
+  preloadedReplies?: FeedPost[],
+  focusedReplyId?: string
 ): void {
   panel.hidden = false;
   panel.dataset["mode"] = "compose";
@@ -2481,21 +2494,30 @@ function openReplyComposer(
   // If we already have a list rendered (we're moving from "list"
   // back to "compose"), keep it; otherwise build a fresh container.
   const existingList = panel.querySelector<HTMLElement>(".stream-post__reply-list");
+  const existingFocus = panel.querySelector<HTMLElement>(".stream-post__reply-focused");
   panel.replaceChildren(form);
+  if (existingFocus !== null) panel.append(existingFocus);
   if (existingList !== null) panel.append(existingList);
 
   // Thread view passes replies in via the thread payload so we can
   // skip the network round-trip. The feed-list path doesn't have
   // them preloaded and falls back to the dedicated replies endpoint.
   if (preloadedReplies !== undefined) {
-    renderRepliesIntoPanel(postId, panel, preloadedReplies);
+    renderRepliesIntoPanel(postId, panel, preloadedReplies, focusedReplyId);
   } else {
-    void renderRepliesUnder(postId, panel);
+    void renderRepliesUnder(postId, panel, focusedReplyId);
   }
-  textarea.focus();
+  // Focus the input only when we're not arriving via a notification
+  // pin — pinning a reply at the top is the visible signal we want
+  // the user to read first; auto-focus would scroll past it.
+  if (focusedReplyId === undefined) textarea.focus();
 }
 
-async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promise<void> {
+async function renderRepliesUnder(
+  rootPostId: string,
+  panel: HTMLElement,
+  focusedReplyId?: string
+): Promise<void> {
   if (currentIdentityDocument === null) return;
   let replies: FeedPost[] = [];
   try {
@@ -2503,7 +2525,7 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
   } catch {
     return;
   }
-  renderRepliesIntoPanel(rootPostId, panel, replies);
+  renderRepliesIntoPanel(rootPostId, panel, replies, focusedReplyId);
 }
 
 // Builds a reply tree from a flat descendants array and paints it into
@@ -2512,7 +2534,15 @@ async function renderRepliesUnder(rootPostId: string, panel: HTMLElement): Promi
 // comment as a full-width row whose header keeps @handle and timestamp
 // adjacent. There is no "replying to @X" / "@X replied" copy — the
 // indentation alone communicates the relationship.
-function renderRepliesIntoPanel(rootPostId: string, panel: HTMLElement, replies: FeedPost[]): void {
+function renderRepliesIntoPanel(
+  rootPostId: string,
+  panel: HTMLElement,
+  replies: FeedPost[],
+  focusedReplyId?: string
+): void {
+  // Drop any prior focus pin; we'll re-render it below if relevant.
+  panel.querySelectorAll(".stream-post__reply-focused").forEach((node) => node.remove());
+
   let list = panel.querySelector<HTMLElement>(".stream-post__reply-list");
   if (list === null) {
     list = document.createElement("ul");
@@ -2520,17 +2550,61 @@ function renderRepliesIntoPanel(rootPostId: string, panel: HTMLElement, replies:
     panel.append(list);
   }
   list.replaceChildren();
+
+  // Resolve the focused reply (if any) before building the tree.
+  // The pinned card at the top of the panel is rendered as a list
+  // entry on its own; the same reply is filtered out of the normal
+  // tree below to keep dedup honest.
+  const focusedReply = typeof focusedReplyId === "string" && focusedReplyId.length > 0
+    ? replies.find((r) => r.post_id === focusedReplyId) ?? null
+    : null;
+
   if (replies.length === 0) {
     const empty = document.createElement("li");
     empty.className = "stream-post__reply-empty";
     empty.textContent = "no replies yet";
     list.append(empty);
+    if (focusedReplyId !== undefined && focusedReply === null) {
+      // Notification pointed at a reply that no longer exists or is
+      // not visible to this viewer. Surface a graceful note rather
+      // than a broken-looking empty thread.
+      const missing = document.createElement("div");
+      missing.className = "stream-post__reply-focused-missing";
+      missing.textContent = "comment unavailable — it may have been deleted";
+      panel.insertBefore(missing, list);
+    }
     return;
+  }
+
+  // Build the focus pin first so it sits above the normal tree.
+  if (focusedReply !== null) {
+    const pin = document.createElement("div");
+    pin.className = "stream-post__reply-focused";
+    pin.dataset["focusedReplyFor"] = rootPostId;
+    pin.dataset["focusedReplyId"] = focusedReply.post_id;
+    const label = document.createElement("div");
+    label.className = "stream-post__reply-focused-label";
+    label.textContent = "new reply";
+    pin.append(label);
+    const focusedItem = renderReply(focusedReply, 1, 0);
+    focusedItem.classList.add("is-focused");
+    pin.append(focusedItem);
+    panel.insertBefore(pin, list);
+  } else if (focusedReplyId !== undefined) {
+    const missing = document.createElement("div");
+    missing.className = "stream-post__reply-focused-missing";
+    missing.textContent = "comment unavailable — it may have been deleted";
+    panel.insertBefore(missing, list);
   }
 
   const byParent = new Map<string, FeedPost[]>();
   const ids = new Set(replies.map((reply) => reply.post_id));
   for (const reply of replies) {
+    if (focusedReply !== null && reply.post_id === focusedReply.post_id) {
+      // Skip the pinned reply in the regular tree to avoid the same
+      // comment appearing twice.
+      continue;
+    }
     const parent = typeof reply.reply_to === "string" && ids.has(reply.reply_to)
       ? reply.reply_to
       : rootPostId;
@@ -3347,7 +3421,7 @@ function setSignedIn(handle: string): void {
         list: notificationsList,
         empty: notificationsEmpty,
         clearAllButton: notificationsClearAll,
-        onView: (postId) => {
+        onView: (target) => {
           // The user might be on Discover or in another mobile pane;
           // bring them to the personal feed first so the thread view
           // takes over the visible center column.
@@ -3358,7 +3432,7 @@ function setSignedIn(handle: string): void {
               button.classList.toggle("is-active", button.dataset["mobileTab"] === "feed");
             }
           }
-          void enterThreadView(postId);
+          void enterThreadView(target.postId, target.focusedCommentId);
         },
         onChatTargetsChanged: () => {
           // Server-confirmed mutual follow promoted a contact to

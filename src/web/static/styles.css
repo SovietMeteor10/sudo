@@ -700,6 +700,35 @@ body[data-auth-state="auth-restore"] .landing {
   padding: 0;
 }
 
+.stream-post__reply-focused {
+  margin: 10px 0 4px;
+  padding: 8px;
+  border: 1px solid var(--focus, #6aa);
+  border-radius: 4px;
+  background: rgba(106, 170, 170, 0.08);
+}
+
+.stream-post__reply-focused-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--focus, #6aa);
+  margin-bottom: 6px;
+}
+
+.stream-post__reply-focused .stream-post__reply-item.is-focused {
+  background: transparent;
+}
+
+.stream-post__reply-focused-missing {
+  margin: 10px 0 4px;
+  padding: 8px;
+  font-style: italic;
+  color: var(--muted, #888);
+  border: 1px dashed var(--line, #333);
+  border-radius: 4px;
+}
+
 .stream-post__reply-list--nested {
   /* Indent only — no border-left / connector line. The arrow on each
    * reply is the sole nesting cue. */

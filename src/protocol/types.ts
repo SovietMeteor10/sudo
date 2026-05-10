@@ -271,6 +271,12 @@ export type SocialNotification = {
   // targeted. Useful for grouping/back-navigation; the view button
   // uses post_id by default.
   parent_post_id?: string;
+  // For replies, the top-of-thread post id (may equal
+  // parent_post_id for top-level replies, or differ for nested ones).
+  // The view action navigates here so the user lands on the original
+  // conversation; post_id is kept and used as a "focus this comment"
+  // hint inside that thread.
+  root_post_id?: string;
   created_at: string;
   updated_at: string;
 };

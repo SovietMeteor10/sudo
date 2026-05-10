@@ -36,12 +36,21 @@ import type { ConnectionRelationship, SocialNotification } from "../types.js";
 
 const POLL_INTERVAL_MS = 12000;
 
+export type ViewTarget = {
+  postId: string;
+  // For reply notifications, focusedCommentId is the actor's new
+  // reply id; postId is the root thread post id. The host renders
+  // the root post pinned at top and focuses (pins / highlights) the
+  // reply within the comments panel. Undefined for non-reply kinds.
+  focusedCommentId?: string;
+};
+
 type Coordinator = {
   ownerCanonicalId: string;
   list: HTMLElement;
   empty: HTMLElement;
   clearAllButton: HTMLButtonElement | null;
-  onView: ((postId: string) => void) | null;
+  onView: ((target: ViewTarget) => void) | null;
   onChatTargetsChanged: (() => void) | null;
   // Last-rendered visible ids — used by clear-all so we can dismiss
   // exactly what the user can see, even if the next poll arrives
@@ -70,7 +79,7 @@ export type StartNotificationsOptions = {
   list: HTMLElement;
   empty: HTMLElement;
   clearAllButton?: HTMLButtonElement | null;
-  onView?: (postId: string) => void;
+  onView?: (target: ViewTarget) => void;
   // Called after a `connection_confirmed` notification has been
   // auto-handled and a chat-eligible contact was upserted, so the
   // host UI can refresh its chat list immediately.
@@ -218,12 +227,31 @@ async function handleNotificationAction(
   if (active === null || active.ownerCanonicalId !== ownerCanonicalId) return;
 
   // "view" is the one action that doesn't dismiss the row — the
-  // user might want to see the same post twice. Hand off to
-  // main.ts's thread navigator and stop here.
+  // user might want to see the same post twice. For reply
+  // notifications, route to the ROOT thread post and pass the
+  // reply id as the focus hint so the host pins it at the top of
+  // the comments panel. For other kinds (likes, reposts), keep the
+  // legacy behavior of opening notification.post_id directly.
   if (action === "view") {
-    if (typeof notification.post_id === "string" && notification.post_id.length > 0
-        && active.onView !== null) {
-      try { active.onView(notification.post_id); } catch { /* ignore */ }
+    if (active.onView === null) return;
+    if (notification.kind === "reply") {
+      const root = typeof notification.root_post_id === "string" && notification.root_post_id.length > 0
+        ? notification.root_post_id
+        : typeof notification.parent_post_id === "string"
+          ? notification.parent_post_id
+          : notification.post_id;
+      if (typeof root === "string" && root.length > 0) {
+        try {
+          active.onView({
+            postId: root,
+            focusedCommentId: typeof notification.post_id === "string" ? notification.post_id : undefined
+          });
+        } catch { /* ignore */ }
+      }
+      return;
+    }
+    if (typeof notification.post_id === "string" && notification.post_id.length > 0) {
+      try { active.onView({ postId: notification.post_id }); } catch { /* ignore */ }
     }
     return;
   }

@@ -96,9 +96,11 @@ notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) =
     });
   }
 
-  // Reply notifications. The "view" target is the reply itself so
-  // the thread view shows it in context with the original parent
-  // above. parent_post_id holds the recipient's own post.
+  // Reply notifications. Click target is the ROOT thread post, not
+  // the reply itself, so the client opens the original conversation
+  // pinned at top and merely focuses the new reply within it.
+  // parent_post_id is preserved for engagement-count refresh, and
+  // post_id holds the reply id so the thread view can pin it.
   for (const reply of listIncomingRepliesToAuthor(recipientCanonicalId, limit)) {
     if (reply.actor_canonical_id === recipientCanonicalId) continue;
     notifications.push({
@@ -110,6 +112,7 @@ notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) =
       actor_handle: reply.actor_handle,
       post_id: reply.reply_post_id,
       parent_post_id: reply.parent_post_id,
+      root_post_id: reply.root_post_id,
       created_at: reply.created_at,
       updated_at: reply.updated_at
     });
