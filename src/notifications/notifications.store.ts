@@ -7,6 +7,58 @@
 
 import { db } from "../storage/db.js";
 
+export type IncomingMutualConnection = {
+  actor_canonical_id: string;
+  actor_handle?: string;
+  // Time the mutual relationship became confirmed — i.e. the later of
+  // the two subscriptions. Used as the notification's created_at so
+  // it appears "new" to the original follower the moment the second
+  // subscription lands.
+  confirmed_at: string;
+};
+
+// Mutual-follow detection: returns peers (X) for whom both
+// (recipient -> X) and (X -> recipient) feed_subscriptions exist.
+// Used to derive `connection_confirmed` notifications so chat targets
+// only unlock after both sides have explicitly followed each other.
+export function listIncomingMutualConnections(
+  recipientCanonicalId: string,
+  limit = 50
+): IncomingMutualConnection[] {
+  const rows = db.prepare(`
+    SELECT
+      mine.author_canonical_id AS peer_canonical_id,
+      i.handle                 AS peer_handle,
+      mine.created_at          AS my_created_at,
+      mine.updated_at          AS my_updated_at,
+      theirs.created_at        AS their_created_at,
+      theirs.updated_at        AS their_updated_at
+    FROM feed_subscriptions mine
+    INNER JOIN feed_subscriptions theirs
+      ON theirs.owner_canonical_id  = mine.author_canonical_id
+     AND theirs.author_canonical_id = mine.owner_canonical_id
+    LEFT JOIN identities i ON i.canonical_id = mine.author_canonical_id
+    WHERE mine.owner_canonical_id = ?
+      AND mine.author_canonical_id != ?
+      AND COALESCE(mine.muted, 0) = 0
+      AND COALESCE(theirs.muted, 0) = 0
+    LIMIT ?
+  `).all(recipientCanonicalId, recipientCanonicalId, limit) as Array<{
+    peer_canonical_id: string;
+    peer_handle: string | null;
+    my_created_at: string;
+    my_updated_at: string;
+    their_created_at: string;
+    their_updated_at: string;
+  }>;
+
+  return rows.map((row) => ({
+    actor_canonical_id: row.peer_canonical_id,
+    actor_handle: row.peer_handle ?? undefined,
+    confirmed_at: row.my_created_at > row.their_created_at ? row.my_created_at : row.their_created_at
+  }));
+}
+
 export type IncomingReaction = {
   reaction: "recommend" | "downrank";
   actor_canonical_id: string;

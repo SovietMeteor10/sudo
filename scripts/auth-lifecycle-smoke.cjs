@@ -151,7 +151,7 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
       if (!search || !hint) return { ok: false, reason: "missing element" };
       const sR = search.getBoundingClientRect();
       const hR = hint.getBoundingClientRect();
-      return { ok: hR.top >= sR.bottom - 1 && /resolve identity|search|handle/i.test(hint.textContent || ""), text: hint.textContent };
+      return { ok: hR.top >= sR.bottom - 1 && /follow|chat|public posts|handle|resolve/i.test(hint.textContent || ""), text: hint.textContent };
     });
     if (!directoryHint.ok) fail("directory-hint", `expected hint directly below search input, got '${directoryHint.text ?? "(missing)"}'`);
     else ok(`3g. directory hint sits below search input: '${directoryHint.text}'`);

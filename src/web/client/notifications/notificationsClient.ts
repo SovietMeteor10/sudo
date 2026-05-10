@@ -42,6 +42,7 @@ type Coordinator = {
   empty: HTMLElement;
   clearAllButton: HTMLButtonElement | null;
   onView: ((postId: string) => void) | null;
+  onChatTargetsChanged: (() => void) | null;
   // Last-rendered visible ids — used by clear-all so we can dismiss
   // exactly what the user can see, even if the next poll arrives
   // before the click.
@@ -70,6 +71,10 @@ export type StartNotificationsOptions = {
   empty: HTMLElement;
   clearAllButton?: HTMLButtonElement | null;
   onView?: (postId: string) => void;
+  // Called after a `connection_confirmed` notification has been
+  // auto-handled and a chat-eligible contact was upserted, so the
+  // host UI can refresh its chat list immediately.
+  onChatTargetsChanged?: () => void;
 };
 
 export function startNotificationsPolling(
@@ -83,6 +88,7 @@ export function startNotificationsPolling(
     empty: options.empty,
     clearAllButton: options.clearAllButton ?? null,
     onView: options.onView ?? null,
+    onChatTargetsChanged: options.onChatTargetsChanged ?? null,
     lastVisibleIds: []
   };
   if (active.clearAllButton !== null) {
@@ -135,6 +141,44 @@ async function pollOnce(): Promise<void> {
     ]);
 
     if (active === null || active.ownerCanonicalId !== ownerCanonicalId) return;
+
+    // Auto-handle connection_confirmed: server has detected mutual
+    // subscriptions, so promote the peer to a known contact (which
+    // is what unlocks the chat target on this side) and dismiss the
+    // notification immediately. This is the ONLY path that creates a
+    // chat-eligible contact; raw follow alone never does.
+    let dismissedDirty = false;
+    for (const notification of incoming) {
+      if (notification.kind !== "connection_confirmed") continue;
+      if (dismissed.has(notification.id)) continue;
+      try {
+        await upsertConnectionRelationship({
+          owner_canonical_id: ownerCanonicalId,
+          subject_canonical_id: notification.actor_canonical_id,
+          subject_handle: notification.actor_handle,
+          tier: "known",
+          subscribed: true
+        });
+        await applyContactUpsertWithBroadcast(ownerCanonicalId, {
+          canonical_id: notification.actor_canonical_id,
+          handle: notification.actor_handle ?? notification.actor_canonical_id,
+          tier: "known",
+          added_at: notification.created_at,
+          updated_at: notification.updated_at
+        });
+        dismissed.add(notification.id);
+        dismissedDirty = true;
+      } catch (error) {
+        // Best-effort: keep the notification visible; the next poll
+        // will retry. We don't want to drop the row silently if the
+        // promotion failed.
+        console.warn("[notifications] connection_confirmed auto-promote failed", error instanceof Error ? error.message : error);
+      }
+    }
+    if (dismissedDirty) {
+      await writeDismissed(ownerCanonicalId, dismissed);
+      try { active?.onChatTargetsChanged?.(); } catch { /* ignore */ }
+    }
 
     const visible = incoming.filter((notification) => !dismissed.has(notification.id));
     active.lastVisibleIds = visible.map((notification) => notification.id);

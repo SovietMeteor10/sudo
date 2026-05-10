@@ -250,6 +250,7 @@ export type TrustedDevice = {
 // duplicate the row.
 export type SocialNotificationKind =
   | "follow"
+  | "connection_confirmed"
   | "reaction_recommend"
   | "reaction_downrank"
   | "reply"

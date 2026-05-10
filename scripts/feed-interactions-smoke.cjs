@@ -503,25 +503,24 @@ async function postBody(page, postId) {
       if (bIdsViaSearch.includes(postOne) && bIdsViaSearch.includes(postTwo)) break;
     }
     if (!bIdsViaSearch.includes(postOne) || !bIdsViaSearch.includes(postTwo)) {
-      fail("dir-add-backfill", `directory-add did not backfill A's posts; visible=${bIdsViaSearch.join(", ")}`);
-    } else ok("directory: '+' on search row backfills A's posts into B's feed");
+      fail("dir-add-backfill", `directory-follow did not backfill A's posts; visible=${bIdsViaSearch.join(", ")}`);
+    } else ok("directory: 'follow' on search row backfills A's posts into B's feed");
 
-    // The same search row toggles to "remove" once the
-    // pending-added timer clears (2s after add). Wait for that label,
-    // then click.
+    // The search row toggles label to "following" once the pending
+    // timer clears (~2s post-follow).
     let removeReady = false;
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 200));
       removeReady = await pageB.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
-        return buttons.some((b) => b.textContent === "remove");
+        return buttons.some((b) => b.textContent === "following");
       });
       if (removeReady) break;
     }
-    if (!removeReady) fail("dir-remove-button", "search row never showed 'remove' label after add");
+    if (!removeReady) fail("dir-remove-button", "search row never showed 'following' label after follow");
     await pageB.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
-      const removeBtn = buttons.find((b) => b.textContent === "remove");
+      const removeBtn = buttons.find((b) => b.textContent === "following");
       removeBtn?.click();
     });
     let bIdsAfterDirRemove = [];
@@ -531,26 +530,25 @@ async function postBody(page, postId) {
       if (!bIdsAfterDirRemove.includes(postOne) && !bIdsAfterDirRemove.includes(postTwo)) break;
     }
     if (bIdsAfterDirRemove.includes(postOne) || bIdsAfterDirRemove.includes(postTwo)) {
-      fail("dir-remove-depopulate", `directory-remove did not drop A's posts; visible=${bIdsAfterDirRemove.join(", ")}`);
-    } else ok("directory: 'remove' on search row depopulates A's posts from B's feed");
+      fail("dir-remove-depopulate", `directory-unfollow did not drop A's posts; visible=${bIdsAfterDirRemove.join(", ")}`);
+    } else ok("directory: 'following' on search row unfollows + drops A's posts from B's feed");
 
-    // After directory-remove, the same row should re-show "+" (we
-    // deleted the local contact so isAdded is false again). Re-adding
-    // should backfill A's posts a second time without a page reload.
+    // After unfollow, the row returns to the "follow" label. Re-following
+    // backfills A's posts a second time without a page reload.
     let plusReady = false;
     for (let i = 0; i < 30; i++) {
       await new Promise((r) => setTimeout(r, 200));
       plusReady = await pageB.evaluate(() => {
         const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
-        return buttons.some((b) => b.textContent === "+");
+        return buttons.some((b) => b.textContent === "follow");
       });
       if (plusReady) break;
     }
-    if (!plusReady) fail("dir-readd-button", "search row did not return to '+' after remove");
-    else ok("re-add: search row shows '+' again after remove");
+    if (!plusReady) fail("dir-readd-button", "search row did not return to 'follow' after unfollow");
+    else ok("re-add: search row shows 'follow' again after unfollow");
     await pageB.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll("#search-results .search-result__add"));
-      const plusBtn = buttons.find((b) => b.textContent === "+");
+      const plusBtn = buttons.find((b) => b.textContent === "follow");
       plusBtn?.click();
     });
     let bIdsReAdd = [];

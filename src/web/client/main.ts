@@ -254,7 +254,7 @@ renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
 renderChatList(chatsRoot, localChats);
 renderDiscoveryPanel(discoveryRoot, discoveryState, viewerCanonicalIdOrUndefined());
-renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
+renderSearchResults(searchResultsRoot, searchState, getFollowedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 renderPasskeySupport();
 landingBrand.textContent = brandLabel;
 setFeedTab("personal");
@@ -2839,17 +2839,11 @@ async function handleLookupRelationshipAction(
         tier,
         subscribed: true
       });
-      // Mirror the relationship in local contacts so the directory
-      // search row's add/remove state matches what the user actually
-      // chose in the lookup pane.
-      await applyContactUpsertWithBroadcast(ownerCanonicalId, {
-        canonical_id: subjectCanonicalId,
-        handle,
-        tier,
-        added_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        fingerprint: lookupState.identity.visual_fingerprint?.fingerprint
-      });
+      // Intentionally do NOT mirror this into local contacts. Chats
+      // unlock only when both sides have explicitly followed each
+      // other; the contact (and chat row) is upserted by the
+      // notifications client when the server-derived
+      // `connection_confirmed` notification fires.
     } else if (action === "set-block") {
       await upsertConnectionRelationship({
         owner_canonical_id: ownerCanonicalId,
@@ -3143,37 +3137,37 @@ async function enrichSearchResults(results: SearchResult[]): Promise<SearchResul
 
 function setSearchState(nextState: SearchState): void {
   searchState = nextState;
-  renderSearchResults(searchResultsRoot, searchState, getAddedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
+  renderSearchResults(searchResultsRoot, searchState, getFollowedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
 }
 
+// Search-row toggle is FOLLOW only. Following subscribes to the
+// peer's public feed and triggers a follow notification on their
+// side. It does NOT create a chat target, a "known" relationship,
+// or a local contact — chats unlock only after the server has
+// observed reciprocal subscriptions and emitted a
+// `connection_confirmed` notification, which the notifications
+// client handles by upserting the contact at tier=known.
 function toggleChatTarget(result: SearchResult): void {
   if (pendingAddedCanonicals.has(result.canonical)) {
     setSearchState(searchState);
     return;
   }
 
-  if (getAddedCanonicals().has(result.canonical)) {
-    void removeChatTarget(result);
+  if (getFollowedCanonicals().has(result.canonical)) {
+    void unfollowFromSearch(result);
     return;
   }
 
-  void addChatTarget(result);
+  void followFromSearch(result);
 }
 
-async function addChatTarget(result: SearchResult): Promise<void> {
+async function followFromSearch(result: SearchResult): Promise<void> {
   pendingAddedCanonicals.add(result.canonical);
   if (currentIdentityDocument === null) {
     setSearchState(searchState);
     return;
   }
   const ownerCanonicalId = currentIdentityDocument.canonical_id;
-  await upsertConnectionRelationship({
-    owner_canonical_id: ownerCanonicalId,
-    subject_canonical_id: result.canonical,
-    subject_handle: result.handle,
-    tier: "known",
-    subscribed: true
-  });
   await applySubscriptionUpsertWithBroadcast(ownerCanonicalId, {
     author_canonical_id: result.canonical,
     author_handle: result.handle,
@@ -3182,17 +3176,21 @@ async function addChatTarget(result: SearchResult): Promise<void> {
     include_close: false,
     muted: false
   });
-  await applyContactUpsertWithBroadcast(ownerCanonicalId, {
-    canonical_id: result.canonical,
-    handle: result.handle,
-    tier: "known",
-    added_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    fingerprint: result.fingerprint
-  }).then(refreshLocalStorageStatus);
-  await refreshLocalChats();
-  // Backfill the new connection's posts into B's personal feed
-  // immediately, and notify sibling tabs of the same account.
+  // Mirror the new subscription into the in-memory search results so
+  // the row label flips to "following" without waiting for the next
+  // debounced search.
+  applySubscriptionToSearchState(result.canonical, {
+    type: "sudo_feed_subscription",
+    owner_canonical_id: ownerCanonicalId,
+    author_canonical_id: result.canonical,
+    author_handle: result.handle,
+    include_public: true,
+    include_connections: true,
+    include_close: false,
+    muted: false,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
   await refreshPersonalFeed();
   broadcastLocalStateChange("feed", ownerCanonicalId);
   setSearchState(searchState);
@@ -3206,22 +3204,16 @@ async function addChatTarget(result: SearchResult): Promise<void> {
   }, 2000));
 }
 
-async function removeChatTarget(result: SearchResult): Promise<void> {
+async function unfollowFromSearch(result: SearchResult): Promise<void> {
   const canonical = result.canonical;
   const timer = pendingAddedTimers.get(canonical);
   if (timer !== undefined) window.clearTimeout(timer);
   pendingAddedTimers.delete(canonical);
   pendingAddedCanonicals.delete(canonical);
   if (currentIdentityDocument !== null) {
-    await deleteConnectionRelationship(currentIdentityDocument.canonical_id, canonical);
     await applySubscriptionDeleteWithBroadcast(currentIdentityDocument.canonical_id, canonical);
-    // Removing a connection should also drop the local contact so the
-    // chat list / search row re-renders the "+" button. Without this
-    // the row shows a stale "remove" and the user can't re-add.
-    await applyContactDeleteWithBroadcast(currentIdentityDocument.canonical_id, canonical);
   }
-  await refreshLocalChats();
-  // Drop the removed author's posts from the personal feed.
+  applySubscriptionToSearchState(canonical, null);
   await refreshPersonalFeed();
   if (currentIdentityDocument !== null) {
     broadcastLocalStateChange("feed", currentIdentityDocument.canonical_id);
@@ -3229,8 +3221,22 @@ async function removeChatTarget(result: SearchResult): Promise<void> {
   setSearchState(searchState);
 }
 
-function getAddedCanonicals(): Set<string> {
-  return new Set(localChats.map(getChatCanonical));
+function applySubscriptionToSearchState(canonical: string, subscription: FeedSubscription | null): void {
+  if (searchState.status !== "results") return;
+  searchState.results = searchState.results.map((row) =>
+    row.canonical === canonical ? { ...row, subscription } : row
+  );
+}
+
+function getFollowedCanonicals(): Set<string> {
+  if (searchState.status !== "results") return new Set();
+  const ids: string[] = [];
+  for (const result of searchState.results) {
+    if (result.subscription !== null && result.subscription !== undefined && result.subscription.muted !== true) {
+      ids.push(result.canonical);
+    }
+  }
+  return new Set(ids);
 }
 
 function getChatCanonical(chat: ChatSummary): string {
@@ -3353,6 +3359,16 @@ function setSignedIn(handle: string): void {
             }
           }
           void enterThreadView(postId);
+        },
+        onChatTargetsChanged: () => {
+          // Server-confirmed mutual follow promoted a contact to
+          // tier=known. Refresh the chat list and the search-row
+          // state so the user sees the new chat partner without
+          // waiting for the next poll cycle.
+          void refreshLocalChats();
+          if (searchState.status === "results") {
+            renderSearchResults(searchResultsRoot, searchState, getFollowedCanonicals(), pendingAddedCanonicals, toggleChatTarget);
+          }
         }
       });
     }

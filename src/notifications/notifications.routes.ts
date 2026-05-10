@@ -16,6 +16,7 @@
 import { Router } from "express";
 import { listIncomingFollowers } from "../connections/connections.store.js";
 import {
+  listIncomingMutualConnections,
   listIncomingReactionsOnAuthor,
   listIncomingRepliesToAuthor,
   listIncomingRepostsOfAuthor
@@ -36,9 +37,32 @@ notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) =
 
   const notifications: SocialNotification[] = [];
 
-  // Follow notifications.
+  // Mutual-connection confirmations. Computed first so the dedupe
+  // below can suppress the redundant raw "follow" notification when
+  // the relationship is already mutual: the user only needs the
+  // upgraded "connected" row, not both.
+  const mutualPeerIds = new Set<string>();
+  for (const mutual of listIncomingMutualConnections(recipientCanonicalId, limit)) {
+    if (mutual.actor_canonical_id === recipientCanonicalId) continue;
+    mutualPeerIds.add(mutual.actor_canonical_id);
+    notifications.push({
+      type: "sudo_social_notification",
+      id: `connection_confirmed:${mutual.actor_canonical_id}`,
+      kind: "connection_confirmed",
+      recipient_canonical_id: recipientCanonicalId,
+      actor_canonical_id: mutual.actor_canonical_id,
+      actor_handle: mutual.actor_handle,
+      created_at: mutual.confirmed_at,
+      updated_at: mutual.confirmed_at
+    });
+  }
+
+  // Follow notifications. Suppressed for peers we've already mutually
+  // confirmed — the connection_confirmed row above subsumes the raw
+  // follow.
   for (const follower of listIncomingFollowers(recipientCanonicalId, limit)) {
     if (follower.actor_canonical_id === recipientCanonicalId) continue;
+    if (mutualPeerIds.has(follower.actor_canonical_id)) continue;
     notifications.push({
       type: "sudo_social_notification",
       id: `follow:${follower.actor_canonical_id}`,

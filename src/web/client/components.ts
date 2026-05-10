@@ -181,6 +181,7 @@ function renderNotificationRow(
 function describeAction(kind: SocialNotification["kind"]): string {
   switch (kind) {
     case "follow": return "follows you";
+    case "connection_confirmed": return "and you are now connected";
     case "reaction_recommend": return "liked your post";
     case "reaction_downrank": return "disliked your post";
     case "reply": return "replied to your post";
@@ -678,8 +679,8 @@ export function renderChatList(root: HTMLElement, localChats: ChatSummary[] = []
 export function renderSearchResults(
   root: HTMLElement,
   state: SearchState,
-  addedCanonicals: Set<string>,
-  pendingAddedCanonicals: Set<string>,
+  followedCanonicals: Set<string>,
+  pendingFollowCanonicals: Set<string>,
   onToggle: (result: SearchResult) => void
 ): void {
   if (state.status === "idle") {
@@ -704,22 +705,21 @@ export function renderSearchResults(
 
   const fragment = document.createDocumentFragment();
   for (const result of state.results) {
-    const isAdded = addedCanonicals.has(result.canonical);
-    const isPendingAdded = pendingAddedCanonicals.has(result.canonical);
-    const row = block("search-result", [
-      line(result.handle, "search-result__handle"),
-      line(result.bio, "is-muted"),
-      line(`fingerprint: ${result.fingerprint}`, "is-muted"),
-      line(`relationship: ${result.relationship?.tier ?? "unknown"}`, "is-muted"),
-    ]);
+    const isFollowed = followedCanonicals.has(result.canonical);
+    const isPending = pendingFollowCanonicals.has(result.canonical);
+    const children: HTMLElement[] = [line(result.handle, "search-result__handle")];
+    if (typeof result.bio === "string" && result.bio.length > 0) {
+      children.push(line(result.bio, "is-muted"));
+    }
+    const row = block("search-result", children);
     if (result.fingerprint_grid !== undefined) {
       row.prepend(renderFingerprintGrid(result.fingerprint_grid));
     }
     const button = document.createElement("button");
     button.className = "search-result__add";
     button.type = "button";
-    button.textContent = isPendingAdded ? "added" : isAdded ? "remove" : "+";
-    button.disabled = isPendingAdded;
+    button.textContent = isPending ? "following…" : isFollowed ? "following" : "follow";
+    button.disabled = isPending;
     button.addEventListener("click", () => onToggle(result));
     row.append(button);
     fragment.append(row);
@@ -747,18 +747,24 @@ function renderResolvedIdentity(
   relationship?: ConnectionRelationship,
   subscription?: FeedSubscription | null
 ): HTMLElement {
-  const shortFingerprint = `${fingerprint.slice(0, 12)}...`;
   const isFollowing = subscription !== null && subscription !== undefined && subscription.muted !== true;
   const tier = relationship?.tier ?? "unknown";
   const card = block("lookup-card", [
     line(identity.handle, "lookup-card__handle"),
-    line(`canonical: ${shortCanonical(identity.canonical_id)}`),
-    line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? shortFingerprint}`),
-    line(`connection: ${describeConnection(relationship)}`, "is-muted"),
-    line(`follow: ${isFollowing ? "yes" : subscription?.muted ? "muted" : "no"}`, "is-muted"),
-    line("trust: unverified", "is-muted"),
-    line("onion: unknown", "is-muted"),
-    line(`updated: ${formatTimestamp(identity.updated_at)}`, "is-muted"),
+    // Short relationship status only — no canonical id, raw
+    // fingerprint hex, "trust:", "onion:", or updated timestamps.
+    // Those technical fields belong in an explicit advanced
+    // identity view, not the directory lookup card.
+    line(
+      isFollowing
+        ? tier === "known" || tier === "close"
+          ? "you follow each other"
+          : "following — chat unlocks when they follow you back"
+        : tier === "blocked"
+          ? "blocked"
+          : "not following yet",
+      "is-muted"
+    )
   ]);
 
   // State-aware action row. Each axis (follow, connect, close-friend,
