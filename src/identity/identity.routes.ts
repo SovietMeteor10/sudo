@@ -11,7 +11,6 @@ import {
   handleIdentitySearch,
   handleIdentitySession,
   handleIdentitySessionFromChallenge,
-  handleIdentitySignin,
   handleIdentitySignup
 } from "./identity-auth.handlers.js";
 import type { IdentityDocument } from "../protocol/types.js";
@@ -23,7 +22,10 @@ export const identityRouter = Router();
 // get captured by the wildcard. Same handlers back the deprecated
 // /dev/* aliases in src/routes/dev.ts.
 identityRouter.post("/signup", handleIdentitySignup);
-identityRouter.post("/signin", handleIdentitySignin);
+// POST /signin removed in migration step 5. Use the client-signed
+// challenge flow (GET /challenge/:id + POST /session-from-challenge)
+// instead. /api/identity/recover stays mounted for backup-code and
+// recovery-answer paths until those also move client-side.
 identityRouter.post("/recover", handleIdentityRecover);
 identityRouter.get("/session", handleIdentitySession);
 identityRouter.get("/search", handleIdentitySearch);

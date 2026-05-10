@@ -29,11 +29,6 @@ type SignupBody = {
   recoveryAnswer?: unknown;
 };
 
-type SigninBody = {
-  handle?: unknown;
-  password?: unknown;
-};
-
 type RecoverBody = {
   handle?: unknown;
   backupCode?: unknown;
@@ -138,108 +133,20 @@ export function handleIdentityRecover(request: Request, response: Response): voi
   }
 }
 
-export function handleIdentitySignin(request: Request, response: Response): void {
-  // Migration kill-switch. Set SUDO_DISABLE_LEGACY_SIGNIN=1 to make
-  // the handler return 410 Gone before any credential check. The
-  // auth-lifecycle smoke uses this to prove its bad-credentials
-  // assertions do not depend on the legacy fallback's 401 — i.e.
-  // that the local IDB unlock failure path produces the same
-  // user-visible copy on its own. When the legacy route is actually
-  // removed in the next migration step, the env-guarded behavior
-  // is what production will look like for any HTTP-direct caller
-  // that still tries this path.
-  if (process.env.SUDO_DISABLE_LEGACY_SIGNIN === "1") {
-    logLegacySignin(request, {
-      outcome: "disabled_via_env",
-      handle: typeof (request.body as SigninBody).handle === "string" ? (request.body as SigninBody).handle as string : "(missing)"
-    });
-    response.status(410).json({ error: "legacy_signin_disabled", message: "this route is disabled on this node; use /api/identity/session-from-challenge" });
-    return;
-  }
-
-  const body = request.body as SigninBody;
-
-  if (
-    typeof body.handle !== "string"
-    || typeof body.password !== "string"
-  ) {
-    logLegacySignin(request, {
-      outcome: "invalid_payload",
-      handle: typeof body.handle === "string" ? body.handle : "(missing)"
-    });
-    response.status(400).json({ error: "invalid_credentials", message: "handle and password are required" });
-    return;
-  }
-
-  try {
-    const result = accountAccessProvider.unlockCredential(
-      body.handle,
-      body.password
-    );
-    logLegacySignin(request, {
-      outcome: "ok",
-      handle: body.handle,
-      canonical_id: result.identity.canonical_id
-    });
-    response.json({
-      identity: result.identity,
-      sessionToken: result.session.token,
-      expiresAt: result.session.expiresAt
-    });
-  } catch (error) {
-    if (error instanceof AccountAccessError) {
-      logLegacySignin(request, {
-        outcome: error.code,
-        handle: body.handle
-      });
-      response.status(401).json({ error: error.code, message: error.message });
-      return;
-    }
-
-    throw error;
-  }
-}
-
-// Migration-tracking log line for the legacy /api/identity/signin
-// route. The new client-signed challenge flow replaces this on the
-// production browser portal; HTTP-direct fixture smokes still use it.
-// Watching this counter go to zero from real callers tells us when
-// it's safe to retire the password-credential code path entirely.
+// Legacy POST /api/identity/signin handler removed in migration step 5.
+// The production browser portal authenticates via the client-signed
+// challenge flow (handleIdentityChallenge + handleIdentitySessionFromChallenge
+// above). Telemetry over a 24h+ window after migration step 4 (commit
+// d8f639b) showed zero Mozilla/* user-agents on this route — only the
+// smoke harness — so the route is gone.
 //
-// What we deliberately NEVER log here: the password, session tokens,
-// backup codes, recovery answers, or private key material. Only the
-// handle (already a public identifier), the resolved canonical_id on
-// success, the outcome code, and request-source metadata that nginx
-// already sets in headers (user_agent, remote_ip).
-function logLegacySignin(
-  request: Request,
-  fields: { outcome: string; handle: string; canonical_id?: string }
-): void {
-  const userAgent = request.get("user-agent") ?? "";
-  // Trust X-Forwarded-For only when the deployment doc says nginx
-  // sets it (DEPLOY_UBUNTU.md). Falls back to req.ip otherwise.
-  const remoteIp = request.get("x-real-ip")
-    ?? (request.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.ip ?? "");
-  const payload: Record<string, unknown> = {
-    timestamp: new Date().toISOString(),
-    outcome: fields.outcome,
-    handle: fields.handle,
-    user_agent: userAgent,
-    remote_ip: remoteIp
-  };
-  if (typeof fields.canonical_id === "string" && fields.canonical_id.length > 0) {
-    payload["canonical_id_prefix"] = fields.canonical_id.split(":").slice(0, 2).join(":");
-    // Keep the full canonical id under a separate key so an operator
-    // greppping for it can still find it, but it isn't surfaced as
-    // the lead identifier.
-    payload["canonical_id"] = fields.canonical_id;
-  }
-  // Serialize as a single-line JSON so an operator can grep with
-  // `grep '\[legacy-signin\]'` and the entire event is on one line.
-  // The structured shape also makes "wc -l" a useful migration
-  // counter.
-  console.info(`[legacy-signin] ${JSON.stringify(payload)}`);
-}
+// Going with it: the SigninBody type, the SUDO_DISABLE_LEGACY_SIGNIN
+// kill-switch env, the [legacy-signin] structured log, the
+// accountAccessProvider.unlockCredential method, and the /dev/signin
+// alias. The dev_account_access table itself is left in schema.ts for
+// one more release because /api/identity/signup and /api/identity/recover
+// still write/read it; a follow-up commit can drop the table once
+// those two also move to client-key flows.
 
 export function handleIdentitySession(request: Request, response: Response): void {
   const authorization = request.get("authorization") ?? "";

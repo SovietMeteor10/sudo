@@ -14,7 +14,9 @@ export type DevSession = {
 
 export interface AccountAccessProvider {
   createCredential(canonicalId: string, password: string, recoveryQuestion: string, recoveryAnswer: string): CreatedCredential;
-  unlockCredential(handle: string, password: string): { identity: IdentityDocument; session: DevSession };
+  // unlockCredential removed in migration step 5. The legacy
+  // /api/identity/signin route it backed is gone; the production
+  // browser portal uses the client-signed challenge flow.
   recoverCredential(handle: string, backupCode: string, recoveryAnswer: string): { identity: IdentityDocument; session: DevSession };
   exportRecoveryMaterial(): never;
   verifyBackupCode(canonicalId: string, backupCode: string): boolean;
@@ -66,22 +68,6 @@ export class DevRecoverySecretProvider implements AccountAccessProvider {
     return { backupCode };
   }
 
-  unlockCredential(handle: string, password: string): { identity: IdentityDocument; session: DevSession } {
-    const identity = getIdentityByHandle(handle);
-    if (!identity) {
-      throw new AccountAccessError("invalid credentials", "invalid_credentials");
-    }
-
-    if (!this.verifyPassword(identity.canonicalId, password)) {
-      throw new AccountAccessError("invalid credentials", "invalid_credentials");
-    }
-
-    return {
-      identity: identity.document,
-      session: createDevSession(identity.canonicalId),
-    };
-  }
-
   recoverCredential(handle: string, backupCode: string, recoveryAnswer: string): { identity: IdentityDocument; session: DevSession } {
     const identity = getIdentityByHandle(handle);
     if (!identity) {
@@ -125,15 +111,6 @@ export class DevRecoverySecretProvider implements AccountAccessProvider {
     return timingSafeStringEqual(row.recovery_phrase_hash, hashSecretWithSalt(recoveryAnswer, row.recovery_phrase_salt));
   }
 
-  private verifyPassword(canonicalId: string, password: string): boolean {
-    const row = db
-      .prepare("SELECT password_salt, password_hash, recovery_secret_hash FROM dev_account_access WHERE canonical_id = ?")
-      .get(canonicalId) as AccessRow | undefined;
-
-    if (!row || row.password_salt === null || row.password_hash === null) return false;
-
-    return timingSafeStringEqual(row.password_hash, hashPassword(password, row.password_salt));
-  }
 }
 
 export class AccountAccessError extends Error {

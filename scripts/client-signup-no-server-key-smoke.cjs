@@ -293,25 +293,9 @@ function identitiesCount() {
       fail("legacy-credential", `dev_account_access went ${preLegacyAccessCount} -> ${postLegacyAccessCount}, expected +1`);
     }
 
-    // ===== Phase 2b: legacy /api/identity/signin still works.
-    // ===== REMOVABLE in the next migration commit (the one that
-    // ===== deletes the handler + dev_account_access table). When
-    // ===== that lands, delete this block — Phase 2a above is
-    // ===== independent and stays.
-    const signinResp = await fetch(`${BASE}/api/identity/signin`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ handle: legacyHandle, password: PASSPHRASE })
-    });
-    if (signinResp.status === 200) {
-      const sBody = await signinResp.json();
-      if (sBody?.sessionToken) ok("[Phase 2b — removable] legacy /api/identity/signin still returns a session for the legacy account");
-      else fail("legacy-signin-body", `signin missing sessionToken`);
-    } else {
-      fail("legacy-signin", `signin returned ${signinResp.status}`);
-    }
-    // ===== end Phase 2b. Below this comment we resume Phase 2a
-    // ===== assertions on the /dev/signup alias.
+    // Phase 2b (legacy signin assertion) deleted in migration step 5
+    // — the route is gone. The death-watch canary in
+    // client-signed-session Phase 3 now asserts the route returns 404.
 
     // /dev/signup alias still works.
     const aliasResp = await fetch(`${BASE}/dev/signup`, {

@@ -5,7 +5,6 @@ import {
   handleIdentityRecover,
   handleIdentitySearch,
   handleIdentitySession,
-  handleIdentitySignin,
   handleIdentitySignup
 } from "../identity/identity-auth.handlers.js";
 import { readNodeRuntimeConfig } from "../node/node.config.js";
@@ -32,7 +31,10 @@ function deprecate(canonical: string): RequestHandler {
 // clients migrate to the canonical /api/identity/* surface. Plan to
 // remove in the release after all known clients have migrated.
 devRouter.post("/dev/signup", deprecate("/api/identity/signup"), handleIdentitySignup);
-devRouter.post("/dev/signin", deprecate("/api/identity/signin"), handleIdentitySignin);
+// /dev/signin alias removed in migration step 5 alongside the canonical
+// /api/identity/signin route. Cached clients that still POST here will
+// fall through to the catch-all 404 from app.ts, which is the right
+// signal: the route is gone.
 devRouter.post("/dev/recover", deprecate("/api/identity/recover"), handleIdentityRecover);
 devRouter.get("/dev/session", deprecate("/api/identity/session"), handleIdentitySession);
 devRouter.get("/dev/search-handles", deprecate("/api/identity/search"), handleIdentitySearch);

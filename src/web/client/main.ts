@@ -30,7 +30,6 @@ import {
   recoverDevHandle,
   restoreDevSession,
   searchHandles,
-  signinDevHandle,
   upsertConnectionRelationship,
   type FeedEngagement
 } from "./api.js";
@@ -1593,39 +1592,22 @@ async function doSignin(handle: string, password: string): Promise<void> {
   // The legacy /api/identity/signin route stays mounted for one
   // release as a death-watch canary; HTTP-direct callers can still
   // probe it. The browser just stops asking.
-  throw new Error(explainSigninFailure(localUnlockError, undefined));
+  throw new Error(explainSigninFailure(localUnlockError));
 }
 
-function explainSigninFailure(localError: unknown, devError: unknown): string {
-  if (containsLocalDbError(localError) || containsLocalDbError(devError)) {
+// Maps the local-IDB unlock failure to user-visible copy. The
+// legacy /api/identity/signin server fallback is gone (migration
+// step 5), so this function is now a pure local-error-only
+// classifier — there is no second opinion to consult.
+function explainSigninFailure(localError: unknown): string {
+  if (containsLocalDbError(localError)) {
     return LOCAL_DB_USER_MESSAGE;
   }
   const localMessage = localError instanceof Error ? localError.message : "";
-  const devMessage = devError instanceof Error ? devError.message : "";
-  const localMissing = /stored account not found/i.test(localMessage);
-  const looksLikeNetwork = /timeout|network|failed to fetch/i.test(devMessage);
-  const looksLikeBadCredentials = /invalid|credentials|not found|wrong/i.test(devMessage);
-
-  if (looksLikeNetwork) {
-    return "network error. check your connection and try again.";
-  }
-
-  // Local IDB authoritatively saying "no such account on this
-  // device" is a complete answer on its own — the legacy server
-  // fallback is just an additional probe. After step 5 of the
-  // security migration the legacy route goes away and devError
-  // will look like a 404 / 410, neither of which match the
-  // bad-creds regex; this branch keeps the user-visible copy
-  // friendly in that future state.
-  if (localMissing) {
+  if (/stored account not found/i.test(localMessage)) {
     return "account not found on this device. restore or link this device.";
   }
-
-  if (!localMissing) {
-    return "wrong passphrase, or this account is on another device.";
-  }
-
-  return devMessage || localMessage || "sign-in failed";
+  return "wrong passphrase, or this account is on another device.";
 }
 
 async function runRecover(

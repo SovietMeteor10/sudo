@@ -275,26 +275,11 @@ export async function recoverDevHandle(
   throw new Error(errorBody.message);
 }
 
-export async function signinDevHandle(handle: string, password: string): Promise<SigninDevResponse> {
-  const response = await fetchWithTimeout("/api/identity/signin", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      handle,
-      password,
-    }),
-  });
-
-  if (response.ok) {
-    return response.json() as Promise<SigninDevResponse>;
-  }
-
-  const errorBody = await readErrorBody(response);
-  throw new Error(errorBody.message);
-}
+// signinDevHandle removed in migration step 5. The production browser
+// portal uses the client-signed challenge flow below; the legacy
+// /api/identity/signin route is gone. SigninDevResponse stays
+// because it's the shared response shape recoverDevHandle and
+// exchangeChallengeForSession both still return.
 
 // ----- client-signed session bootstrap -----
 //
