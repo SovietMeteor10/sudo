@@ -34,6 +34,7 @@
     "smoke:csp": "node scripts/csp-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
+    "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

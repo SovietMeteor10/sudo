@@ -751,15 +751,14 @@ function renderResolvedIdentity(
   const tier = relationship?.tier ?? "unknown";
   const card = block("lookup-card", [
     line(identity.handle, "lookup-card__handle"),
-    // Short relationship status only — no canonical id, raw
-    // fingerprint hex, "trust:", "onion:", or updated timestamps.
-    // Those technical fields belong in an explicit advanced
-    // identity view, not the directory lookup card.
+    // Short relationship status only. Canonical id, raw fingerprint,
+    // trust state, onion availability, and updated timestamp are
+    // hidden behind the advanced disclosure below.
     line(
       isFollowing
         ? tier === "known" || tier === "close"
-          ? "you follow each other"
-          : "following — chat unlocks when they follow you back"
+          ? "you follow each other — chat unlocked"
+          : "following — chats unlock when they follow you back"
         : tier === "blocked"
           ? "blocked"
           : "not following yet",
@@ -767,22 +766,11 @@ function renderResolvedIdentity(
     )
   ]);
 
-  // State-aware action row. Each axis (follow, connect, close-friend,
-  // block) renders as a SINGLE toggle showing the action available
-  // from the current state — never the past tense of what already
-  // happened. When blocked, no other actions surface; the user must
-  // unblock first to re-engage.
-  //
-  // Semantics:
-  //   - follow      : subscription on/off (independent of tier).
-  //   - connect     : tier=known on/off. Per listPersonalFeedForApi a
-  //                   known connection pulls the subject's posts into
-  //                   the viewer's personal feed, so connecting
-  //                   implies feed visibility even without follow.
-  //   - close friend: tier=close on/off (only meaningful when
-  //                   connected — otherwise hidden).
-  //   - block       : tier=blocked on/off (hard deny that suppresses
-  //                   feed + relay).
+  // Default action row is intentionally minimal: follow/unfollow on
+  // one axis, block/unblock on the other. Tier controls (known /
+  // close-friend / disconnect) live in the advanced disclosure
+  // because they are local trust labels — they no longer affect
+  // chat eligibility, which is gated on mutual follow only.
   const actions = document.createElement("div");
   actions.className = "lookup-card__actions";
 
@@ -791,25 +779,68 @@ function renderResolvedIdentity(
   } else {
     if (isFollowing) actions.append(button("unfollow", "set-unsubscribe"));
     else actions.append(button("follow", "set-subscribe"));
-
-    if (tier === "known" || tier === "close") {
-      actions.append(button("remove", "set-unknown"));
-      if (tier === "close") actions.append(button("remove close", "set-known"));
-      else actions.append(button("close friend", "set-close"));
-    } else {
-      actions.append(button("connect", "set-known"));
-    }
-
     actions.append(button("block", "set-block"));
   }
 
   card.append(actions);
+
+  card.append(renderAdvancedIdentityDetails(identity, fingerprint, tier));
 
   if (identity.visual_fingerprint !== undefined) {
     card.prepend(renderFingerprintGrid(identity.visual_fingerprint));
   }
 
   return card;
+}
+
+function renderAdvancedIdentityDetails(
+  identity: IdentityDocument,
+  fingerprint: string,
+  tier: "unknown" | "known" | "close" | "blocked"
+): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "lookup-card__advanced";
+  const summary = document.createElement("summary");
+  summary.className = "lookup-card__advanced-summary";
+  summary.textContent = "advanced identity details";
+  details.append(summary);
+
+  const fields = block("lookup-card__advanced-fields", [
+    line(`canonical: ${shortCanonical(identity.canonical_id)}`, "is-muted"),
+    line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? `${fingerprint.slice(0, 12)}...`}`, "is-muted"),
+    line("trust: unverified", "is-muted"),
+    line("onion: unknown", "is-muted"),
+    line(`updated: ${formatTimestamp(identity.updated_at)}`, "is-muted")
+  ]);
+  details.append(fields);
+
+  // Local trust state (debug). Does NOT unlock chat — chat is gated
+  // on mutual follow detected by the server. Kept here so power
+  // users / smokes can still inspect or set the local relationship
+  // tier without exposing it in the default card.
+  const trustNote = line(
+    "local trust state — does not affect chat eligibility",
+    "is-muted"
+  );
+  trustNote.classList.add("lookup-card__advanced-note");
+  details.append(trustNote);
+
+  const trustActions = document.createElement("div");
+  trustActions.className = "lookup-card__advanced-actions";
+
+  if (tier !== "blocked") {
+    if (tier === "known" || tier === "close") {
+      trustActions.append(button("remove", "set-unknown"));
+      if (tier === "close") trustActions.append(button("remove close", "set-known"));
+      else trustActions.append(button("close friend", "set-close"));
+    } else {
+      trustActions.append(button("mark known", "set-known"));
+    }
+  }
+
+  details.append(trustActions);
+
+  return details;
 }
 
 function renderChat(chat: ChatSummary): HTMLElement {
