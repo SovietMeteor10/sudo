@@ -64,20 +64,11 @@ async function browserSignup(browser, handle) {
   throw new Error(`signup hung for @${handle}`);
 }
 
-async function devSignupServer(handle) {
-  const resp = await fetch(`${BASE}/dev/signup`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      handle,
-      password: PASSPHRASE,
-      recoveryQuestion: "smoke",
-      recoveryAnswer: "smoke-answer"
-    })
-  });
-  if (!resp.ok) throw new Error(`devSignupServer(${handle}) -> ${resp.status}`);
-  return (await resp.json()).identity;
-}
+// Server-only fixture actor: registered identity, no password, no
+// dev_account_access row. Uses scripts/lib/register-client-identity
+// so this smoke does not contribute to the [legacy-signin] counter.
+const { registerClientIdentity } = require("./lib/register-client-identity.cjs");
+const devSignupServer = (handle) => registerClientIdentity(BASE, handle);
 
 async function follow(actorCanonicalId, targetCanonicalId, targetHandle) {
   const resp = await fetch(`${BASE}/api/subscriptions`, {

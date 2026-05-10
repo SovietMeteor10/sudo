@@ -55,25 +55,11 @@ async function newSignedInBrowserContext(browser, handle) {
   throw new Error(`signup hung for @${handle}`);
 }
 
-// Mint a server-only identity. Used for actors that don't need a
-// browser session — they only post / react / reply / repost via the
-// HTTP API.
-async function devSignupServerOnly(handle) {
-  const resp = await fetch(BASE + "/dev/signup", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      handle,
-      password: PASSPHRASE,
-      recoveryQuestion: "smoke",
-      recoveryAnswer: "smoke-answer"
-    })
-  });
-  if (!resp.ok) throw new Error(`devSignupServerOnly(${handle}) -> ${resp.status}`);
-  const body = await resp.json();
-  if (!body?.identity?.canonical_id) throw new Error(`no identity in /dev/signup body`);
-  return body.identity;
-}
+// Mint a server-only fixture actor. Uses the production
+// register-only path (no password, no dev_account_access) so this
+// smoke does not contribute to the [legacy-signin] counter.
+const { registerClientIdentity } = require("./lib/register-client-identity.cjs");
+const devSignupServerOnly = (handle) => registerClientIdentity(BASE, handle);
 
 async function postFeedPost(authorCanonicalId, authorHandle, body) {
   const now = new Date().toISOString();

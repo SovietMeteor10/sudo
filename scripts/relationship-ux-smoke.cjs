@@ -40,25 +40,17 @@ const ok = (label) => { passes.push(label); console.log("ok:", label); };
 
 const PASSPHRASE = "CorrectHorseBatteryStaple9!";
 
-// Mint a server-only identity via /dev/signup. Returns the new
-// canonical_id or null on failure. Used by the notifications subtests
-// that need a third-party actor (charlie / diana) without spinning
-// up a full browser context for them.
+// Mint a server-only fixture actor via the production register-only
+// path. Returns the new canonical_id or null on failure. Used by the
+// notifications subtests that need a third-party actor (charlie /
+// diana) without spinning up a full browser context for them.
+// Uses scripts/lib/register-client-identity so this smoke does not
+// contribute to the [legacy-signin] counter.
+const { registerClientIdentity } = require("./lib/register-client-identity.cjs");
 async function devSignupServerOnly(handle) {
   try {
-    const resp = await fetch(BASE + "/dev/signup", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        handle,
-        password: PASSPHRASE,
-        recoveryQuestion: "smoke",
-        recoveryAnswer: "smoke-answer"
-      })
-    });
-    if (!resp.ok) return null;
-    const body = await resp.json();
-    return body?.identity?.canonical_id ?? null;
+    const id = await registerClientIdentity(BASE, handle);
+    return id.canonical_id;
   } catch {
     return null;
   }
