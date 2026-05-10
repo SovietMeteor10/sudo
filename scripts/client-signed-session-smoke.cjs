@@ -388,17 +388,22 @@ async function getJson(path) {
   // the submitted password, and must be greppable as one line so
   // `wc -l` works as a usage counter.
   //
-  // Reads the local dev server's log file (default /tmp/sudo-local.log
-  // because that's what the npm scripts redirect to). Set
-  // SUDO_LOG_FILE to override. If the file is unreadable we skip the
-  // assertion with a note rather than fail — this smoke is intended
-  // for local-dev runs.
+  // The log file lives on the *server*. When BASE points at a local
+  // dev server the smoke knows where the log file is (/tmp/sudo-local.log
+  // or SUDO_LOG_FILE override) and can read it directly. When BASE
+  // points at a remote droplet there's no way to read the log over
+  // HTTP, so we skip Phase 4 cleanly rather than fail or pretend.
+  const isLocalBase = /^http:\/\/127\.0\.0\.1(:|\/|$)|^http:\/\/localhost(:|\/|$)/.test(BASE);
   const logPath = process.env.SUDO_LOG_FILE || "/tmp/sudo-local.log";
   let logBody = "";
-  try {
-    logBody = require("node:fs").readFileSync(logPath, "utf-8");
-  } catch (e) {
-    ok(`legacy-signin log assertion skipped (cannot read ${logPath}: ${(e || {}).message})`);
+  if (!isLocalBase && process.env.SUDO_LOG_FILE === undefined) {
+    ok(`legacy-signin log assertion skipped (BASE=${BASE} is not local; server log is on the droplet)`);
+  } else {
+    try {
+      logBody = require("node:fs").readFileSync(logPath, "utf-8");
+    } catch (e) {
+      ok(`legacy-signin log assertion skipped (cannot read ${logPath}: ${(e || {}).message})`);
+    }
   }
   if (logBody.length > 0) {
     const lines = logBody.split("\n").filter((l) => l.includes("[legacy-signin]"));
