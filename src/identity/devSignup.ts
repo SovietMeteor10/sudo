@@ -1,5 +1,3 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   createEd25519KeyPairBase64Url,
   generateIdentityGrid
@@ -34,6 +32,24 @@ export class DevSignupError extends Error {
   }
 }
 
+// Legacy server-mediated signup. Used today only by HTTP-direct
+// fixture smokes (which mint test users fast) and by the
+// /api/identity/signup + /dev/signup aliases. The production browser
+// path goes through createBrowserCryptoAccount + /api/identity/register
+// and never touches this function.
+//
+// Historical behavior wrote four files per account into data/keys/
+// (the identity PEM, the feed PEM, an identity JSON dump, and a
+// fingerprint JSON dump). All four writes are now gone. The keypairs
+// are still generated in memory long enough to sign the identity
+// document the registry stores, then immediately discarded — the
+// process never persists them.
+//
+// Existing PEMs on disk from prior versions are still readable by the
+// feed service (operator action: prune them once confident no live
+// account depends on them). New accounts created via this function
+// cannot be server-signed and therefore must arrive with a valid
+// client signature on /api/feeds/posts.
 export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
   let handle: string;
   try {
@@ -83,37 +99,9 @@ export function createDevIdentity(options: DevSignupOptions): DevSignupResult {
     throw error;
   }
 
-  const keyDir = resolve("data/keys");
-  mkdirSync(keyDir, { recursive: true });
-
-  // DEV ONLY: plaintext private key material is stored on the server filesystem.
-  // This is unsafe and exists only for local iteration. Production signup must
-  // generate and protect keys on the client/device with passkeys, WebAuthn,
-  // Secure Enclave, or equivalent hardware-backed key storage.
-  writeFileSync(
-    resolve(keyDir, `${canonicalId}.dev-private-key.pem`),
-    identityKeys.privateKey,
-    { mode: 0o600 }
-  );
-
-  writeFileSync(
-    resolve(keyDir, `${canonicalId}.dev-feed-private-key.pem`),
-    feedKeys.privateKey,
-    { mode: 0o600 }
-  );
-
-  writeFileSync(
-    resolve(keyDir, `${canonicalId}.identity.json`),
-    `${JSON.stringify(legacyDocument, null, 2)}\n`,
-    { mode: 0o600 }
-  );
-
-  writeFileSync(
-    resolve(keyDir, `${canonicalId}.fingerprint.json`),
-    `${JSON.stringify(generateIdentityGrid(identityKeys.publicKey), null, 2)}\n`,
-    { mode: 0o600 }
-  );
-
+  // Private key material is intentionally not retained anywhere
+  // beyond the locals above. Both `identityKeys.privateKey` and
+  // `feedKeys.privateKey` go out of scope when this function returns.
   const credential = accountAccessProvider.createCredential(
     canonicalId,
     options.password,

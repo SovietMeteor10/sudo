@@ -40,6 +40,7 @@ export class FeedError extends Error {
       | "post_too_large"
       | "close_connections_requires_recipients"
       | "invalid_signature"
+      | "missing_signature"
       | "not_feed_post"
       | "post_not_found"
       | "missing_repost_of"

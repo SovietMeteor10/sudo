@@ -237,6 +237,97 @@ function identitiesCount() {
     fail("identities", `identities went ${preIdentities} -> ${postIdentities}, expected +1`);
   }
 
+  // ===== Phase 2: legacy /api/identity/signup must also be no-write. =====
+  // Mint an HTTP-direct fixture user and verify no PEM lands in
+  // data/keys/ even though the legacy server-side codepath ran.
+  const legacyHandle = `legsig${Date.now().toString().slice(-6)}`;
+  const preLegacyKeyFiles = new Set(listKeyFiles());
+  const preLegacyAccessCount = devAccountAccessCount();
+  let legacyResp;
+  try {
+    legacyResp = await fetch(`${BASE}/api/identity/signup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle: legacyHandle,
+        password: PASSPHRASE,
+        recoveryQuestion: "first object",
+        recoveryAnswer: "kettle"
+      })
+    });
+  } catch (e) {
+    fail("legacy-fetch", `POST /api/identity/signup threw: ${(e || {}).message}`);
+    legacyResp = null;
+  }
+
+  if (legacyResp !== null && legacyResp.status === 201) {
+    const body = await legacyResp.json();
+    if (body?.identity?.canonical_id && body?.sessionToken && body?.backupCode) {
+      ok(`legacy /api/identity/signup returned the expected shape (identity + sessionToken + backupCode)`);
+    } else {
+      fail("legacy-shape", `legacy signup body missing fields: ${JSON.stringify(body).slice(0, 200)}`);
+    }
+    const legacyCanonical = body.identity.canonical_id;
+
+    const postLegacyKeyFiles = listKeyFiles();
+    const newLegacyKeyFiles = postLegacyKeyFiles.filter((f) => !preLegacyKeyFiles.has(f));
+    if (newLegacyKeyFiles.length === 0) {
+      ok("legacy /api/identity/signup writes zero new .pem files under data/keys/");
+    } else {
+      fail("legacy-keys", `new pem(s) appeared from legacy signup: ${newLegacyKeyFiles.join(", ")}`);
+    }
+    const matchingForLegacy = postLegacyKeyFiles.filter((f) => f.includes(legacyCanonical.replace(/^sudo:ed25519:/, "")));
+    if (matchingForLegacy.length === 0) {
+      ok(`no pem under data/keys/ contains the new legacy canonical id`);
+    } else {
+      fail("legacy-keys-canonical", `pem(s) contain new legacy canonical id: ${matchingForLegacy.join(", ")}`);
+    }
+
+    const postLegacyAccessCount = devAccountAccessCount();
+    if (postLegacyAccessCount === preLegacyAccessCount + 1) {
+      ok("legacy signup did add exactly one dev_account_access row (server credential for legacy signin path)");
+    } else {
+      fail("legacy-credential", `dev_account_access went ${preLegacyAccessCount} -> ${postLegacyAccessCount}, expected +1`);
+    }
+
+    // Legacy signin still works — exercise it.
+    const signinResp = await fetch(`${BASE}/api/identity/signin`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ handle: legacyHandle, password: PASSPHRASE })
+    });
+    if (signinResp.status === 200) {
+      const sBody = await signinResp.json();
+      if (sBody?.sessionToken) ok("legacy /api/identity/signin still returns a session for the legacy account");
+      else fail("legacy-signin-body", `signin missing sessionToken`);
+    } else {
+      fail("legacy-signin", `signin returned ${signinResp.status}`);
+    }
+
+    // /dev/signup alias still works.
+    const aliasResp = await fetch(`${BASE}/dev/signup`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        handle: `${legacyHandle}alias`,
+        password: PASSPHRASE,
+        recoveryQuestion: "first object",
+        recoveryAnswer: "kettle"
+      })
+    });
+    if (aliasResp.status === 201 && aliasResp.headers.get("deprecation") === "true") {
+      ok("/dev/signup alias still 201s and emits Deprecation: true");
+    } else {
+      fail("alias", `/dev/signup status=${aliasResp.status} deprecation=${aliasResp.headers.get("deprecation")}`);
+    }
+    const postAliasKeyFiles = listKeyFiles();
+    const newAliasKeys = postAliasKeyFiles.filter((f) => !postLegacyKeyFiles.includes(f));
+    if (newAliasKeys.length === 0) ok("/dev/signup alias also writes zero new .pem files");
+    else fail("alias-keys", `pem(s) appeared from /dev/signup: ${newAliasKeys.join(", ")}`);
+  } else {
+    fail("legacy-signup", `expected 201 from /api/identity/signup, got ${legacyResp?.status}`);
+  }
+
   if (failures.length > 0) {
     console.error(`CLIENT-SIGNUP NO-SERVER-KEY SMOKE FAILED (${failures.length} failure(s))`);
     process.exit(1);

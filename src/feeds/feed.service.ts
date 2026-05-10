@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { signFeedPost, verifyCanonicalSignature } from "../crypto/signatures.js";
+import { readNodeRuntimeConfig } from "../node/node.config.js";
 import { SUDO_PROTOCOL_VERSION, DEFAULT_MAX_TEXT_FEED_POST_BYTES } from "../protocol/constants.js";
 import {
   getConnectionRelationship,
@@ -636,7 +637,23 @@ function resolveFeedPostSignature(
     return signature;
   }
 
-  return signWithDevFeedKey(signable) ?? "dev-placeholder:feed-signature-unavailable";
+  // No client signature. The browser portal always signs feed posts
+  // client-side, so this branch only fires for HTTP-direct callers
+  // (fixture smokes). Try the legacy server-held PEM if one happens
+  // to still be on disk for this author. If not, refuse to silently
+  // store a placeholder in production — only allow it when running
+  // in local development so the fixture smokes keep working.
+  const serverSigned = signWithDevFeedKey(signable);
+  if (serverSigned !== null) return serverSigned;
+
+  if (readNodeRuntimeConfig().isLocalDevelopment) {
+    return "dev-placeholder:feed-signature-unavailable";
+  }
+
+  throw new FeedError(
+    "missing_signature",
+    "feed posts must arrive client-signed; the server no longer signs on behalf of authors"
+  );
 }
 
 function signWithDevFeedKey(post: SignableFeedPost): string | null {
@@ -644,8 +661,11 @@ function signWithDevFeedKey(post: SignableFeedPost): string | null {
   if (!existsSync(keyPath)) return null;
 
   try {
-    // DEV ONLY: feed posts are signed server-side with plaintext dev keys until
-    // feed signing moves to device-held client keys.
+    // Legacy: pre-existing PEMs from prior versions of devSignup.ts
+    // are still readable so an in-flight fixture smoke that minted
+    // its account before this change can still post. New accounts
+    // created via /api/identity/signup never produce a PEM, so this
+    // path is dormant for them.
     return signFeedPost(post, readFileSync(keyPath, "utf8"));
   } catch {
     return null;
