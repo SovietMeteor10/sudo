@@ -29,7 +29,6 @@ import {
   restoreDevSession,
   searchHandles,
   signinDevHandle,
-  signupDevHandle,
   upsertConnectionRelationship,
   type FeedEngagement
 } from "./api.js";

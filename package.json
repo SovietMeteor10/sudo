@@ -32,6 +32,7 @@
     "smoke:auth-buttons-clickable": "node scripts/auth-buttons-clickable-smoke.cjs",
     "smoke:mobile-layout": "node scripts/mobile-layout-smoke.cjs",
     "smoke:csp": "node scripts/csp-smoke.cjs",
+    "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
