@@ -264,6 +264,36 @@ async function snapshotThread(page) {
     if (!snap.treeIds.includes(snap.focusedReplyId)) ok(`focused reply does NOT also appear in the regular reply tree (no duplicate)`);
     else fail("focus-dup", `reply ${snap.focusedReplyId} duplicated in the tree`);
 
+    // Wait for the requestAnimationFrame-deferred scrollIntoView to
+    // settle, then assert the pin sits inside the viewport. The
+    // viewport check is "any part of the pin is visible" — i.e. the
+    // top is above the bottom edge AND the bottom is below 0.
+    await new Promise((r) => setTimeout(r, 800));
+    const pinViewport = await pageA.evaluate(() => {
+      const pin = document.querySelector(".stream-post__reply-focused");
+      if (pin === null) return null;
+      const rect = pin.getBoundingClientRect();
+      const inView = rect.top < window.innerHeight && rect.bottom > 0;
+      const hasFlash = pin.classList.contains("is-flash");
+      return { top: rect.top, bottom: rect.bottom, height: window.innerHeight, inView, hasFlash };
+    });
+    if (pinViewport === null) fail("focus-viewport", "pin disappeared before viewport check");
+    else if (!pinViewport.inView) fail("focus-viewport", `pin is outside viewport: top=${pinViewport.top.toFixed(1)} bottom=${pinViewport.bottom.toFixed(1)} (vh=${pinViewport.height})`);
+    else ok(`focus pin is in viewport (top=${pinViewport.top.toFixed(0)}, bottom=${pinViewport.bottom.toFixed(0)})`);
+
+    if (pinViewport !== null && pinViewport.hasFlash) ok(`focus pin has is-flash class right after the click`);
+    else if (pinViewport !== null) fail("focus-flash", "is-flash class missing on the pin right after click");
+
+    // After ~3.2s total, the JS timer should have removed is-flash
+    // (the timer fires at 3000ms; we already waited 800ms above).
+    await new Promise((r) => setTimeout(r, 2400));
+    const flashCleared = await pageA.evaluate(() => {
+      const pin = document.querySelector(".stream-post__reply-focused");
+      return pin === null ? null : pin.classList.contains("is-flash");
+    });
+    if (flashCleared === false) ok("is-flash auto-clears after the 3s window");
+    else fail("focus-flash-clear", `is-flash still on pin after 3.2s: ${JSON.stringify(flashCleared)}`);
+
     // Trigger a thread re-render and assert focus persists. The live
     // poller does this every few seconds via refreshFeedPosts; we
     // dispatch a tiny synthetic update path: re-enter the same

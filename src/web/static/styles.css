@@ -708,6 +708,24 @@ body[data-auth-state="auth-restore"] .landing {
   background: rgba(106, 170, 170, 0.08);
 }
 
+/* One-shot fade triggered the first render after a notification
+ * click. The keyframes start at the brighter highlight and ease back
+ * to the resting background. Set to ~3s to match the JS timer that
+ * removes the class. */
+@keyframes sudo-reply-focus-flash {
+  0%   { background: rgba(106, 170, 170, 0.35); }
+  60%  { background: rgba(106, 170, 170, 0.20); }
+  100% { background: rgba(106, 170, 170, 0.08); }
+}
+
+.stream-post__reply-focused.is-flash {
+  animation: sudo-reply-focus-flash 3s ease-out 0s 1 normal forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stream-post__reply-focused.is-flash { animation: none; }
+}
+
 .stream-post__reply-focused-label {
   font-size: 11px;
   text-transform: uppercase;

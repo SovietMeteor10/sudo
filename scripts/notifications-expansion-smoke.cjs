@@ -324,7 +324,54 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
       }
       if (!opened) fail("notif-view", "thread view did not open after clicking view");
       else ok(`notif-view: thread view opened for reply ${replyPost.post_id.slice(0, 8)}`);
-      // Leave the thread before dismiss tests.
+      // The opened thread MUST be rooted on B's original post, not on
+      // the actor's reply object. (be6e3f3 + the reaction/repost
+      // routing fix in this commit.)
+      const openedRoot = await pageB.evaluate(() => {
+        return document.querySelector(".thread-view .thread-view__parent .stream-post")?.getAttribute("data-post-id") ?? null;
+      });
+      if (openedRoot !== ownerPost.post_id) fail("notif-view-root", `reply view opened root=${(openedRoot || "(none)").slice(0, 8)}, expected ${ownerPost.post_id.slice(0, 8)}`);
+      else ok(`notif-view: reply notification opened B's original post (not the reply)`);
+      await pageB.evaluate(() => {
+        const back = document.querySelector(".thread-view__back");
+        if (back instanceof HTMLElement) back.click();
+      });
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    // Click "view" on each of recommend / downrank / repost. Each
+    // must open B's ORIGINAL post (not the actor's reaction or
+    // repost object).
+    for (const probe of [
+      { label: "recommend", notif: recNotif },
+      { label: "downrank", notif: downNotif },
+      { label: "repost", notif: repostNotif }
+    ]) {
+      if (!probe.notif.matched) continue;
+      await pageB.evaluate((id) => {
+        const row = document.querySelector(`#notifications-list .notification-row[data-notification-id="${id}"]`);
+        const view = Array.from(row?.querySelectorAll(".notification-row__action") ?? [])
+          .find((b) => (b.textContent || "").trim() === "view");
+        if (view instanceof HTMLButtonElement) view.click();
+      }, probe.notif.row.id);
+      let opened = false;
+      for (let i = 0; i < 30; i++) {
+        await new Promise((r) => setTimeout(r, 200));
+        opened = await pageB.evaluate(() => document.querySelector(".thread-view__back") !== null);
+        if (opened) break;
+      }
+      if (!opened) {
+        fail(`notif-view-${probe.label}`, `thread view did not open after clicking view on ${probe.label}`);
+        continue;
+      }
+      const root = await pageB.evaluate(() => {
+        return document.querySelector(".thread-view .thread-view__parent .stream-post")?.getAttribute("data-post-id") ?? null;
+      });
+      if (root !== ownerPost.post_id) {
+        fail(`notif-view-${probe.label}-root`, `${probe.label} view opened root=${(root || "(none)").slice(0, 8)}, expected ${ownerPost.post_id.slice(0, 8)}`);
+      } else {
+        ok(`notif-view-${probe.label}: opened B's original post (${ownerPost.post_id.slice(0, 8)})`);
+      }
       await pageB.evaluate(() => {
         const back = document.querySelector(".thread-view__back");
         if (back instanceof HTMLElement) back.click();

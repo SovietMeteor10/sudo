@@ -227,11 +227,17 @@ async function handleNotificationAction(
   if (active === null || active.ownerCanonicalId !== ownerCanonicalId) return;
 
   // "view" is the one action that doesn't dismiss the row — the
-  // user might want to see the same post twice. For reply
-  // notifications, route to the ROOT thread post and pass the
-  // reply id as the focus hint so the host pins it at the top of
-  // the comments panel. For other kinds (likes, reposts), keep the
-  // legacy behavior of opening notification.post_id directly.
+  // user might want to see the same post twice. Routing rules:
+  //   - reply: open the ROOT thread, pin the reply at top via
+  //     focusedCommentId (be6e3f3).
+  //   - reaction_recommend / reaction_downrank / repost: open the
+  //     RECIPIENT's original post (parent_post_id) so the user lands
+  //     on their own content with the actor's engagement reflected
+  //     in the action row. Without this they'd land on the actor's
+  //     reaction or repost object, which is not what "view what
+  //     happened on your post" should do.
+  //   - follow / connection_confirmed / anything else: legacy
+  //     post_id-only fallback.
   if (action === "view") {
     if (active.onView === null) return;
     if (notification.kind === "reply") {
@@ -247,6 +253,19 @@ async function handleNotificationAction(
             focusedCommentId: typeof notification.post_id === "string" ? notification.post_id : undefined
           });
         } catch { /* ignore */ }
+      }
+      return;
+    }
+    if (
+      notification.kind === "reaction_recommend"
+      || notification.kind === "reaction_downrank"
+      || notification.kind === "repost"
+    ) {
+      const target = typeof notification.parent_post_id === "string" && notification.parent_post_id.length > 0
+        ? notification.parent_post_id
+        : notification.post_id;
+      if (typeof target === "string" && target.length > 0) {
+        try { active.onView({ postId: target }); } catch { /* ignore */ }
       }
       return;
     }

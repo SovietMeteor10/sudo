@@ -2155,12 +2155,19 @@ let activeThreadPostId: string | null = null;
 // (refreshFeedPosts → renderThreadView) preserves focus until the
 // user navigates away.
 let focusedCommentId: string | null = null;
+// One-shot: triggers scrollIntoView + flash on the *first* render
+// after enterThreadView. Subsequent re-renders driven by the live
+// poll cycle do not re-scroll or re-flash, so the animation doesn't
+// loop and the user doesn't get yanked back to the pin every few
+// seconds while reading further down.
+let focusedCommentScrollPending = false;
 
 async function enterThreadView(postId: string, focusedReplyId?: string): Promise<void> {
   activeThreadPostId = postId;
   focusedCommentId = typeof focusedReplyId === "string" && focusedReplyId.length > 0
     ? focusedReplyId
     : null;
+  focusedCommentScrollPending = focusedCommentId !== null;
   // Hide the composer while in thread view — the focused view has
   // its own reply composer for the parent post.
   const composer = document.getElementById("feed-composer");
@@ -2171,6 +2178,7 @@ async function enterThreadView(postId: string, focusedReplyId?: string): Promise
 function exitThreadView(): void {
   activeThreadPostId = null;
   focusedCommentId = null;
+  focusedCommentScrollPending = false;
   const composer = document.getElementById("feed-composer");
   if (composer !== null) composer.hidden = false;
   void refreshFeedPosts();
@@ -2590,6 +2598,24 @@ function renderRepliesIntoPanel(
     focusedItem.classList.add("is-focused");
     pin.append(focusedItem);
     panel.insertBefore(pin, list);
+
+    // First render after a notification click: scroll the pin into
+    // view and run a one-shot flash animation. Subsequent re-renders
+    // (driven by the live poller every few seconds) hit this
+    // function with focusedCommentScrollPending === false, so the
+    // user isn't yanked back to the pin while reading further down.
+    if (focusedCommentScrollPending) {
+      focusedCommentScrollPending = false;
+      pin.classList.add("is-flash");
+      // Defer to the next frame so layout has settled before
+      // scrolling and starting the transition.
+      window.requestAnimationFrame(() => {
+        pin.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      window.setTimeout(() => {
+        pin.classList.remove("is-flash");
+      }, 3000);
+    }
   } else if (focusedReplyId !== undefined) {
     const missing = document.createElement("div");
     missing.className = "stream-post__reply-focused-missing";
