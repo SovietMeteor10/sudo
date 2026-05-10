@@ -237,9 +237,12 @@ function identitiesCount() {
     fail("identities", `identities went ${preIdentities} -> ${postIdentities}, expected +1`);
   }
 
-  // ===== Phase 2: legacy /api/identity/signup must also be no-write. =====
+  // ===== Phase 2a: legacy /api/identity/signup must be no-write. =====
   // Mint an HTTP-direct fixture user and verify no PEM lands in
   // data/keys/ even though the legacy server-side codepath ran.
+  // This phase keeps the legacy signup route covered; it stays
+  // when the legacy signin handler is removed in the next migration
+  // step. /dev/signup alias coverage stays here too.
   const legacyHandle = `legsig${Date.now().toString().slice(-6)}`;
   const preLegacyKeyFiles = new Set(listKeyFiles());
   const preLegacyAccessCount = devAccountAccessCount();
@@ -290,7 +293,11 @@ function identitiesCount() {
       fail("legacy-credential", `dev_account_access went ${preLegacyAccessCount} -> ${postLegacyAccessCount}, expected +1`);
     }
 
-    // Legacy signin still works — exercise it.
+    // ===== Phase 2b: legacy /api/identity/signin still works.
+    // ===== REMOVABLE in the next migration commit (the one that
+    // ===== deletes the handler + dev_account_access table). When
+    // ===== that lands, delete this block — Phase 2a above is
+    // ===== independent and stays.
     const signinResp = await fetch(`${BASE}/api/identity/signin`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -298,11 +305,13 @@ function identitiesCount() {
     });
     if (signinResp.status === 200) {
       const sBody = await signinResp.json();
-      if (sBody?.sessionToken) ok("legacy /api/identity/signin still returns a session for the legacy account");
+      if (sBody?.sessionToken) ok("[Phase 2b — removable] legacy /api/identity/signin still returns a session for the legacy account");
       else fail("legacy-signin-body", `signin missing sessionToken`);
     } else {
       fail("legacy-signin", `signin returned ${signinResp.status}`);
     }
+    // ===== end Phase 2b. Below this comment we resume Phase 2a
+    // ===== assertions on the /dev/signup alias.
 
     // /dev/signup alias still works.
     const aliasResp = await fetch(`${BASE}/dev/signup`, {

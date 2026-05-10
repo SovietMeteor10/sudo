@@ -1581,21 +1581,19 @@ async function doSignin(handle: string, password: string): Promise<void> {
     localUnlockError = error;
   }
 
-  // Local-first unlock failed. Try the legacy dev sign-in path; map every
-  // outcome to a user-readable message rather than a swallowed promise.
-  try {
-    const result = await withStep("dev-signin", () => signinDevHandle(handle, password));
-    await withStep("write-dev-session", () => writeDevSessionToken(result.sessionToken));
-    const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(result.identity)), 5000);
-    setCurrentIdentity(result.identity, fingerprint);
-    setSigninState({ status: "signed_in", identity: result.identity });
-    signinDialog.close();
-    clearStaleAccountBanner();
-    setSignedIn(result.identity.handle);
-    // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
-  } catch (devError) {
-    throw new Error(explainSigninFailure(localUnlockError, devError));
-  }
+  // Local-first unlock failed. Previously this branch fell through to
+  // POST /api/identity/signin as a legacy fallback for accounts whose
+  // password credential lived in dev_account_access. After migration
+  // step 4 the production browser portal no longer needs that path:
+  //   - browser-key accounts (the universal flow today) get their
+  //     authoritative answer from unlockBrowserCryptoAccountByHandle
+  //   - legacy accounts that need migration go through an explicit
+  //     "restore from backup or trusted device" flow, not a silent
+  //     password retry against the server
+  // The legacy /api/identity/signin route stays mounted for one
+  // release as a death-watch canary; HTTP-direct callers can still
+  // probe it. The browser just stops asking.
+  throw new Error(explainSigninFailure(localUnlockError, undefined));
 }
 
 function explainSigninFailure(localError: unknown, devError: unknown): string {
@@ -1612,7 +1610,14 @@ function explainSigninFailure(localError: unknown, devError: unknown): string {
     return "network error. check your connection and try again.";
   }
 
-  if (localMissing && looksLikeBadCredentials) {
+  // Local IDB authoritatively saying "no such account on this
+  // device" is a complete answer on its own — the legacy server
+  // fallback is just an additional probe. After step 5 of the
+  // security migration the legacy route goes away and devError
+  // will look like a 404 / 410, neither of which match the
+  // bad-creds regex; this branch keeps the user-visible copy
+  // friendly in that future state.
+  if (localMissing) {
     return "account not found on this device. restore or link this device.";
   }
 

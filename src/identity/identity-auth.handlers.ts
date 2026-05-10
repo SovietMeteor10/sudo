@@ -139,6 +139,24 @@ export function handleIdentityRecover(request: Request, response: Response): voi
 }
 
 export function handleIdentitySignin(request: Request, response: Response): void {
+  // Migration kill-switch. Set SUDO_DISABLE_LEGACY_SIGNIN=1 to make
+  // the handler return 410 Gone before any credential check. The
+  // auth-lifecycle smoke uses this to prove its bad-credentials
+  // assertions do not depend on the legacy fallback's 401 — i.e.
+  // that the local IDB unlock failure path produces the same
+  // user-visible copy on its own. When the legacy route is actually
+  // removed in the next migration step, the env-guarded behavior
+  // is what production will look like for any HTTP-direct caller
+  // that still tries this path.
+  if (process.env.SUDO_DISABLE_LEGACY_SIGNIN === "1") {
+    logLegacySignin(request, {
+      outcome: "disabled_via_env",
+      handle: typeof (request.body as SigninBody).handle === "string" ? (request.body as SigninBody).handle as string : "(missing)"
+    });
+    response.status(410).json({ error: "legacy_signin_disabled", message: "this route is disabled on this node; use /api/identity/session-from-challenge" });
+    return;
+  }
+
   const body = request.body as SigninBody;
 
   if (
