@@ -232,6 +232,18 @@ async function getJson(path) {
     const ctxA = await browser.createBrowserContext();
     const pageA = await ctxA.newPage();
     await pageA.setViewport({ width: 980, height: 820 });
+
+    // Start recording network BEFORE the signup click so we can
+    // assert what doSignup actually fires. This catches the new
+    // client-signed session bootstrap on the signup path.
+    const signupPaths = new Set();
+    pageA.on("request", (req) => {
+      const url = req.url();
+      if (url.startsWith(BASE)) {
+        signupPaths.add(`${req.method()} ${url.slice(BASE.length).split("?")[0]}`);
+      }
+    });
+
     await pageA.goto(BASE + "/", { waitUntil: "networkidle0" });
 
     // Signup.
@@ -247,6 +259,46 @@ async function getJson(path) {
       if (a === "signed-in") break;
     }
     ok(`browser signed up @${handleA}`);
+
+    // Wait a beat for any deferred mint-server-session calls.
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const signupUsedRegister = signupPaths.has("POST /api/identity/register");
+    const signupUsedChallenge = [...signupPaths].some((p) => p.startsWith("GET /api/identity/challenge/"));
+    const signupUsedExchange = signupPaths.has("POST /api/identity/session-from-challenge");
+    const signupUsedLegacySignup = signupPaths.has("POST /api/identity/signup");
+    const signupUsedLegacySignin = signupPaths.has("POST /api/identity/signin");
+
+    if (signupUsedRegister) ok(`signup POSTed /api/identity/register (public-key only)`);
+    else fail("signup-register", `signup did not POST /api/identity/register; saw=${[...signupPaths].join(", ")}`);
+
+    if (signupUsedChallenge && signupUsedExchange) {
+      ok(`signup minted a server session via the challenge flow (GET /challenge + POST /session-from-challenge)`);
+    } else {
+      fail("signup-mint", `signup did not use the challenge flow. challenge=${signupUsedChallenge} exchange=${signupUsedExchange}; saw=${[...signupPaths].join(", ")}`);
+    }
+
+    if (!signupUsedLegacySignup) ok(`signup did NOT POST /api/identity/signup (legacy keygen path stays dormant)`);
+    else fail("signup-legacy-signup", `unexpected POST /api/identity/signup during browser signup`);
+
+    if (!signupUsedLegacySignin) ok(`signup did NOT POST /api/identity/signin (no password to server)`);
+    else fail("signup-legacy-signin", `unexpected POST /api/identity/signin during browser signup`);
+
+    // Reload immediately after signup. The bearer the new flow wrote
+    // to localStorage must let us restore signed-in state without
+    // re-entering the passphrase.
+    await pageA.reload({ waitUntil: "networkidle0" });
+    let restoredAfterSignup = false;
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      const a = await pageA.evaluate(() => document.body.dataset.authState);
+      if (a === "signed-in") { restoredAfterSignup = true; break; }
+    }
+    if (restoredAfterSignup) {
+      ok(`reload immediately after signup restores signed-in state (no passphrase re-entry)`);
+    } else {
+      fail("signup-reload-restore", `reload after signup did not restore signed-in; user would have to sign in again`);
+    }
 
     // Sign out, then start recording network for the signin click.
     await pageA.evaluate(() => document.getElementById("account-menu-logout")?.click());

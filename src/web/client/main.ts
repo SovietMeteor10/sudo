@@ -1379,6 +1379,38 @@ async function runSignup(
   }
 }
 
+// Client-signed session bootstrap. Used from both the signin path
+// (after the local IndexedDB bundle has been unlocked with the
+// passphrase) and the signup path (while the freshly-generated
+// identity key is still in memory from createBrowserCryptoAccount).
+// Fetches a single-use nonce, signs canonical_json of
+// { type, canonical_id, nonce } with the local identity key, and
+// exchanges the signature for a server session. The bearer is
+// written to localStorage so the existing reload-restore path
+// (readDevSessionToken → /api/identity/session) just works.
+//
+// Best-effort: any failure here logs a warning but does not throw.
+// The local crypto bundle is the source of truth; if the network
+// blip drops the bearer the next reload will require the user to
+// re-enter their passphrase, but the account is not lost.
+async function mintServerSessionFromUnlockedAccount(
+  account: BrowserCryptoAccount,
+  identity: IdentityDocument
+): Promise<void> {
+  try {
+    const challenge = await fetchIdentityChallenge(identity.canonical_id);
+    const signature = await signSessionChallenge(
+      { type: "sudo_session_challenge", canonical_id: identity.canonical_id, nonce: challenge.nonce },
+      account.identity_key,
+      account.identity_key_type
+    );
+    const session = await exchangeChallengeForSession(identity.canonical_id, challenge.nonce, signature);
+    await writeDevSessionToken(session.sessionToken);
+  } catch (error) {
+    console.warn("[auth] client-signed session bootstrap failed; UI continues but reload will require re-signin", error instanceof Error ? error.message : error);
+  }
+}
+
 async function doSignup(handle: string, password: string): Promise<void> {
 
   const nodeDocument = await withStep(
@@ -1396,6 +1428,13 @@ async function doSignup(handle: string, password: string): Promise<void> {
   }));
   const identity = await withStep("identity-register", () => registerIdentityDocument(draft.identity_document));
   const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(identity)), 5000);
+  // Mint a server session immediately at signup time using the same
+  // client-signed challenge flow doSignin uses. Without this, reload
+  // right after signup drops the user back to the menu because no
+  // bearer was ever written. Best-effort: a transient failure logs
+  // a warning but never tears down the local account — the crypto
+  // bundle is already in IndexedDB and the user can sign in again.
+  await withStep("mint-server-session", () => mintServerSessionFromUnlockedAccount(draft.account, identity));
   // Device metadata is local-only and must NEVER block signup. If the local
   // DB is slow/blocked we fall back to a fresh UUID and continue.
   const deviceId = await resolveDeviceIdNonBlocking();
@@ -1510,27 +1549,7 @@ async function doSignin(handle: string, password: string): Promise<void> {
     currentCryptoAccount = account;
     const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(account.identity_document)), 5000);
     const identity = account.identity_document;
-    // Mint a server session via the client-signed challenge flow so
-    // reload-after-signin restores cleanly via the existing bearer-
-    // token path (readDevSessionToken → /api/identity/session). The
-    // password never leaves the browser. Best-effort: a transient
-    // failure here does NOT block UI signed-in state, since the
-    // local crypto account is the source of truth. The next reload
-    // will re-attempt via the same flow.
-    await withStep("mint-server-session", async () => {
-      try {
-        const challenge = await fetchIdentityChallenge(identity.canonical_id);
-        const signature = await signSessionChallenge(
-          { type: "sudo_session_challenge", canonical_id: identity.canonical_id, nonce: challenge.nonce },
-          account.identity_key,
-          account.identity_key_type
-        );
-        const session = await exchangeChallengeForSession(identity.canonical_id, challenge.nonce, signature);
-        await writeDevSessionToken(session.sessionToken);
-      } catch (error) {
-        console.warn("[auth] client-signed session bootstrap failed; UI continues but reload will require re-signin", error instanceof Error ? error.message : error);
-      }
-    });
+    await withStep("mint-server-session", () => mintServerSessionFromUnlockedAccount(account, identity));
     await withStep("save-identity-seen", () => saveIdentitySeen({
       canonical_id: identity.canonical_id,
       document: identity,
