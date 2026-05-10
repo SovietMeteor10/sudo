@@ -361,17 +361,71 @@ async function getJson(path) {
   // Legacy /api/identity/signin still works for accounts that exist
   // in dev_account_access (HTTP-direct fixtures rely on this).
   const legacyHandle = `legacysignin${Date.now().toString().slice(-6)}`;
+  const legacyPassword = `LegacyPassphrase!_${Date.now().toString().slice(-6)}A`;
   const legacy = await postJson("/api/identity/signup", {
-    handle: legacyHandle, password: PASSPHRASE, recoveryQuestion: "q", recoveryAnswer: "a"
+    handle: legacyHandle, password: legacyPassword, recoveryQuestion: "q", recoveryAnswer: "a"
   });
   if (legacy.status !== 201) { fail("legacy-mint", `legacy signup failed: ${legacy.status}`); }
   else {
-    const lsi = await postJson("/api/identity/signin", { handle: legacyHandle, password: PASSPHRASE });
+    const lsi = await postJson("/api/identity/signin", { handle: legacyHandle, password: legacyPassword });
     if (lsi.status === 200 && typeof lsi.body?.sessionToken === "string") {
       ok(`legacy POST /api/identity/signin still works for password-credentialed accounts`);
     } else {
       fail("legacy-signin", `expected 200 with sessionToken, got ${lsi.status} ${JSON.stringify(lsi.body)}`);
     }
+    // Force a wrong-password attempt so we have both an "ok" and an
+    // "invalid_credentials" event in the local server log to assert
+    // against.
+    const lsiBad = await postJson("/api/identity/signin", { handle: legacyHandle, password: "DefinitelyNotTheRightPassphrase1!" });
+    if (lsiBad.status === 401) ok(`legacy signin with wrong password → 401 (expected)`);
+    else fail("legacy-signin-bad", `expected 401, got ${lsiBad.status}`);
+  }
+
+  // ===== Phase 4: legacy-signin instrumentation =====
+  // Migration tracker. Each /api/identity/signin attempt should emit
+  // a single-line `[legacy-signin]` event in the server log. The
+  // event must include the outcome and the handle, must NEVER carry
+  // the submitted password, and must be greppable as one line so
+  // `wc -l` works as a usage counter.
+  //
+  // Reads the local dev server's log file (default /tmp/sudo-local.log
+  // because that's what the npm scripts redirect to). Set
+  // SUDO_LOG_FILE to override. If the file is unreadable we skip the
+  // assertion with a note rather than fail — this smoke is intended
+  // for local-dev runs.
+  const logPath = process.env.SUDO_LOG_FILE || "/tmp/sudo-local.log";
+  let logBody = "";
+  try {
+    logBody = require("node:fs").readFileSync(logPath, "utf-8");
+  } catch (e) {
+    ok(`legacy-signin log assertion skipped (cannot read ${logPath}: ${(e || {}).message})`);
+  }
+  if (logBody.length > 0) {
+    const lines = logBody.split("\n").filter((l) => l.includes("[legacy-signin]"));
+    if (lines.length === 0) {
+      fail("legacy-signin-log", `expected at least one [legacy-signin] line in ${logPath}; found 0`);
+    } else {
+      ok(`server log carries ${lines.length} [legacy-signin] event(s)`);
+    }
+    const okEvents = lines.filter((l) => l.includes(`"outcome":"ok"`) && l.includes(`"handle":"${legacyHandle}"`));
+    if (okEvents.length >= 1) ok(`legacy-signin success event present for @${legacyHandle}`);
+    else fail("legacy-signin-ok", `no success event matched: ${lines.join(" | ").slice(0, 400)}`);
+
+    const failEvents = lines.filter((l) => l.includes(`"outcome":"invalid_credentials"`) && l.includes(`"handle":"${legacyHandle}"`));
+    if (failEvents.length >= 1) ok(`legacy-signin invalid_credentials event present for @${legacyHandle}`);
+    else fail("legacy-signin-fail", `no invalid_credentials event matched: ${lines.join(" | ").slice(0, 400)}`);
+
+    if (logBody.includes(legacyPassword)) {
+      fail("legacy-signin-password-leak", `password value leaked into server log`);
+    } else {
+      ok(`legacy-signin events never log the submitted password`);
+    }
+
+    // One-line greppability: every [legacy-signin] occurrence must be
+    // followed by a `{` on the same line (not by a multi-line dump).
+    const malformedLines = lines.filter((l) => !/\[legacy-signin\] \{/.test(l));
+    if (malformedLines.length === 0) ok(`every [legacy-signin] event is one line (grep + wc -l friendly)`);
+    else fail("legacy-signin-multiline", `${malformedLines.length} multi-line event(s)`);
   }
 
   if (failures.length > 0) {

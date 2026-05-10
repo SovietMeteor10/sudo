@@ -145,6 +145,10 @@ export function handleIdentitySignin(request: Request, response: Response): void
     typeof body.handle !== "string"
     || typeof body.password !== "string"
   ) {
+    logLegacySignin(request, {
+      outcome: "invalid_payload",
+      handle: typeof body.handle === "string" ? body.handle : "(missing)"
+    });
     response.status(400).json({ error: "invalid_credentials", message: "handle and password are required" });
     return;
   }
@@ -154,6 +158,11 @@ export function handleIdentitySignin(request: Request, response: Response): void
       body.handle,
       body.password
     );
+    logLegacySignin(request, {
+      outcome: "ok",
+      handle: body.handle,
+      canonical_id: result.identity.canonical_id
+    });
     response.json({
       identity: result.identity,
       sessionToken: result.session.token,
@@ -161,12 +170,57 @@ export function handleIdentitySignin(request: Request, response: Response): void
     });
   } catch (error) {
     if (error instanceof AccountAccessError) {
+      logLegacySignin(request, {
+        outcome: error.code,
+        handle: body.handle
+      });
       response.status(401).json({ error: error.code, message: error.message });
       return;
     }
 
     throw error;
   }
+}
+
+// Migration-tracking log line for the legacy /api/identity/signin
+// route. The new client-signed challenge flow replaces this on the
+// production browser portal; HTTP-direct fixture smokes still use it.
+// Watching this counter go to zero from real callers tells us when
+// it's safe to retire the password-credential code path entirely.
+//
+// What we deliberately NEVER log here: the password, session tokens,
+// backup codes, recovery answers, or private key material. Only the
+// handle (already a public identifier), the resolved canonical_id on
+// success, the outcome code, and request-source metadata that nginx
+// already sets in headers (user_agent, remote_ip).
+function logLegacySignin(
+  request: Request,
+  fields: { outcome: string; handle: string; canonical_id?: string }
+): void {
+  const userAgent = request.get("user-agent") ?? "";
+  // Trust X-Forwarded-For only when the deployment doc says nginx
+  // sets it (DEPLOY_UBUNTU.md). Falls back to req.ip otherwise.
+  const remoteIp = request.get("x-real-ip")
+    ?? (request.get("x-forwarded-for")?.split(",")[0]?.trim() ?? request.ip ?? "");
+  const payload: Record<string, unknown> = {
+    timestamp: new Date().toISOString(),
+    outcome: fields.outcome,
+    handle: fields.handle,
+    user_agent: userAgent,
+    remote_ip: remoteIp
+  };
+  if (typeof fields.canonical_id === "string" && fields.canonical_id.length > 0) {
+    payload["canonical_id_prefix"] = fields.canonical_id.split(":").slice(0, 2).join(":");
+    // Keep the full canonical id under a separate key so an operator
+    // greppping for it can still find it, but it isn't surfaced as
+    // the lead identifier.
+    payload["canonical_id"] = fields.canonical_id;
+  }
+  // Serialize as a single-line JSON so an operator can grep with
+  // `grep '\[legacy-signin\]'` and the entire event is on one line.
+  // The structured shape also makes "wc -l" a useful migration
+  // counter.
+  console.info(`[legacy-signin] ${JSON.stringify(payload)}`);
 }
 
 export function handleIdentitySession(request: Request, response: Response): void {

@@ -151,3 +151,49 @@ curl -fsS -X POST -H 'content-type: application/json' \
 
 Also apply the nginx version-leak fix from [NGINX.md](./NGINX.md) if
 the `Server:` response header still advertises `nginx/1.x.y`.
+
+## Tracking legacy /api/identity/signin usage
+
+Migration step 3 (commit b256fbd) replaced the password-to-server
+session bootstrap on the production browser portal with a
+client-signed challenge flow. The legacy `POST /api/identity/signin`
+route is kept for one release as a fallback for accounts that still
+have a `dev_account_access` row, and as the auth path used by
+HTTP-direct fixture smokes.
+
+Every legacy signin attempt emits a single-line structured event:
+
+```
+[legacy-signin] {"timestamp":"...","outcome":"ok|invalid_credentials|invalid_payload","handle":"@user","user_agent":"...","remote_ip":"...","canonical_id":"sudo:ed25519:..."}
+```
+
+It deliberately omits the submitted password, the issued session
+token, the recovery answer, and any private key material.
+
+Greppable usage counter:
+
+```sh
+# Count legacy signin events in the last 24h
+journalctl -u sudo.service --since "24 hours ago" \
+  | grep -c '\[legacy-signin\]'
+
+# Filter by outcome
+journalctl -u sudo.service --since "24 hours ago" \
+  | grep '\[legacy-signin\]' | grep '"outcome":"ok"' | wc -l
+
+# Filter by user agent (e.g. is the only caller a smoke harness?)
+journalctl -u sudo.service --since "7 days ago" \
+  | grep '\[legacy-signin\]' \
+  | sed -E 's/.*"user_agent":"([^"]*)".*/\1/' | sort -u
+
+# Inspect a single event in pretty form
+journalctl -u sudo.service --since "1 hour ago" \
+  | grep '\[legacy-signin\]' | head -1 \
+  | sed -E 's/^\[legacy-signin\] //' | jq .
+```
+
+**Decommission criterion**: when a full release cycle passes with the
+counter at zero from non-fixture callers (i.e. all `user_agent`
+values look like the smoke harness or curl/* probes), the legacy
+signin handler and the `dev_account_access` table can be removed in
+the next migration step. Until then, the route stays mounted.
