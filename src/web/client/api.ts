@@ -296,6 +296,52 @@ export async function signinDevHandle(handle: string, password: string): Promise
   throw new Error(errorBody.message);
 }
 
+// ----- client-signed session bootstrap -----
+//
+// fetchIdentityChallenge: GET a fresh single-use nonce from the server.
+// exchangeChallengeForSession: POST { canonical_id, nonce, signature }
+// to mint a session without sending a password. The client signs
+// canonical JSON of { type, canonical_id, nonce } using the local
+// identity private key (already in IndexedDB).
+
+export type IdentityChallenge = {
+  nonce: string;
+  expires_at: string;
+  canonical_id: string;
+};
+
+export async function fetchIdentityChallenge(canonicalId: string): Promise<IdentityChallenge> {
+  const response = await fetchWithTimeout(
+    `/api/identity/challenge/${encodeURIComponent(canonicalId)}`,
+    { headers: { accept: "application/json" } }
+  );
+  if (!response.ok) {
+    const errorBody = await readErrorBody(response);
+    throw new Error(errorBody.message);
+  }
+  return response.json() as Promise<IdentityChallenge>;
+}
+
+export async function exchangeChallengeForSession(
+  canonicalId: string,
+  nonce: string,
+  signature: string
+): Promise<SigninDevResponse> {
+  const response = await fetchWithTimeout("/api/identity/session-from-challenge", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({ canonical_id: canonicalId, nonce, signature })
+  });
+  if (!response.ok) {
+    const errorBody = await readErrorBody(response);
+    throw new Error(errorBody.message);
+  }
+  return response.json() as Promise<SigninDevResponse>;
+}
+
 export async function restoreDevSession(token: string): Promise<IdentityDocument> {
   const response = await fetchWithTimeout("/api/identity/session", {
     headers: {

@@ -62,6 +62,25 @@ export async function signSyncEvent(
   return signCanonicalPayload(event, originDevicePrivateKey, keyType);
 }
 
+// Used by the client-signed session bootstrap. The browser signs
+// canonical JSON of { type: "sudo_session_challenge", canonical_id,
+// nonce } with the locally-held identity private key, then exchanges
+// the resulting signature for a server session — no password leaves
+// the device.
+export type SessionChallengePayload = {
+  type: "sudo_session_challenge";
+  canonical_id: string;
+  nonce: string;
+};
+
+export async function signSessionChallenge(
+  payload: SessionChallengePayload,
+  identityPrivateKey: CryptoKey,
+  keyType: SigningKeyType
+): Promise<string> {
+  return signCanonicalPayload(payload, identityPrivateKey, keyType);
+}
+
 async function signCanonicalPayload(payload: unknown, privateKey: CryptoKey, keyType: SigningKeyType): Promise<string> {
   const data = new TextEncoder().encode(canonicalJson(payload));
   const algorithm = keyType === "ecdsa-p256"

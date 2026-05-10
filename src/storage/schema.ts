@@ -310,4 +310,20 @@ export const schemaSql = `
 
   CREATE INDEX IF NOT EXISTS dev_sessions_canonical_id_idx
     ON dev_sessions(canonical_id, expires_at);
+
+  -- Single-use, short-TTL nonces issued by GET /api/identity/challenge
+  -- and consumed by POST /api/identity/session-from-challenge. The
+  -- nonce is the primary key (cryptographically random, ~256 bits) so
+  -- replay protection comes for free: consume = DELETE, second attempt
+  -- finds no row.
+  CREATE TABLE IF NOT EXISTS identity_challenges (
+    nonce TEXT PRIMARY KEY,
+    canonical_id TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (canonical_id) REFERENCES identities(canonical_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS identity_challenges_canonical_idx
+    ON identity_challenges(canonical_id, expires_at);
 `;

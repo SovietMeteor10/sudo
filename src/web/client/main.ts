@@ -25,6 +25,8 @@ import {
   revokeTrustedDevice as revokeServerTrustedDevice,
   registerTrustedDevice,
   startDevicePairing,
+  exchangeChallengeForSession,
+  fetchIdentityChallenge,
   recoverDevHandle,
   restoreDevSession,
   searchHandles,
@@ -40,7 +42,7 @@ import {
   unlockBrowserCryptoAccount,
   type BrowserCryptoAccount
 } from "./crypto/key-storage.js";
-import { signDeviceMembership, signDiscoveryReaction, signFeedPost } from "./crypto/signing.js";
+import { signDeviceMembership, signDiscoveryReaction, signFeedPost, signSessionChallenge } from "./crypto/signing.js";
 import {
   clearActiveCoordinator,
   setActiveCoordinator,
@@ -1508,6 +1510,27 @@ async function doSignin(handle: string, password: string): Promise<void> {
     currentCryptoAccount = account;
     const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(account.identity_document)), 5000);
     const identity = account.identity_document;
+    // Mint a server session via the client-signed challenge flow so
+    // reload-after-signin restores cleanly via the existing bearer-
+    // token path (readDevSessionToken → /api/identity/session). The
+    // password never leaves the browser. Best-effort: a transient
+    // failure here does NOT block UI signed-in state, since the
+    // local crypto account is the source of truth. The next reload
+    // will re-attempt via the same flow.
+    await withStep("mint-server-session", async () => {
+      try {
+        const challenge = await fetchIdentityChallenge(identity.canonical_id);
+        const signature = await signSessionChallenge(
+          { type: "sudo_session_challenge", canonical_id: identity.canonical_id, nonce: challenge.nonce },
+          account.identity_key,
+          account.identity_key_type
+        );
+        const session = await exchangeChallengeForSession(identity.canonical_id, challenge.nonce, signature);
+        await writeDevSessionToken(session.sessionToken);
+      } catch (error) {
+        console.warn("[auth] client-signed session bootstrap failed; UI continues but reload will require re-signin", error instanceof Error ? error.message : error);
+      }
+    });
     await withStep("save-identity-seen", () => saveIdentitySeen({
       canonical_id: identity.canonical_id,
       document: identity,

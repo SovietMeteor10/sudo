@@ -6,9 +6,11 @@ import {
   resolveIdentityFingerprintByCanonicalId
 } from "./identity.service.js";
 import {
+  handleIdentityChallenge,
   handleIdentityRecover,
   handleIdentitySearch,
   handleIdentitySession,
+  handleIdentitySessionFromChallenge,
   handleIdentitySignin,
   handleIdentitySignup
 } from "./identity-auth.handlers.js";
@@ -25,6 +27,10 @@ identityRouter.post("/signin", handleIdentitySignin);
 identityRouter.post("/recover", handleIdentityRecover);
 identityRouter.get("/session", handleIdentitySession);
 identityRouter.get("/search", handleIdentitySearch);
+// Client-signed session bootstrap. Both routes must sit before
+// the /:canonicalId wildcard below or the GET would be captured.
+identityRouter.get("/challenge/:canonicalId", handleIdentityChallenge);
+identityRouter.post("/session-from-challenge", handleIdentitySessionFromChallenge);
 
 identityRouter.post("/register", (request, response) => {
   try {
