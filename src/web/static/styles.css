@@ -1205,7 +1205,18 @@ body[data-auth-state="auth-restore"] .landing {
 .notifications__list {
   display: flex;
   flex-direction: column;
-  /* No external gap — each row carries its own border-top + padding. */
+  /* Cap the list at roughly half the viewport so a long notifications
+     backlog doesn't push the rest of the column off screen. The
+     header (#notifications-title) and the "clear all" button live
+     outside this scroll container so they stay pinned. Each row
+     keeps its own border-top + padding so there's no external gap
+     between rows. */
+  max-height: 50vh;
+  overflow-y: auto;
+  /* min-height:0 is required for a flex child to actually shrink and
+     activate overflow scrolling — without it the list would still
+     grow unbounded inside a column flex container. */
+  min-height: 0;
 }
 
 .notification-row {
