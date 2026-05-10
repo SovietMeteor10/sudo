@@ -1142,6 +1142,17 @@ async function runLookup(rawQuery: string): Promise<void> {
 
   try {
     const identity = await lookupHandle(query, controller.signal);
+    if (controller.signal.aborted) return;
+    if (currentIdentityDocument !== null && identity.canonical_id === currentIdentityDocument.canonical_id) {
+      // The directory exists to find other people; resolving your own
+      // profile here only invites accidental self-actions.
+      setLookupState({
+        status: "error",
+        query,
+        message: "that's you — search someone else"
+      });
+      return;
+    }
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
     const [relationship, subscription] = await loadLookupContext(identity.canonical_id);
     if (controller.signal.aborted) return;
@@ -3092,7 +3103,13 @@ async function runSearch(rawQuery: string): Promise<void> {
 
   try {
     const results = await searchHandles(query, controller.signal);
-    const enrichedResults = await enrichSearchResults(results);
+    // Drop self from live results — you cannot add yourself as a
+    // contact, follow yourself, or chat with yourself, so showing
+    // your own row only creates dead-end clicks.
+    const visibleResults = currentIdentityDocument === null
+      ? results
+      : results.filter((result) => result.canonical !== currentIdentityDocument!.canonical_id);
+    const enrichedResults = await enrichSearchResults(visibleResults);
     if (controller.signal.aborted) return;
     setSearchState({ status: "results", query, results: enrichedResults });
   } catch (error) {
