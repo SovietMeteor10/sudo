@@ -261,6 +261,39 @@ body[data-auth-state="auth-restore"] .landing {
   text-align: center;
 }
 
+.landing__stale {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-muted, #888);
+  text-align: center;
+  padding: 8px 12px;
+  border: 1px solid var(--line, #ddd);
+  border-radius: 4px;
+  background: var(--bg-soft, transparent);
+  max-width: min(86vw, 320px);
+}
+
+.landing__advanced {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.landing__reset {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted, #888);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+
+.landing__reset:hover,
+.landing__reset:focus-visible {
+  color: var(--text, #333);
+}
+
 /* ============================================================
  * Three-column shell
  * ============================================================ */

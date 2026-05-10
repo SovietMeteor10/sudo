@@ -28,6 +28,7 @@
     "smoke:feed-poller-regression": "node scripts/feed-poller-regression-smoke.cjs",
     "smoke:relationship-ux": "node scripts/relationship-ux-smoke.cjs",
     "smoke:notifications-expansion": "node scripts/notifications-expansion-smoke.cjs",
+    "smoke:stale-local-state": "node scripts/stale-local-state-smoke.cjs",
     "smoke:auth-buttons-clickable": "node scripts/auth-buttons-clickable-smoke.cjs",
     "smoke:mobile-layout": "node scripts/mobile-layout-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"

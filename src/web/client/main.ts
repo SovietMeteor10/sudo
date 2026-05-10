@@ -208,6 +208,11 @@ const devicePanelFeedback = getRequiredElement("device-panel-feedback");
 const localMaintenanceFeedback = getRequiredElement("local-maintenance-feedback");
 const authActionButtons = [...document.querySelectorAll("[data-auth-action]")];
 const landingBrand = getRequiredButton("landing-brand");
+// Optional landing-screen extras — these are defensive lookups so a
+// missing element doesn't strand the auth wiring (we got burned by
+// getRequiredElement on optional notification panels before).
+const landingStaleBanner = document.getElementById("landing-stale");
+const landingResetButton = document.getElementById("landing-reset") as HTMLButtonElement | null;
 
 const passkeyAccessProvider = new BrowserPasskeyAccessProvider();
 
@@ -539,6 +544,10 @@ for (const button of authActionButtons) {
       openSigninDialog();
     }
   });
+}
+
+if (landingResetButton !== null) {
+  landingResetButton.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
 }
 
 landingBrand.addEventListener("mouseenter", () => {
@@ -1460,6 +1469,15 @@ async function doSignin(handle: string, password: string): Promise<void> {
       "unlock-local-account",
       () => unlockBrowserCryptoAccountByHandle(handle, password)
     );
+    // Server existence check. Fires before any UI signed-in transition
+    // so a positive 404 / canonical mismatch leaves the user on the
+    // signin form with a clear stale-state error rather than half
+    // signed-in against a server that doesn't know them. Called
+    // outside withStep so StaleLocalAccountError survives untouched
+    // (withStep wraps everything in AuthStepError, which would defeat
+    // the instanceof check below). The verifier has its own 5s
+    // timeout so we don't lose the timeout guarantee.
+    await verifyServerKnowsAccount(account.identity_document.canonical_id, account.identity_document.handle);
     currentCryptoAccount = account;
     const fingerprint = await withStep("fingerprint", () => fingerprintPublicKey(getIdentityPublicKey(account.identity_document)), 5000);
     const identity = account.identity_document;
@@ -1473,6 +1491,7 @@ async function doSignin(handle: string, password: string): Promise<void> {
     setCurrentIdentity(identity, fingerprint);
     setSigninState({ status: "signed_in", identity });
     signinDialog.close();
+    clearStaleAccountBanner();
     setSignedIn(identity.handle);
     // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
     void syncCurrentDeviceToServer(buildTrustedDeviceRecord(identity, account, currentDeviceId!)).catch((error) => {
@@ -1482,6 +1501,14 @@ async function doSignin(handle: string, password: string): Promise<void> {
     startContactSyncPolling();
     return;
   } catch (error) {
+    if (error instanceof StaleLocalAccountError) {
+      // Definitive: do not fall back to dev signin. Drop any in-memory
+      // unlocked material and surface the stale-state UI.
+      lockBrowserCryptoAccount();
+      currentCryptoAccount = null;
+      showStaleAccountBanner(error.handle);
+      throw error;
+    }
     localUnlockError = error;
   }
 
@@ -1494,6 +1521,7 @@ async function doSignin(handle: string, password: string): Promise<void> {
     setCurrentIdentity(result.identity, fingerprint);
     setSigninState({ status: "signed_in", identity: result.identity });
     signinDialog.close();
+    clearStaleAccountBanner();
     setSignedIn(result.identity.handle);
     // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
   } catch (devError) {
@@ -1748,6 +1776,59 @@ async function waitForLocalDbWritable(
   }
 }
 
+// Thrown when the server registry no longer recognises a locally-stored
+// account (server wipe, identity deletion, or handle re-claimed by
+// someone else). Treated as definitive: do not fall back to other
+// auth paths, because they will all fail the same way and produce a
+// confusing error.
+class StaleLocalAccountError extends Error {
+  constructor(readonly handle: string, readonly reason: "not_found" | "canonical_mismatch") {
+    super(reason === "not_found"
+      ? `this local account no longer exists on this node. please sign up again.`
+      : `the handle @${handle} now belongs to a different account on this node.`);
+  }
+}
+
+// Verify the server still knows the locally-unlocked identity. Throws
+// StaleLocalAccountError on positive evidence (404 / canonical_id
+// mismatch) and resolves silently on success or transient failure
+// (network, 5xx) — we do not want to lock users out for a flaky
+// connection. The only verification that fires is the public
+// well-known handle lookup, which already exists.
+async function verifyServerKnowsAccount(canonicalId: string, handle: string): Promise<void> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 5000);
+  try {
+    const document = await lookupHandle(handle, controller.signal);
+    if (document.canonical_id !== canonicalId) {
+      throw new StaleLocalAccountError(handle, "canonical_mismatch");
+    }
+  } catch (error) {
+    if (error instanceof StaleLocalAccountError) throw error;
+    if (error instanceof Error && /handle not found/i.test(error.message)) {
+      throw new StaleLocalAccountError(handle, "not_found");
+    }
+    // Network / 5xx / abort: do not block the user.
+    console.warn("[auth] server existence check inconclusive", error instanceof Error ? error.message : error);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+function showStaleAccountBanner(handle: string): void {
+  if (landingStaleBanner === null) return;
+  // Stored handles can carry a leading "@"; strip it before re-prefixing.
+  const display = handle.replace(/^@+/, "");
+  landingStaleBanner.textContent = `the local account @${display} no longer exists on this node. please sign up again — or reset this browser to clear stored data.`;
+  landingStaleBanner.hidden = false;
+}
+
+function clearStaleAccountBanner(): void {
+  if (landingStaleBanner === null) return;
+  landingStaleBanner.textContent = "";
+  landingStaleBanner.hidden = true;
+}
+
 async function resetThisDeviceWithConfirm(): Promise<void> {
   const confirmed = window.confirm(
     "Reset this browser's local sudo data? This removes accounts and messages stored only in this browser. " +
@@ -1771,11 +1852,21 @@ async function restoreStoredSession(): Promise<void> {
   const token = await readDevSessionToken();
   if (token === null) {
     if (sequence === authSequence) setSignedOut();
+    // Even with no live session, surface a stale-state hint when there
+    // is locally-stored encrypted account material whose handle the
+    // server no longer knows. Best-effort: a single round-trip per
+    // page load, only if a stored account exists.
+    void detectStaleStoredAccountsAndBanner();
     return;
   }
 
   try {
     const identity = await restoreDevSession(token);
+    // Defense in depth: even if /dev/session returned a usable
+    // identity, confirm the canonical_id is still in the public
+    // registry. Catches the case where the dev_sessions row survived
+    // a partial reset but the identities row did not.
+    await verifyServerKnowsAccount(identity.canonical_id, identity.handle);
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
     await saveIdentitySeen({
       canonical_id: identity.canonical_id,
@@ -1784,11 +1875,41 @@ async function restoreStoredSession(): Promise<void> {
     });
     if (sequence !== authSequence) return;
     setCurrentIdentity(identity, fingerprint);
+    clearStaleAccountBanner();
     setSignedIn(identity.handle);
-  } catch {
+  } catch (error) {
     if (sequence !== authSequence) return;
     await clearDevSessionToken();
     setSignedOut();
+    if (error instanceof StaleLocalAccountError) {
+      showStaleAccountBanner(error.handle);
+    } else {
+      void detectStaleStoredAccountsAndBanner();
+    }
+  }
+}
+
+// Best-effort post-restore stale check: if the user has locally
+// stored crypto_accounts and any of them now 404 against the public
+// registry, show the stale banner so they understand why they were
+// signed out. Silent on transient failures.
+async function detectStaleStoredAccountsAndBanner(): Promise<void> {
+  let stored: Awaited<ReturnType<typeof listCryptoAccounts>>;
+  try {
+    stored = await listCryptoAccounts();
+  } catch {
+    return;
+  }
+  for (const entry of stored) {
+    try {
+      await verifyServerKnowsAccount(entry.canonical_id, entry.handle);
+    } catch (error) {
+      if (error instanceof StaleLocalAccountError) {
+        showStaleAccountBanner(error.handle);
+        return;
+      }
+      // transient — skip this entry and try the next
+    }
   }
 }
 
