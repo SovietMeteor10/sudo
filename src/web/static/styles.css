@@ -709,17 +709,18 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 /* One-shot fade triggered the first render after a notification
- * click. The keyframes start at the brighter highlight and ease back
- * to the resting background. Set to ~3s to match the JS timer that
- * removes the class. */
+ * click. Quick (~1s) so it draws the eye and gets out of the way;
+ * the resting background on .stream-post__reply-focused remains so
+ * the pinned reply is still visually identifiable post-fade. JS
+ * timer length matches the keyframe duration. */
 @keyframes sudo-reply-focus-flash {
-  0%   { background: rgba(106, 170, 170, 0.35); }
+  0%   { background: rgba(106, 170, 170, 0.40); }
   60%  { background: rgba(106, 170, 170, 0.20); }
   100% { background: rgba(106, 170, 170, 0.08); }
 }
 
 .stream-post__reply-focused.is-flash {
-  animation: sudo-reply-focus-flash 3s ease-out 0s 1 normal forwards;
+  animation: sudo-reply-focus-flash 1s ease-out 0s 1 normal forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -36,6 +36,7 @@
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",
     "smoke:reply-notification-focus": "node scripts/reply-notification-focus-smoke.cjs",
+    "smoke:feed-engagement-live-refresh": "node scripts/feed-engagement-live-refresh-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

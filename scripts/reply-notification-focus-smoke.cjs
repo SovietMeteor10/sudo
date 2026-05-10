@@ -284,15 +284,26 @@ async function snapshotThread(page) {
     if (pinViewport !== null && pinViewport.hasFlash) ok(`focus pin has is-flash class right after the click`);
     else if (pinViewport !== null) fail("focus-flash", "is-flash class missing on the pin right after click");
 
-    // After ~3.2s total, the JS timer should have removed is-flash
-    // (the timer fires at 3000ms; we already waited 800ms above).
-    await new Promise((r) => setTimeout(r, 2400));
+    // The JS timer removes is-flash at 1000ms after first render. We
+    // already waited 800ms above for the rAF + scroll to settle.
+    // Sleep through the remaining window plus headroom and check.
+    await new Promise((r) => setTimeout(r, 600));
     const flashCleared = await pageA.evaluate(() => {
       const pin = document.querySelector(".stream-post__reply-focused");
-      return pin === null ? null : pin.classList.contains("is-flash");
+      return pin === null
+        ? null
+        : { hasFlash: pin.classList.contains("is-flash"), present: true };
     });
-    if (flashCleared === false) ok("is-flash auto-clears after the 3s window");
-    else fail("focus-flash-clear", `is-flash still on pin after 3.2s: ${JSON.stringify(flashCleared)}`);
+    if (flashCleared !== null && flashCleared.present && !flashCleared.hasFlash) {
+      ok("is-flash auto-clears within the ~1s window");
+    } else {
+      fail("focus-flash-clear", `is-flash unexpected state after ~1.4s: ${JSON.stringify(flashCleared)}`);
+    }
+    // The pin itself must remain present after the flash so the user
+    // can still see which comment the notification pointed at.
+    const pinStillThere = await pageA.evaluate(() => document.querySelector(".stream-post__reply-focused") !== null);
+    if (pinStillThere) ok("focused pin remains visible after the flash fades");
+    else fail("focus-pin-persists", "pin disappeared after flash");
 
     // Trigger a thread re-render and assert focus persists. The live
     // poller does this every few seconds via refreshFeedPosts; we

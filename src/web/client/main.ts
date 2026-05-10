@@ -920,12 +920,29 @@ function stopFeedPolling(): void {
 }
 
 // Compact, order-sensitive fingerprint used to detect whether a polled
-// snapshot differs from what's already on screen. We hash by post_id +
-// updated_at so edits and engagement count changes also trigger a
-// repaint, while identical snapshots are no-ops.
-function computeFeedFingerprint(posts: FeedPost[]): string {
+// snapshot differs from what's already on screen. The hash includes:
+//   - post id + post.updated_at (catches edits / new top-level posts)
+//   - engagement counts (recommend / downrank / reply / repost) so a
+//     like/dislike/comment/repost on an already-visible card actually
+//     triggers the poll-driven repaint
+//   - viewer-relative engagement (the viewer's own vote and whether
+//     they have reposted) so the heart/repost state flips on poll
+//     even when the *count* hasn't moved
+// Without the engagement bits, an arriving reply that doesn't bump
+// post.updated_at gets silently dropped by the fingerprint diff and
+// the visible card stays stale until something else mutates the post.
+function computeFeedFingerprint(
+  posts: FeedPost[],
+  engagement: Record<string, FeedEngagement | undefined> = {}
+): string {
   if (posts.length === 0) return "empty";
-  return posts.map((post) => `${post.post_id}:${post.updated_at}`).join("|");
+  return posts.map((post) => {
+    const eng = engagement[post.post_id];
+    const stamp = eng === undefined
+      ? "0/0/0/0//0"
+      : `${eng.counts.recommend}/${eng.counts.downrank}/${eng.counts.reply}/${eng.counts.repost}/${eng.viewer_reaction ?? ""}/${eng.viewer_has_reposted === true ? 1 : 0}`;
+    return `${post.post_id}:${post.updated_at}:${stamp}`;
+  }).join("|");
 }
 
 async function pollPersonalFeed(): Promise<void> {
@@ -946,7 +963,7 @@ async function pollPersonalFeed(): Promise<void> {
     const response = await listPersonalFeed(feedPollOwner);
     if (currentIdentityDocument === null) return;
     if (feedPollOwner !== currentIdentityDocument.canonical_id) return;
-    const fingerprint = computeFeedFingerprint(response.posts);
+    const fingerprint = computeFeedFingerprint(response.posts, response.engagement);
     if (fingerprint === lastFeedFingerprint) return;
 
     // Only advance the fingerprint when we *actually* paint the new
@@ -2289,7 +2306,7 @@ async function refreshFeedPosts(): Promise<void> {
     renderStream(streamRoot, items);
     // Keep the poller's diff baseline in sync so the very next tick
     // doesn't repaint identical content.
-    lastFeedFingerprint = computeFeedFingerprint(response.posts);
+    lastFeedFingerprint = computeFeedFingerprint(response.posts, response.engagement);
   } catch {
     renderStream(streamRoot, []);
   }
@@ -2614,7 +2631,7 @@ function renderRepliesIntoPanel(
       });
       window.setTimeout(() => {
         pin.classList.remove("is-flash");
-      }, 3000);
+      }, 1000);
     }
   } else if (focusedReplyId !== undefined) {
     const missing = document.createElement("div");
