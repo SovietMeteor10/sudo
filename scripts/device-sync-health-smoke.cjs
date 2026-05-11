@@ -97,7 +97,10 @@ async function snapshotDeviceList(page) {
       const nameEl = row.querySelector(".device-row__name");
       const statusEl = row.querySelector(".device-row__status");
       const retryButton = row.querySelector('[data-device-action="retry-sync"]');
-      const revokeButton = row.querySelector('[data-device-action="revoke"]');
+      const revokeButton = row.querySelector('[data-device-action="revoke-prompt"]');
+      const linkAgainButton = row.querySelector('[data-device-action="link-again"]');
+      const confirmPane = row.querySelector(".device-row__confirm");
+      const confirmTitle = confirmPane?.querySelector(".device-row__confirm-title");
       const advancedBody = row.querySelector(".device-row__advanced-body");
       rows.push({
         name: nameEl ? (nameEl.textContent ?? "").trim() : "",
@@ -105,6 +108,10 @@ async function snapshotDeviceList(page) {
         statusLabel: statusEl ? (statusEl.textContent ?? "").trim() : "",
         hasRetry: retryButton !== null,
         revokeLabel: revokeButton ? (revokeButton.textContent ?? "").trim() : "",
+        revokeButtonHidden: revokeButton instanceof HTMLElement ? revokeButton.hidden : false,
+        linkAgainLabel: linkAgainButton ? (linkAgainButton.textContent ?? "").trim() : "",
+        confirmVisible: confirmPane instanceof HTMLElement ? !confirmPane.hidden : false,
+        confirmTitle: confirmTitle ? (confirmTitle.textContent ?? "").trim() : "",
         advancedText: advancedBody ? (advancedBody.textContent ?? "").trim() : ""
       });
     }
@@ -613,34 +620,184 @@ function findPeer(rows) {
     }
   }
 
-  // ===== Revoke a peer and confirm status flips =====
-  // Revoke whichever peer row currently shows as synced (B, since C
-  // just recovered). The revoke button is on every non-current row.
+  // ===== Two-step revoke: first click opens confirm pane, doesn't revoke =====
   const beforeRevoke = await snapshotDeviceList(pageA);
   const revocable = beforeRevoke.rows.find((r) => r.status === "synced" && r.revokeLabel === "revoke");
   if (!revocable) {
-    fail("9.revoke-target", `no synced peer to revoke: ${JSON.stringify(beforeRevoke.rows)}`);
+    fail("9d.revoke-target", `no synced peer to revoke: ${JSON.stringify(beforeRevoke.rows)}`);
+    throw new Error();
+  }
+  await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    target?.querySelector('[data-device-action="revoke-prompt"]')?.click();
+  }, revocable.name);
+  const afterPrompt = await snapshotDeviceList(pageA);
+  const promptRow = afterPrompt.rows.find((r) => r.name === revocable.name);
+  if (!promptRow) {
+    fail("9d.row-missing", "row disappeared after revoke-prompt click");
+  } else if (promptRow.status === "revoked") {
+    fail("9d.first-click-revoked", "first click revoked the device without confirmation");
+  } else if (!promptRow.confirmVisible) {
+    fail("9d.confirm-missing", `confirm pane did not open: ${JSON.stringify(promptRow)}`);
+  } else if (!promptRow.confirmTitle.includes(revocable.name)) {
+    fail("9d.confirm-name", `confirm title doesn't name the target: '${promptRow.confirmTitle}'`);
   } else {
-    await pageA.evaluate((name) => {
-      const root = document.getElementById("device-list");
-      if (root === null) return;
-      const target = [...root.querySelectorAll(".device-row")].find(
-        (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
-      );
-      target?.querySelector('[data-device-action="revoke"]')?.click();
-    }, revocable.name);
-    let revoked = null;
-    for (let i = 0; i < 30; i++) {
-      const s = await snapshotDeviceList(pageA);
-      revoked = s.rows.find((r) => r.name === revocable.name && r.status === "revoked");
-      if (revoked) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    if (!revoked) {
-      const after = await snapshotDeviceList(pageA);
-      fail("9.revoke", `peer never flipped to revoked status: ${JSON.stringify(after.rows)}`);
+    ok(`9d. first click opens confirm pane ('${promptRow.confirmTitle}') without revoking`);
+  }
+
+  // ===== Cancel preserves active state =====
+  await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    target?.querySelector('[data-device-action="revoke-cancel"]')?.click();
+  }, revocable.name);
+  const afterCancel = await snapshotDeviceList(pageA);
+  const cancelRow = afterCancel.rows.find((r) => r.name === revocable.name);
+  if (!cancelRow || cancelRow.status !== "synced" || cancelRow.confirmVisible) {
+    fail("9e.cancel", `cancel did not restore active state: ${JSON.stringify(cancelRow)}`);
+  } else {
+    ok(`9e. cancel restored the row to synced, confirm pane hidden`);
+  }
+
+  // ===== Confirm revoke commits =====
+  await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    target?.querySelector('[data-device-action="revoke-prompt"]')?.click();
+  }, revocable.name);
+  await new Promise((r) => setTimeout(r, 100));
+  await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    target?.querySelector('[data-device-action="revoke-confirm"]')?.click();
+  }, revocable.name);
+  let revokedRow = null;
+  for (let i = 0; i < 30; i++) {
+    const s = await snapshotDeviceList(pageA);
+    revokedRow = s.rows.find((r) => r.name === revocable.name && r.status === "revoked");
+    if (revokedRow) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!revokedRow) {
+    const after = await snapshotDeviceList(pageA);
+    fail("9f.revoke-confirm", `peer never flipped to revoked: ${JSON.stringify(after.rows)}`);
+    throw new Error();
+  }
+  ok(`9f. revoke-confirm flipped row to revoked ('${revokedRow.statusLabel}')`);
+  if (!revokedRow.linkAgainLabel) {
+    fail("9g.link-again-button", "revoked row missing 'link again' button");
+  } else {
+    ok(`9g. revoked row exposes '${revokedRow.linkAgainLabel}' action`);
+  }
+
+  // ===== Server enforces revoke: revoked device sees 403 on /sync GET =====
+  // We don't have B's signed session token here, but the server's
+  // resolveActiveMembership gate returns 403 to any cursor read from
+  // a revoked device_id. We probe with an unauthenticated GET that
+  // names B's device_id; that path doesn't require B's keys for the
+  // 403 response, only the membership lookup.
+  const revokedDeviceId = await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return null;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    return target instanceof HTMLElement ? (target.dataset.deviceId ?? null) : null;
+  }, revocable.name);
+  if (revokedDeviceId) {
+    const resp = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(revokedDeviceId)}&since=0&limit=1`, {
+      headers: { accept: "application/json" }
+    });
+    if (resp.status !== 403) {
+      fail("9h.server-403", `revoked /sync GET expected 403, got ${resp.status}`);
     } else {
-      ok(`9. revoked peer row shows status=revoked ('${revoked.statusLabel}')`);
+      ok(`9h. server returns 403 on /sync GET for revoked device`);
+    }
+  }
+
+  // ===== Link again → fresh active membership at higher sequence =====
+  // Click the "link again" button. That generates a new temporary
+  // passcode (using the same startPairingFlow code path). A fresh
+  // browser context completes collect-account; the server stores a
+  // new device row + active membership at sequence > the revoked
+  // membership's sequence.
+  await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return;
+    const target = [...root.querySelectorAll(".device-row")].find(
+      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+    );
+    target?.querySelector('[data-device-action="link-again"]')?.click();
+  }, revocable.name);
+  await waitFor(pageA, () => /^[0-9A-F]{6}-[0-9A-F]{6}$/.test(document.getElementById("pairing-card-code")?.textContent?.trim() ?? ""), 15000);
+  const relinkCode = await pageA.evaluate(() => document.getElementById("pairing-card-code")?.textContent?.trim() ?? "");
+  ok(`9i. 'link again' generated fresh pairing code ${relinkCode}`);
+  // Record membership state before the relink so we can confirm a
+  // NEW active device appears. Collect-account on a fresh browser
+  // mints a fresh device_id; the revoked membership stays revoked
+  // and a new active membership lands for the new device. The
+  // important invariant is: the relinked device is recognized as
+  // active and can sync, the revoked one stays cryptographically
+  // gated. We capture the set of active device_ids before, then
+  // assert it grew (and the new one is NOT the previously-revoked id).
+  const membershipsBefore = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`, {
+    headers: { accept: "application/json" }
+  }).then((r) => r.json()).then((j) => j?.memberships ?? []).catch(() => []);
+  const activeBefore = new Set(membershipsBefore.filter((m) => m.trust_state === "active").map((m) => m.device_id));
+  const ctxE = await browser.createBrowserContext();
+  const pageE = await ctxE.newPage();
+  await pageE.setViewport({ width: 980, height: 820 });
+  pageE.on("pageerror", (err) => console.log("PAGEE-ERR>", err.message));
+  await pageE.goto(BASE + "/", { waitUntil: "networkidle0" });
+  if (!await collectAccountOnPage(pageE, relinkCode)) {
+    fail("9j.relink-signed-in", "relinked browser did not reach signed-in");
+  } else {
+    ok(`9j. relinked browser completed collect-account`);
+  }
+  // Verify a new active membership appears, the previously-revoked
+  // device_id is still revoked, and the new device is not the
+  // revoked one.
+  let newActive = null;
+  for (let i = 0; i < 30; i++) {
+    const json = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`, {
+      headers: { accept: "application/json" }
+    }).then((r) => r.json()).catch(() => null);
+    const memberships = json?.memberships ?? [];
+    newActive = memberships.find((m) => m.trust_state === "active" && !activeBefore.has(m.device_id));
+    if (newActive) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!newActive) {
+    fail("9k.new-membership", `no new active membership after relink (active before: ${[...activeBefore].length})`);
+  } else if (revokedDeviceId !== null && newActive.device_id === revokedDeviceId) {
+    fail("9k.same-device", `relink silently restored revoked device_id ${revokedDeviceId}`);
+  } else {
+    ok(`9k. new active membership posted for fresh device_id=${newActive.device_id.slice(0, 8)} (revoked id ${revokedDeviceId?.slice(0, 8)} still revoked)`);
+  }
+  // And the revoked one must still be revoked on the server.
+  if (revokedDeviceId !== null) {
+    const json = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`, {
+      headers: { accept: "application/json" }
+    }).then((r) => r.json()).catch(() => null);
+    const memberships = json?.memberships ?? [];
+    const revokedAfter = memberships.find((m) => m.device_id === revokedDeviceId && m.trust_state === "revoked");
+    if (!revokedAfter) {
+      fail("9l.revoked-still-revoked", "previously-revoked device's revoked membership is gone");
+    } else {
+      ok(`9l. relink did not un-revoke the original device (still revoked at seq=${revokedAfter.sequence})`);
     }
   }
 

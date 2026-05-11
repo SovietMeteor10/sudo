@@ -2311,6 +2311,48 @@ body[data-auth-state="auth-restore"] .landing {
   list-style: disc;
 }
 
+.device-row__actions {
+  margin-top: 8px;
+}
+
+.device-row__help {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.device-row__confirm {
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  background: var(--bg-elev, var(--bg));
+}
+
+.device-row__confirm-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.device-row__confirm-body {
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.device-row__confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.device-row__confirm-go {
+  background: var(--danger, #b91c1c);
+  color: #fff;
+  border-color: transparent;
+}
+
+.device-row__link-again {
+  margin-right: 8px;
+}
+
 /* Floating account-feedback toast (status messages) */
 .account-feedback {
   position: fixed;

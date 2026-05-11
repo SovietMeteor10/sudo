@@ -193,6 +193,58 @@ across many users (i.e. an operator-level problem, not user-level):
   origin_device_id ORDER BY 2 DESC LIMIT 5"` — top emitters; a sudden
   burst from one device often signals a client in a retry loop.
 
+### Revoke vs. link again vs. reset
+
+These three are easy to confuse and have very different blast radii.
+Settings → Linked devices is the surface; this section is the cheat
+sheet for support / triage.
+
+**Revoke a peer.** The destructive trust action. Clicking the
+`revoke` button on an active row opens an inline confirm pane
+("revoke <name>?") that names the target device. A second click on
+`revoke device` commits. The client signs a new
+`SignedDeviceMembership` for the target with `trust_state = revoked`
+and `sequence = latest + 1`, POSTs it, and the server's
+`resolveActiveMembership` then returns null for that device. The
+revoked device's `POST /:owner/sync`, `GET /:owner/sync`, and
+`POST /:owner/sync/ack` all return 403 — the gate is cryptographic,
+not a soft UI flag. The revoked row stays visible in the panel as
+historical context.
+
+Use revoke when the user wants a specific paired browser to lose
+access (lost laptop, sold device, suspected compromise of one
+device only).
+
+**Link again from a revoked row.** The reversibility path. A
+revoked row offers a `link again` button that opens the same
+temporary-passcode flow used by the top-level `link another
+device`. The previously-revoked device row is NOT silently
+restored — the operator/user runs the normal collect-account flow
+on a fresh browser, which mints a fresh `device_id` and posts an
+active membership at a higher sequence than the revoked one. The
+old revoked membership stays revoked forever (it remains the
+authoritative cryptographic record that that specific device was
+cut off); the new device shows up as a separate active row.
+
+Use link-again when the user revoked the wrong device by accident
+or when they want to bring a previously-revoked browser back
+online — they have to re-pair it through normal channels, no
+secret restore path.
+
+**Reset this device.** Settings → Reset this device is **local
+data deletion only**. It drops the local IndexedDB and reloads.
+It does NOT revoke the device on the server. The signed
+membership on the relay is unchanged, and the user can re-import
+their encrypted backup (or collect-account from another device)
+to come back online with the same identity. This is destructive
+for this browser's local cache (drafts, message history that
+hasn't been synced from peers yet) but not for the account on
+the relay.
+
+Revocation is **not** account deletion. We don't currently
+support account deletion; the identity continues to exist on
+the registry until the user explicitly takes it down.
+
 ### Backups
 
 Take regular backups of `data/sudo.sqlite` (the registry, relay

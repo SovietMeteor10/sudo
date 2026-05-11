@@ -330,14 +330,74 @@ export function renderDevicePanel(
     details.append(advancedBody);
     row.append(details);
 
-    const revoke = document.createElement("button");
-    revoke.type = "button";
-    revoke.className = "lookup-card__button";
-    revoke.dataset["deviceAction"] = "revoke";
-    revoke.dataset["deviceId"] = device.device_id;
-    revoke.textContent = device.trust_state === "revoked" ? "revoked" : "revoke";
-    revoke.disabled = device.trust_state === "revoked";
-    row.append(revoke);
+    // Action area. Three terminal cases:
+    //   - current device          → no destructive action
+    //   - revoked peer            → "link again" (re-pair flow), no
+    //                               revoke button (already revoked)
+    //   - active peer             → "revoke" with a two-step confirm
+    //                               pane that includes the device
+    //                               name so the user can't fat-finger
+    //                               the wrong row
+    const actions = document.createElement("div");
+    actions.className = "device-row__actions";
+    const isCurrent = device.device_id === currentDeviceId;
+    if (device.trust_state === "revoked" && !isCurrent) {
+      // "link again" surfaces the same temporary-passcode flow that
+      // the top-level "link another device" button uses. The revoked
+      // membership stays in place; the relinked browser comes in as
+      // a fresh active membership at a higher sequence.
+      const linkAgain = document.createElement("button");
+      linkAgain.type = "button";
+      linkAgain.className = "lookup-card__button device-row__link-again";
+      linkAgain.dataset["deviceAction"] = "link-again";
+      linkAgain.dataset["deviceId"] = device.device_id;
+      linkAgain.textContent = "link again";
+      actions.append(linkAgain);
+      const help = document.createElement("div");
+      help.className = "device-row__help is-muted";
+      help.textContent = "link this device again to restore access";
+      actions.append(help);
+    } else if (!isCurrent) {
+      // Active peer: two-step revoke confirmation. The confirm panel
+      // is inline (no modal) and rendered on first click; we keep it
+      // in the DOM but hidden so the second click swap is instant.
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "lookup-card__button device-row__revoke";
+      revoke.dataset["deviceAction"] = "revoke-prompt";
+      revoke.dataset["deviceId"] = device.device_id;
+      revoke.textContent = "revoke";
+      actions.append(revoke);
+
+      const confirmPane = document.createElement("div");
+      confirmPane.className = "device-row__confirm";
+      confirmPane.hidden = true;
+      confirmPane.dataset["deviceConfirm"] = device.device_id;
+      const confirmTitle = document.createElement("div");
+      confirmTitle.className = "device-row__confirm-title";
+      confirmTitle.textContent = `revoke ${device.name}?`;
+      const confirmBody = document.createElement("div");
+      confirmBody.className = "device-row__confirm-body is-muted";
+      confirmBody.textContent = "this device will need to link again before it can sync this account.";
+      const confirmActions = document.createElement("div");
+      confirmActions.className = "device-row__confirm-actions";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.type = "button";
+      cancelBtn.className = "lookup-card__button device-row__confirm-cancel";
+      cancelBtn.dataset["deviceAction"] = "revoke-cancel";
+      cancelBtn.dataset["deviceId"] = device.device_id;
+      cancelBtn.textContent = "cancel";
+      const confirmBtn = document.createElement("button");
+      confirmBtn.type = "button";
+      confirmBtn.className = "lookup-card__button device-row__confirm-go";
+      confirmBtn.dataset["deviceAction"] = "revoke-confirm";
+      confirmBtn.dataset["deviceId"] = device.device_id;
+      confirmBtn.textContent = "revoke device";
+      confirmActions.append(cancelBtn, confirmBtn);
+      confirmPane.append(confirmTitle, confirmBody, confirmActions);
+      actions.append(confirmPane);
+    }
+    row.append(actions);
     fragment.append(row);
   }
 

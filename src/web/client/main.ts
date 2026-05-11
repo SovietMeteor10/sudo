@@ -527,15 +527,68 @@ deviceList.addEventListener("click", (event) => {
   if (!(target instanceof HTMLButtonElement)) return;
   const action = target.dataset["deviceAction"];
   const deviceId = target.dataset["deviceId"];
-  if (action === "revoke" && deviceId !== undefined) {
-    void revokeDevice(deviceId);
-    return;
-  }
-  if (action === "retry-sync" && deviceId !== undefined) {
+  if (deviceId === undefined) return;
+  if (action === "retry-sync") {
     void forceRetryBackfill(target, deviceId);
     return;
   }
+  if (action === "revoke-prompt") {
+    openRevokeConfirm(deviceId);
+    return;
+  }
+  if (action === "revoke-cancel") {
+    closeRevokeConfirm(deviceId);
+    return;
+  }
+  if (action === "revoke-confirm") {
+    void revokeDeviceConfirmed(target, deviceId);
+    return;
+  }
+  if (action === "link-again") {
+    void startRelinkFlow(deviceId);
+    return;
+  }
 });
+
+function openRevokeConfirm(deviceId: string): void {
+  const row = deviceList.querySelector<HTMLElement>(`.device-row[data-device-id="${cssEscape(deviceId)}"]`);
+  if (row === null) return;
+  const button = row.querySelector<HTMLButtonElement>(".device-row__revoke");
+  const pane = row.querySelector<HTMLElement>(`.device-row__confirm[data-device-confirm="${cssEscape(deviceId)}"]`);
+  if (button !== null) button.hidden = true;
+  if (pane !== null) pane.hidden = false;
+  // Skip the diff-skip cache for the next refresh so the live poller
+  // doesn't re-render and snap us back to the resting view.
+  lastDevicePanelSignature = null;
+}
+
+function closeRevokeConfirm(deviceId: string): void {
+  const row = deviceList.querySelector<HTMLElement>(`.device-row[data-device-id="${cssEscape(deviceId)}"]`);
+  if (row === null) return;
+  const button = row.querySelector<HTMLButtonElement>(".device-row__revoke");
+  const pane = row.querySelector<HTMLElement>(`.device-row__confirm[data-device-confirm="${cssEscape(deviceId)}"]`);
+  if (button !== null) button.hidden = false;
+  if (pane !== null) pane.hidden = true;
+}
+
+async function revokeDeviceConfirmed(button: HTMLButtonElement, deviceId: string): Promise<void> {
+  // Disable both confirm buttons to prevent double-fire; revokeDevice
+  // re-renders the panel on completion which replaces them anyway.
+  const row = button.closest<HTMLElement>(".device-row");
+  if (row !== null) {
+    for (const b of row.querySelectorAll<HTMLButtonElement>(".device-row__confirm button")) b.disabled = true;
+  }
+  await revokeDevice(deviceId);
+}
+
+async function startRelinkFlow(_deviceId: string): Promise<void> {
+  // We don't pass the prior device_id forward; collect-account on
+  // the relinked browser will mint a fresh device row at a higher
+  // membership sequence than the revoked one. The user simply
+  // re-pairs through the standard temporary-passcode flow.
+  await startPairingFlow();
+  devicePanelFeedback.textContent = "open sudo on that device and collect the account again.";
+}
 
 feedComposer.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -2150,6 +2203,14 @@ async function refreshDevicePanel(): Promise<void> {
     const id = owner?.dataset["deviceId"];
     if (typeof id === "string") openIds.add(id);
   }
+  // Also preserve any in-flight revoke-confirm pane so a 5s tick
+  // doesn't snap-close it mid-decision.
+  const openConfirms = new Set<string>();
+  for (const pane of deviceList.querySelectorAll<HTMLElement>(".device-row__confirm")) {
+    if (pane.hidden) continue;
+    const id = pane.dataset["deviceConfirm"];
+    if (typeof id === "string") openConfirms.add(id);
+  }
   renderDevicePanel(deviceList, currentDeviceId, rows, activePairingCode);
   if (openIds.size > 0) {
     for (const det of deviceList.querySelectorAll<HTMLDetailsElement>(".device-row .device-row__advanced")) {
@@ -2157,6 +2218,14 @@ async function refreshDevicePanel(): Promise<void> {
       const id = owner?.dataset["deviceId"];
       if (typeof id === "string" && openIds.has(id)) det.open = true;
     }
+  }
+  for (const id of openConfirms) {
+    const pane = deviceList.querySelector<HTMLElement>(`.device-row__confirm[data-device-confirm="${cssEscape(id)}"]`);
+    if (pane === null) continue;
+    pane.hidden = false;
+    const row = pane.closest<HTMLElement>(".device-row");
+    const button = row?.querySelector<HTMLButtonElement>(".device-row__revoke") ?? null;
+    if (button !== null) button.hidden = true;
   }
 }
 let lastDevicePanelSignature: string | null = null;

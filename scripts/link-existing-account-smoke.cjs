@@ -475,16 +475,28 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   await waitFor(pageA, () => document.getElementById("settings-dialog")?.open === true);
   await pageA.evaluate(() => document.getElementById("settings-devices")?.click());
   await waitFor(pageA, () => document.getElementById("devices-dialog")?.open === true);
-  // The renderer renders one revoke button per non-self device.
-  // Click the one for B's device id.
-  const clicked = await pageA.evaluate((targetDeviceId) => {
-    const buttons = [...document.querySelectorAll('[data-device-action="revoke"]')];
+  // Two-step revoke: click the prompt button to open the inline
+  // confirm pane, then click the confirm button to actually post the
+  // signed revocation membership. Mirrors the production UX.
+  const promptClicked = await pageA.evaluate((targetDeviceId) => {
+    const buttons = [...document.querySelectorAll('[data-device-action="revoke-prompt"]')];
     const target = buttons.find((b) => b.getAttribute("data-device-id") === targetDeviceId);
     if (target instanceof HTMLButtonElement) { target.click(); return true; }
     return false;
   }, deviceIdB);
-  if (!clicked) {
-    fail("13.click", "could not find a revoke button for B in the device list");
+  if (!promptClicked) {
+    fail("13.click-prompt", "could not find a revoke-prompt button for B in the device list");
+    throw new Error();
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  const confirmClicked = await pageA.evaluate((targetDeviceId) => {
+    const buttons = [...document.querySelectorAll('[data-device-action="revoke-confirm"]')];
+    const target = buttons.find((b) => b.getAttribute("data-device-id") === targetDeviceId);
+    if (target instanceof HTMLButtonElement) { target.click(); return true; }
+    return false;
+  }, deviceIdB);
+  if (!confirmClicked) {
+    fail("13.click-confirm", "could not find a revoke-confirm button for B in the device list");
     throw new Error();
   }
   // Wait for the revocation to land server-side: poll the device
