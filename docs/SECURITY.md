@@ -109,9 +109,10 @@ routing, dedupe, and replay protection):
 - `event_id` — UUID
 - `owner_canonical_id` — which account this belongs to
 - `origin_device_id` — which paired device produced it
-- `slice` — `"contact"`, `"subscription"`, or `"message"`
+- `slice` — `"contact"`, `"subscription"`, `"message"`, `"draft"`, or `"profile"`
 - `kind` — e.g. `"contact.upsert"`, `"subscription.delete"`,
-  `"message.upsert"`
+  `"message.upsert"`, `"draft.upsert"`, `"draft.delete"`,
+  `"profile.upsert"`
 - `sequence` — per-(owner, origin_device) monotonic counter
 - `created_at`, `server_received_at`
 - `signature` — the origin device's device-key signature, used to
@@ -134,6 +135,44 @@ A revoked device's `POST /:owner/sync`, `GET /:owner/sync`, and
 `POST /:owner/sync/ack` all return 403; revocation is enforced at the
 relay edge and is independent of any local state the revoked device
 still holds.
+
+### Sync is explicit, not automatic
+
+The trusted-device sync log carries **only** the slices listed above.
+There is intentionally no generic `setting.upsert` / `setting.delete`
+slice that replicates the local `settings` IndexedDB store wholesale.
+
+What this means in practice:
+
+- Cross-device state must be explicitly modeled as a slice (with its
+  own `slice` name, allowlisted `kind` values, a projector that
+  applies inbound events, and a broadcast wrapper that publishes
+  outbound writes).
+- Anything not modeled — `device.metadata.*`, dismissals, per-device
+  cursors (`sync.origin_sequence:*`, `sync.recipient_cursor:*`),
+  session markers, transient dialog flags, browser-local UI
+  preferences — stays on the device that wrote it and never crosses
+  the relay.
+- Adding a new synced setting is a deliberate, reviewable change:
+  define the payload, pick a slice + kind, add an `isKnownSliceKind`
+  entry in `src/devices/devices.routes.ts`, write the projector, and
+  add a smoke that proves both arrival on the peer AND that the new
+  key actually carries the value the user expects.
+
+The motivation is to avoid three classes of bug at once:
+
+- **Sync loops** — a "sync everything" projector that fires a write
+  on apply will echo back to the origin and bounce indefinitely.
+- **Accidental secret propagation** — keys like
+  `sudo.account.session_token` or any local bearer would be
+  inadvertently mirrored to every paired device.
+- **Cross-device UX confusion** — a "dismissed this reminder" or
+  "collapsed this panel" flag belongs to one viewport; replicating
+  it surprises the user on their other device.
+
+`smoke:link-with-backfill` includes a regression assertion that a
+local-only key written on A does not appear on B after a successful
+backfill, locking this design choice in.
 
 ## Safe logging
 

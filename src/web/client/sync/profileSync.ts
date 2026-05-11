@@ -21,6 +21,17 @@
 //   - profile.signinCount.* / profile.firstSeenAt.* (per-device
 //     session bookkeeping)
 //
+// And more broadly: there is no generic "settings.upsert" slice. The
+// settings IndexedDB store is a kitchen drawer — it holds the bio,
+// the backup timestamp, per-device sync cursors, dismissals,
+// session markers, transient dialog state. Replicating it wholesale
+// would (a) loop (a write applied on the peer would echo back),
+// (b) leak per-device cursors and secrets cross-device, and
+// (c) surprise the user with cross-device UI behavior (a reminder
+// dismissed on desktop shouldn't disappear on mobile). Each piece of
+// account-wide state we DO want synced gets its own slice, like this
+// one. See src/protocol/types.ts and docs/SECURITY.md for the policy.
+//
 // Contracts mirror contactSync.ts: broadcast wrappers fire on user
 // writes; the projector calls putSetting directly so applying a
 // peer's event can't trigger an echo.

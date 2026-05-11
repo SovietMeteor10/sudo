@@ -61,6 +61,40 @@ should not keep ciphertext beyond the protocol's TTL/ACK semantics.
 Don't add hooks that decrypt envelopes — the relay does not have the
 keys, and that is the point.
 
+### Sync is explicit, not automatic
+
+The trusted-device sync log (`device_sync_log`) replicates **only**
+the slices we have explicitly modeled: `contact`, `subscription`,
+`message`, `draft`, `profile`. There is no generic "replicate the
+whole settings store" slice.
+
+Local-only state stays local:
+
+- per-device cursors (`sync.origin_sequence:*`,
+  `sync.recipient_cursor:*`) and `backfill_state` entries
+- `device.metadata.*` (per-install identifiers, fingerprints)
+- reminder dismissals, collapsed-panel flags, transient dialog state
+- any browser-local UI preference that hasn't been deliberately
+  modeled as a slice
+
+Why this matters operationally:
+
+- It bounds the surface area of what the relay sees. If a setting
+  isn't on the allowlist, no event for it can be accepted at the
+  edge (`isKnownSliceKind` in `src/devices/devices.routes.ts`).
+- It prevents a "sync everything" projector from echoing writes back
+  to the origin device and producing infinite sync loops.
+- It prevents accidental cross-device propagation of secrets (e.g.
+  a local bearer token cached for dev purposes).
+- It keeps cross-device UX predictable: a reminder dismissed on
+  desktop is *not* dismissed on mobile, by design.
+
+Adding a new synced setting is a deliberate change: define the
+payload, pick a slice + kind, extend `isKnownSliceKind`, register a
+projector, and add a smoke covering both arrival on the peer and the
+intended user-visible behavior. See SECURITY.md ("Sync is explicit,
+not automatic") for the security framing.
+
 ### Enforce quotas
 
 The protocol caps relay use per sender, per recipient, per pair, and

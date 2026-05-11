@@ -330,6 +330,19 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // synced yet. There is no "message.delete" because the message store
 // has no local-tombstone concept; message removal will land
 // alongside that work in a future slice.
+//
+// Sync is explicit, not automatic. There is intentionally NO generic
+// "settings.upsert" slice that replicates the local settings store
+// wholesale. Anything that should appear on every linked device must
+// be modeled here as its own slice + kind, with a server-side entry
+// in `isKnownSliceKind` (src/devices/devices.routes.ts), a projector
+// registered via `registerSliceProjector`, and a broadcast wrapper
+// for outbound writes. Anything not modeled — device.metadata.*,
+// per-device cursors (sync.origin_sequence:*, sync.recipient_cursor:*),
+// reminder dismissals, transient UI flags, session markers — stays
+// on the device that wrote it. The rationale (sync loops, accidental
+// secret propagation, cross-device UX confusion) is documented in
+// docs/SECURITY.md → "Sync is explicit, not automatic".
 export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile";
 export type SyncEventKind =
   | "contact.upsert"

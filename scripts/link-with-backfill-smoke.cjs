@@ -108,8 +108,14 @@ async function lookupCanonical(handle) {
   const draftId = `bf-draft-${Date.now()}`;
   const draftConversationId = `${canonicalA}|sudo:ed25519:${"d".repeat(64)}`.split("|").sort().join("|");
   const bioMarker = `bio-marker-${Date.now()}`;
+  // Local-only setting: a UI dismissal flag that lives in the settings
+  // store but is NOT carried by any sync slice. After backfill we
+  // assert this key does NOT appear on B — guarding the
+  // "sync is explicit, not automatic" design choice from regressions.
+  const localOnlyKey = `ui.dismissed.tutorial.${canonicalA}`;
+  const localOnlyValue = `local-only-${Date.now()}`;
 
-  await pageA.evaluate(async (owner, ghostC, ghostH, subA, msgId, convId, body, dId, dConv, dBody, bio) => {
+  await pageA.evaluate(async (owner, ghostC, ghostH, subA, msgId, convId, body, dId, dConv, dBody, bio, localKey, localValue) => {
     const open = () => new Promise((res, rej) => {
       const r = indexedDB.open("sudo_local_state");
       r.onsuccess = () => res(r.result);
@@ -153,6 +159,12 @@ async function lookupCanonical(handle) {
       value: bio,
       updated_at: now
     });
+    // Local-only setting: NOT covered by any slice. Must stay on A.
+    tx.objectStore("settings").put({
+      key: localKey,
+      value: localValue,
+      updated_at: now
+    });
     tx.objectStore("messages").put({
       owner_canonical_id: owner,
       message_id: msgId,
@@ -168,8 +180,8 @@ async function lookupCanonical(handle) {
       status: "queued_local"
     });
     await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
-  }, canonicalA, ghostCanonical, ghostHandle, subAuthor, messageId, conversationId, messageBody, draftId, draftConversationId, draftBody, bioMarker);
-  ok(`2. A seeded contact/subscription/message/draft/bio (body='${messageBody}' draft='${draftBody}' bio='${bioMarker}')`);
+  }, canonicalA, ghostCanonical, ghostHandle, subAuthor, messageId, conversationId, messageBody, draftId, draftConversationId, draftBody, bioMarker, localOnlyKey, localOnlyValue);
+  ok(`2. A seeded contact/subscription/message/draft/bio + local-only setting (body='${messageBody}' draft='${draftBody}' bio='${bioMarker}' local='${localOnlyKey}')`);
 
   // ===== A — open pairing =====
   await pageA.evaluate(() => {
@@ -217,7 +229,7 @@ async function lookupCanonical(handle) {
   // The sync coordinator on B polls every ~5s. Give the backfill
   // up to 30s to land.
   async function bSnapshot() {
-    return pageB.evaluate((bioK) => {
+    return pageB.evaluate((bioK, localK) => {
       return new Promise((resolve) => {
         const r = indexedDB.open("sudo_local_state");
         r.onsuccess = async () => {
@@ -234,12 +246,13 @@ async function lookupCanonical(handle) {
             req.onsuccess = () => res(req.result);
             req.onerror = () => res(null);
           });
-          const [contacts, subs, messages, drafts, bioRow] = await Promise.all([
+          const [contacts, subs, messages, drafts, bioRow, localRow] = await Promise.all([
             read("contacts"),
             read("subscriptions"),
             read("messages"),
             read("drafts"),
-            readOne("settings", bioK)
+            readOne("settings", bioK),
+            readOne("settings", localK)
           ]);
           resolve({
             contacts: contacts.length,
@@ -249,12 +262,13 @@ async function lookupCanonical(handle) {
             contactHandles: contacts.map((c) => c.handle),
             bodies: messages.map((m) => m.body),
             draftBodies: drafts.map((d) => d.body),
-            bio: typeof bioRow?.value === "string" ? bioRow.value : null
+            bio: typeof bioRow?.value === "string" ? bioRow.value : null,
+            localOnly: localRow?.value ?? null
           });
         };
         r.onerror = () => resolve(null);
       });
-    }, `profile.bio.${canonicalA}`);
+    }, `profile.bio.${canonicalA}`, localOnlyKey);
   }
 
   let snap = null;
@@ -278,6 +292,15 @@ async function lookupCanonical(handle) {
     else ok(`6d. seeded draft body arrived on B`);
     if (snap.bio !== bioMarker) fail("6e.bio", `bio marker '${bioMarker}' not in B (saw '${snap.bio}')`);
     else ok(`6e. seeded bio arrived on B via profile slice`);
+    // Regression guard: "sync is explicit, not automatic". A
+    // settings-store key that is NOT carried by any slice must not
+    // appear on B. If it does, someone wired up a generic
+    // settings.upsert path and we want this smoke to scream.
+    if (snap.localOnly !== null) {
+      fail("6f.local-only-leaked", `local-only setting '${localOnlyKey}' leaked to B (value='${snap.localOnly}') — a generic settings sync was likely introduced`);
+    } else {
+      ok(`6f. local-only setting stayed on A (B's '${localOnlyKey}' is absent)`);
+    }
   }
 
   // ===== B — reload, state persists =====
