@@ -189,6 +189,116 @@ export function getMaxOriginSequenceAtCursor(
   return row.max_seq ?? 0;
 }
 
+// Aggregate stats for the operator stats endpoint. Returns only
+// numeric/structural metadata — no event_id, owner_canonical_id, or
+// encrypted_payload. Gating is the caller's responsibility (the
+// route is dev-only today).
+export type SyncStatsSummary = {
+  device_sync_log: {
+    total_rows: number;
+    distinct_owners: number;
+    oldest_row_age_ms: number | null;
+    newest_row_age_ms: number | null;
+  };
+  rows_by_owner_top: Array<{ owner_canonical_id: string; count: number; latest_server_seq: number }>;
+  memberships: { active: number; revoked: number };
+  sync_lag: {
+    max_behind: number;
+    avg_behind: number;
+    devices_observed: number;
+  };
+};
+
+export function summarizeSyncStats(topOwners: number = 10): SyncStatsSummary {
+  const logSummary = db
+    .prepare(`
+      SELECT
+        COUNT(*)                    AS total_rows,
+        COUNT(DISTINCT owner_canonical_id) AS distinct_owners,
+        MIN(server_received_at)     AS oldest_at,
+        MAX(server_received_at)     AS newest_at
+      FROM device_sync_log
+    `)
+    .get() as {
+      total_rows: number;
+      distinct_owners: number;
+      oldest_at: string | null;
+      newest_at: string | null;
+    };
+  const now = Date.now();
+  const oldestAge = logSummary.oldest_at !== null ? Math.max(0, now - Date.parse(logSummary.oldest_at)) : null;
+  const newestAge = logSummary.newest_at !== null ? Math.max(0, now - Date.parse(logSummary.newest_at)) : null;
+
+  const owners = db
+    .prepare(`
+      SELECT owner_canonical_id, COUNT(*) AS count, MAX(server_seq) AS latest_server_seq
+      FROM device_sync_log
+      GROUP BY owner_canonical_id
+      ORDER BY count DESC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.min(100, Math.trunc(topOwners)))) as Array<{
+      owner_canonical_id: string;
+      count: number;
+      latest_server_seq: number;
+    }>;
+
+  const memberships = db
+    .prepare(`
+      SELECT trust_state, COUNT(*) AS count
+      FROM device_memberships
+      GROUP BY trust_state
+    `)
+    .all() as Array<{ trust_state: string; count: number }>;
+  let active = 0;
+  let revoked = 0;
+  for (const row of memberships) {
+    if (row.trust_state === "active") active = row.count;
+    else if (row.trust_state === "revoked") revoked = row.count;
+  }
+
+  // Sync lag: for each (owner, recipient_device) cursor row, the gap
+  // between the latest server_seq for that owner and the cursor's
+  // last_server_seq. A cursor of 0 against an owner with 200 events
+  // means "200 events behind".
+  const lagRows = db
+    .prepare(`
+      SELECT
+        c.owner_canonical_id AS owner,
+        c.last_server_seq    AS cursor,
+        (SELECT MAX(server_seq) FROM device_sync_log WHERE owner_canonical_id = c.owner_canonical_id) AS latest
+      FROM device_sync_cursors c
+    `)
+    .all() as Array<{ owner: string; cursor: number; latest: number | null }>;
+  let maxBehind = 0;
+  let totalBehind = 0;
+  let observed = 0;
+  for (const row of lagRows) {
+    if (row.latest === null) continue;
+    const behind = Math.max(0, row.latest - row.cursor);
+    maxBehind = Math.max(maxBehind, behind);
+    totalBehind += behind;
+    observed++;
+  }
+  const avgBehind = observed > 0 ? totalBehind / observed : 0;
+
+  return {
+    device_sync_log: {
+      total_rows: logSummary.total_rows,
+      distinct_owners: logSummary.distinct_owners,
+      oldest_row_age_ms: oldestAge,
+      newest_row_age_ms: newestAge
+    },
+    rows_by_owner_top: owners,
+    memberships: { active, revoked },
+    sync_lag: {
+      max_behind: maxBehind,
+      avg_behind: avgBehind,
+      devices_observed: observed
+    }
+  };
+}
+
 // Operator/dev diagnostic: counts of stored sync events grouped by
 // (owner, slice, kind) plus the latest server_seq and the latest
 // server_received_at. This deliberately exposes ONLY plaintext

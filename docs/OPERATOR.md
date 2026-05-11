@@ -245,6 +245,74 @@ Revocation is **not** account deletion. We don't currently
 support account deletion; the identity continues to exist on
 the registry until the user explicitly takes it down.
 
+### Sync log growth
+
+`device_sync_log` is the relay's encrypted-envelope store. It is
+append-only today: there is **no automatic pruning** of old rows.
+Each row carries `{ event_id, owner_canonical_id, origin_device_id,
+origin_device_seq, slice, kind, created_at, server_received_at,
+signed_event_json }`. The `signed_event_json` column holds the
+opaque ciphertext envelope; the server never decrypts it.
+
+Why no pruning yet: deletion needs a `purged_before` watermark
+protocol so a slow-to-poll device that holds a tombstone older than
+the cutoff can't be tricked into resurrecting the body via a stale
+upsert replay. Until that protocol is designed, GC stays off.
+
+To check current growth on a node:
+
+```sh
+sqlite3 data/sudo.sqlite \
+  "SELECT COUNT(*), MIN(server_received_at), MAX(server_received_at)
+   FROM device_sync_log"
+```
+
+Or, more friendly, hit the dev-only diagnostic endpoint (gated on
+`isLocalDevelopment`):
+
+```sh
+curl -s http://127.0.0.1:3000/api/admin/sync/stats | jq
+```
+
+Returns:
+
+- `device_sync_log.total_rows` — total envelopes stored
+- `device_sync_log.distinct_owners` — unique owner canonical ids
+- `device_sync_log.oldest_row_age_ms` / `newest_row_age_ms` — wall-clock age of the oldest/newest envelope
+- `rows_by_owner_top` — top-10 owners by row volume (useful when triaging "which account is producing the load")
+- `memberships.active` / `memberships.revoked` — totals across the registry
+- `sync_lag.max_behind` / `avg_behind` / `devices_observed` — how far recipient-cursor positions trail the latest server_seq, computed from `device_sync_cursors` × `device_sync_log`
+
+The endpoint returns 404 in production. A production-gated variant
+(operator-bearer or admin-IP) is the next step; the path is
+deliberately scoped under `/api/admin/` so the URL contract doesn't
+change when that lands.
+
+### Sync ordering: in-tab serial, cross-tab cooperative
+
+Outbound sync events are serialized per `(owner, origin_device_id)`
+through an in-process promise-chain lock in
+`src/web/client/sync/coordinator.ts`. The lock spans **build →
+sign → POST**, not just the sequence-number reservation, so the
+events land on the wire in the same order they were reserved. A
+fast post for `seq N+1` cannot overtake a slow post for `seq N`.
+
+Cross-tab serialization is not protected by this lock. Two tabs of
+the same origin share IndexedDB but not the JavaScript module state.
+In practice this risk is bounded by the unlock model: a freshly
+opened second tab restores the session but leaves the crypto bundle
+locked until the user enters their password, so the second tab
+silently no-ops on outbound posts. If the user explicitly unlocks
+both tabs, cross-tab races become possible — the server's UNIQUE
+constraint on `(owner, origin_device_id, origin_device_seq)` will
+reject duplicates with `sequence_regression`, and the broadcast
+wrapper returns false. Local writes remain durable; the broadcast
+just has to be retried on the next user action.
+
+A future hardening pass should add `navigator.locks` (Web Locks API)
+or a `BroadcastChannel`-coordinated leader election to extend the
+lock across tabs.
+
 ### Backups
 
 Take regular backups of `data/sudo.sqlite` (the registry, relay

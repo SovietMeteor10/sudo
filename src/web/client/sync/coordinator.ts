@@ -79,30 +79,47 @@ function recipientCursorKey(ownerCanonicalId: string, deviceId: string): string 
   return `sync.recipient_cursor:${ownerCanonicalId}:${deviceId}`;
 }
 
-// Per-(owner, device) serialization for sequence reservation. The
-// read-then-write against the settings store is not atomic on its own:
-// if two callers race (e.g. notifyMessageUpsert fires a `void
-// buildAndPostSyncEvent` while a subsequent slice posts in parallel),
-// both can read the same N and write N+1, producing duplicate
-// sequences. The server rejects the duplicate as sequence_regression.
-// A promise-chain mutex keyed by (owner, device) is enough; reservations
-// are not high-throughput and we only need ordering within one origin.
+// Per-(owner, device) outbound serialization. The promise-chain
+// mutex keyed by (owner, device) protects TWO things:
+//
+//   1. The read-then-write against the settings-store sequence
+//      counter (not atomic on its own; two callers could read the
+//      same N and write N+1, producing duplicate sequences locally).
+//   2. The order of arrival on the wire. The server's UNIQUE
+//      constraint on (owner, origin, origin_device_seq) means
+//      duplicates are rejected with sequence_regression, but it
+//      also means a slower-network post for seq N + a faster post
+//      for seq N+1 could leave a gap until N retries. Holding the
+//      lock across the whole sign+post chain keeps posts dense
+//      and avoids transient "behind" gaps that would mislead
+//      peer-progress and the chat list.
+//
+// The throughput cost is bounded by post latency (~50ms locally,
+// ~200ms prod). For typical UI-driven workloads (a handful of
+// events per second) that's invisible; for the initial-state
+// backfill (dozens of events in a row) it adds a small but
+// acceptable wall-clock cost.
 const sequenceChains = new Map<string, Promise<unknown>>();
-async function reserveOriginSequence(ownerCanonicalId: string, deviceId: string): Promise<number> {
-  const key = originSeqKey(ownerCanonicalId, deviceId);
+async function withOriginLock<T>(
+  ownerCanonicalId: string,
+  deviceId: string,
+  fn: () => Promise<T>
+): Promise<T> {
   const chainKey = `${ownerCanonicalId}|${deviceId}`;
   const prev = sequenceChains.get(chainKey) ?? Promise.resolve();
-  const next = prev.then(async () => {
-    const current = (await getSetting(key)) as number | null;
-    const value = (typeof current === "number" ? current : 0) + 1;
-    await putSetting(key, value);
-    return value;
-  });
-  // Swallow rejection on the stored chain so a single failure doesn't
-  // poison every subsequent reservation; callers still see the real
-  // error via their own await.
+  const next = prev.then(fn);
+  // Swallow rejection on the stored chain so a single failure
+  // doesn't poison every subsequent caller; the original await
+  // still sees the real error.
   sequenceChains.set(chainKey, next.catch(() => undefined));
   return next;
+}
+async function reserveOriginSequenceUnlocked(ownerCanonicalId: string, deviceId: string): Promise<number> {
+  const key = originSeqKey(ownerCanonicalId, deviceId);
+  const current = (await getSetting(key)) as number | null;
+  const value = (typeof current === "number" ? current : 0) + 1;
+  await putSetting(key, value);
+  return value;
 }
 
 async function readCursor(ownerCanonicalId: string, deviceId: string): Promise<number> {
@@ -116,12 +133,13 @@ async function writeCursor(ownerCanonicalId: string, deviceId: string, value: nu
 
 // -- outbound: build + sign + post --
 
-async function buildSignedEvent(
+async function buildSignedEventLocked(
   coordinator: Coordinator,
   slice: SignableSyncEvent["slice"],
   kind: SignableSyncEvent["kind"],
   plaintext: object
 ): Promise<SignedSyncEvent> {
+  // Caller already holds the per-(owner, device) origin lock.
   const { account, deviceId } = coordinator;
   const encryptedPayload = await encryptSyncPayload(JSON.stringify(plaintext), account.account_sync_sym_key);
   const signable: SignableSyncEvent = {
@@ -132,7 +150,7 @@ async function buildSignedEvent(
     origin_device_id: deviceId,
     slice,
     kind,
-    sequence: await reserveOriginSequence(account.canonical_id, deviceId),
+    sequence: await reserveOriginSequenceUnlocked(account.canonical_id, deviceId),
     created_at: new Date().toISOString(),
     encrypted_payload: encryptedPayload
   };
@@ -152,14 +170,22 @@ export async function buildAndPostSyncEvent(
   plaintext: object
 ): Promise<boolean> {
   if (active === null) return false;
-  try {
-    const event = await buildSignedEvent(active, slice, kind, plaintext);
-    await postSyncEvent(active.account.canonical_id, event);
-    return true;
-  } catch (error) {
-    console.warn(`[sync] ${slice}/${kind} post failed`, error instanceof Error ? error.message : error);
-    return false;
-  }
+  const coordinator = active;
+  // Wrap the entire build + sign + post in the origin lock so
+  // reserved sequences land on the wire in order. Without this,
+  // a fast post for seq N+1 could overtake a slow post for seq N
+  // and the second post would be rejected as sequence_regression
+  // until a retry.
+  return withOriginLock(coordinator.account.canonical_id, coordinator.deviceId, async () => {
+    try {
+      const event = await buildSignedEventLocked(coordinator, slice, kind, plaintext);
+      await postSyncEvent(coordinator.account.canonical_id, event);
+      return true;
+    } catch (error) {
+      console.warn(`[sync] ${slice}/${kind} post failed`, error instanceof Error ? error.message : error);
+      return false;
+    }
+  });
 }
 
 // -- inbound: poll, verify, project, ACK --

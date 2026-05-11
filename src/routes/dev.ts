@@ -1,6 +1,6 @@
 import type { Request, RequestHandler, Response } from "express";
 import { Router } from "express";
-import { listSyncCounts } from "../devices/syncStore.js";
+import { listSyncCounts, summarizeSyncStats } from "../devices/syncStore.js";
 import {
   handleIdentitySearch,
   handleIdentitySession
@@ -43,4 +43,20 @@ devRouter.get("/dev/sync/counts", (_request: Request, response: Response) => {
     return;
   }
   response.json({ counts: listSyncCounts() });
+});
+
+// Operator/dev diagnostic: aggregate sync stats — device_sync_log
+// row counts, top owners by row volume, active+revoked membership
+// totals, and recipient-cursor sync-lag histogram (max + avg + count
+// of devices observed). Exposes plaintext owner canonical IDs in the
+// top-N list, so it's gated identically to /dev/sync/counts:
+// production returns 404. The route is also under the /api/admin
+// path prefix so an operator-gated production variant can replace
+// the gate later without changing client expectations.
+devRouter.get("/api/admin/sync/stats", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  response.json(summarizeSyncStats());
 });

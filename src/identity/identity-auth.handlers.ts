@@ -19,6 +19,7 @@ import { searchIdentityHandles } from "../discovery/discovery.service.js";
 import { getIdentityByCanonicalId } from "./identity.store.js";
 import { consumeChallenge, createChallenge } from "./identity-challenge.service.js";
 import { checkChallengeRate } from "./challenge-rate-limit.js";
+import { emitRateLimited } from "../devices/rate-limit-response.js";
 import {
   createDevSession,
   getIdentityForDevSession
@@ -38,12 +39,8 @@ function resolveRemoteIp(request: Request): string {
 function rejectIfRateLimited(request: Request, response: Response, canonicalId: string | null): boolean {
   const result = checkChallengeRate(resolveRemoteIp(request), canonicalId);
   if (result.ok) return false;
-  response.setHeader("Retry-After", String(result.retry_after_seconds));
-  response.status(429).json({
-    error: "rate_limited",
-    message: `too many challenge requests; retry in ${result.retry_after_seconds}s`,
-    scope: result.scope,
-    retry_after_seconds: result.retry_after_seconds
+  emitRateLimited(response, result, {
+    message: `too many challenge requests; retry in ${result.retry_after_seconds}s`
   });
   return true;
 }

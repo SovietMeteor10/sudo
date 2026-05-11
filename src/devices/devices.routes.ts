@@ -24,6 +24,8 @@ import {
 } from "./devices.store.js";
 import { checkPairHandoffRate } from "./pair-handoff-rate-limit.js";
 import { checkSyncRate } from "./sync-rate-limit.js";
+import { checkOwnerReadRate } from "./owner-read-rate-limit.js";
+import { emitRateLimited } from "./rate-limit-response.js";
 import {
   getRecipientCursor,
   getMaxOriginSequence,
@@ -73,6 +75,7 @@ function acceptSignedMembership(
 }
 
 devicesRouter.get("/:ownerCanonicalId", (request, response) => {
+  if (rejectIfOwnerReadRateLimited(request, response, request.params.ownerCanonicalId)) return;
   // `devices` remains the trusted_devices cache (for current UI).
   // `memberships` exposes the canonical signed docs alongside it; old
   // clients that don't read this field are unaffected.
@@ -141,6 +144,7 @@ devicesRouter.post("/register", (request, response) => {
 });
 
 devicesRouter.post("/pair/start", (request, response) => {
+  if (rejectIfPairRateLimited(request, response, null)) return;
   const body = request.body as { owner_canonical_id?: unknown; device_name?: unknown };
   if (typeof body.owner_canonical_id !== "string" || body.owner_canonical_id.trim().length === 0) {
     response.status(400).json({ ok: false, error: "invalid_owner" });
@@ -168,14 +172,20 @@ function rejectIfPairRateLimited(
 ): boolean {
   const result = checkPairHandoffRate(resolveRemoteIpForPair(request), pairingCode);
   if (result.ok) return false;
-  response.setHeader("Retry-After", String(result.retry_after_seconds));
-  response.status(429).json({
-    ok: false,
-    error: "rate_limited",
-    message: `too many pair-handoff requests; retry in ${result.retry_after_seconds}s`,
-    scope: result.scope,
-    retry_after_seconds: result.retry_after_seconds
+  emitRateLimited(response, result, {
+    message: `too many pair requests; retry in ${result.retry_after_seconds}s`
   });
+  return true;
+}
+
+function rejectIfOwnerReadRateLimited(
+  request: import("express").Request,
+  response: import("express").Response,
+  ownerCanonicalId: string
+): boolean {
+  const result = checkOwnerReadRate(resolveRemoteIpForPair(request), ownerCanonicalId);
+  if (result.ok) return false;
+  emitRateLimited(response, result);
   return true;
 }
 
@@ -264,6 +274,10 @@ devicesRouter.post("/pair/cancel", (request, response) => {
 });
 
 devicesRouter.post("/pair/complete", (request, response) => {
+  // Pair-complete consumes a passcode; gate it on the same limiter
+  // as pair/handoff so an attacker can't brute the 12-char code
+  // window. We rate-limit before reading the body to keep cost low.
+  if (rejectIfPairRateLimited(request, response, null)) return;
   const body = request.body as {
     pairing_code?: unknown;
     device_id?: unknown;
@@ -412,13 +426,7 @@ devicesRouter.post("/:ownerCanonicalId/sync", (request, response) => {
   // relay across IPs.
   const rateResult = checkSyncRate(resolveRemoteIpForPair(request), ownerCanonicalId);
   if (!rateResult.ok) {
-    response.setHeader("Retry-After", String(rateResult.retry_after_seconds));
-    response.status(429).json({
-      ok: false,
-      error: "rate_limited",
-      scope: rateResult.scope,
-      retry_after_seconds: rateResult.retry_after_seconds
-    });
+    emitRateLimited(response, rateResult);
     return;
   }
   const body = request.body as { signed_event?: unknown };
@@ -561,6 +569,7 @@ function peerProgressCacheKey(owner: string, caller: string, peer: string): stri
 }
 devicesRouter.get("/:ownerCanonicalId/sync/peer-progress", (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
+  if (rejectIfOwnerReadRateLimited(request, response, ownerCanonicalId)) return;
   const peerDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
   const callerDeviceId = typeof request.query.caller_device_id === "string" ? request.query.caller_device_id : null;
   if (peerDeviceId === null || peerDeviceId.length === 0 || callerDeviceId === null || callerDeviceId.length === 0) {
