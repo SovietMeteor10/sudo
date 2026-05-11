@@ -188,6 +188,17 @@ export async function listCryptoAccounts(): Promise<LocalCryptoAccountRecord[]> 
   return getAllRecords<LocalCryptoAccountRecord>("crypto_accounts");
 }
 
+// Idempotent delete by canonical id. Used by the collect-account flow
+// to roll back a half-written record when the user types the wrong
+// passphrase. Doesn't error on a missing key — the caller doesn't
+// care whether the record was actually there.
+export async function deleteCryptoAccount(canonicalId: string): Promise<void> {
+  const db = await openLocalDb();
+  const transaction = db.transaction("crypto_accounts", "readwrite");
+  transaction.objectStore("crypto_accounts").delete(canonicalId);
+  await txDone(transaction);
+}
+
 export async function saveTrustedDevice(device: LocalTrustedDevice): Promise<void> {
   // Trusted devices already carry owner_canonical_id from the protocol type.
   await putRecord("trusted_devices", device);

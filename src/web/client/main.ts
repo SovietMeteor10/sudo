@@ -26,6 +26,7 @@ import {
   normalizeLookupInput,
   getNodeDocument,
   listTrustedDevices as listServerTrustedDevices,
+  listServerDeviceMemberships,
   revokeTrustedDevice as revokeServerTrustedDevice,
   registerTrustedDevice,
   startDevicePairing,
@@ -46,10 +47,12 @@ import {
 } from "./crypto/key-storage.js";
 import { signDeviceMembership, signDiscoveryReaction, signFeedPost, signSessionChallenge } from "./crypto/signing.js";
 import {
+  buildAndPostSyncEvent,
   clearActiveCoordinator,
   setActiveCoordinator,
   startPolling as startContactSyncPolling
 } from "./sync/coordinator.js";
+import { notifyMessageUpsert } from "./sync/messageSync.js";
 import {
   applyContactDeleteWithBroadcast,
   applyContactUpsertWithBroadcast
@@ -87,13 +90,17 @@ import { encodeUrlToQrSvg } from "./local/qr-encoder.js";
 import { base64Url, base64UrlToBytes, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
+  deleteCryptoAccount,
   deleteLocalContact,
   getLocalStorageStatus,
   getSetting,
   initializeLocalState,
+  listContacts as listLocalContacts,
   listConversations,
   listCryptoAccounts,
+  listLocalMessages,
   listLocalMessagesByConversation,
+  listLocalSubscriptions,
   listTrustedDevices,
   getLocalDeviceMetadata,
   putSetting,
@@ -2294,14 +2301,17 @@ function startPairingCompletionPoll(): void {
       const newDevice = fresh.find((d) => !baseline.has(d.device_id));
       if (newDevice !== undefined) {
         // A new device just paired with us. Clear the active
-        // passcode (so the timer/cancel UI tear down) and show a
-        // calm success message inside the card for a couple
-        // seconds before hiding it entirely.
+        // passcode (so the timer/cancel UI tear down) and surface a
+        // "syncing account data…" line inside the card while we
+        // republish current local state as sync events. The new
+        // device's polling coordinator picks them up; without this
+        // backfill it would start empty and only receive future
+        // writes.
         activePairingCode = null;
         activePairingToken = null;
         activePairingExpiresAt = null;
         pairingCardSuccess.hidden = false;
-        pairingCardSuccess.textContent = `device linked: ${newDevice.name || newDevice.device_id.slice(0, 8)}`;
+        pairingCardSuccess.textContent = `syncing account data to ${newDevice.name || newDevice.device_id.slice(0, 8)}…`;
         pairingCardQr.replaceChildren();
         pairingCardCode.textContent = "";
         pairingCardUrl.textContent = "";
@@ -2316,9 +2326,26 @@ function startPairingCompletionPoll(): void {
         // their recovery posture flip from "unprotected" to
         // "✓ linked device".
         void refreshAccountMenuRecoveryIndicator();
-        window.setTimeout(() => {
-          if (activePairingCode === null) renderPairingCard();
-        }, 2500);
+
+        // Run the backfill out-of-band so the user can keep using
+        // the app. The card success message updates to a final
+        // state when it's done.
+        void backfillToNewDevice(owner)
+          .then((result) => {
+            pairingCardSuccess.textContent = result.partial
+              ? "device linked. some local data may sync later."
+              : `device linked${result.totalEvents > 0 ? ` (synced ${result.totalEvents} item${result.totalEvents === 1 ? "" : "s"})` : ""}`;
+            window.setTimeout(() => {
+              if (activePairingCode === null) renderPairingCard();
+            }, 3500);
+          })
+          .catch((error) => {
+            console.warn("[devices] backfill error", error instanceof Error ? error.message : error);
+            pairingCardSuccess.textContent = "device linked. some local data may sync later.";
+            window.setTimeout(() => {
+              if (activePairingCode === null) renderPairingCard();
+            }, 3500);
+          });
       }
     } catch { /* network blip — try again next tick */ }
   }, 2000);
@@ -2330,6 +2357,83 @@ function stopPairingCompletionPoll(): void {
     pairingCompletionPoll = null;
   }
   pairingBaselineDeviceIds = null;
+}
+
+// After a fresh device pairs, the new install starts with an empty
+// local store. Polling the trusted-device sync log only catches
+// FUTURE writes — pre-existing contacts/subscriptions/messages
+// would never appear unless the user happened to write again.
+// backfillToNewDevice replays the existing local state through the
+// already-active sync coordinator (encrypted under the same
+// account_sync_sym_key the new device just received in its bundle)
+// so the new device's coordinator picks them up on its next poll
+// cycle.
+//
+// Drafts and bio are not yet syncable: the slice projector map
+// only knows contact / subscription / message. They flow on the
+// user's next write or stay local until the slices land.
+async function backfillToNewDevice(ownerCanonicalId: string): Promise<{ totalEvents: number; partial: boolean }> {
+  let totalEvents = 0;
+  let partial = false;
+
+  // Contacts. listLocalContacts returns the projected local rows;
+  // we re-publish each as a contact.upsert so the new device
+  // receives them through the same projector that handles live
+  // writes.
+  try {
+    const contacts = await listLocalContacts(ownerCanonicalId);
+    for (const contact of contacts) {
+      await buildAndPostSyncEvent("contact", "contact.upsert", {
+        canonical_id: contact.canonical_id,
+        handle: contact.handle,
+        tier: contact.tier,
+        added_at: contact.added_at,
+        updated_at: contact.updated_at,
+        fingerprint: contact.fingerprint
+      });
+      totalEvents++;
+    }
+  } catch (error) {
+    console.warn("[backfill] contacts failed", error instanceof Error ? error.message : error);
+    partial = true;
+  }
+
+  // Subscriptions / follows.
+  try {
+    const subs = await listLocalSubscriptions(ownerCanonicalId);
+    for (const sub of subs) {
+      await buildAndPostSyncEvent("subscription", "subscription.upsert", {
+        author_canonical_id: sub.author_canonical_id,
+        include_public: sub.include_public,
+        include_connections: sub.include_connections,
+        include_close: sub.include_close,
+        updated_at: sub.updated_at
+      });
+      totalEvents++;
+    }
+  } catch (error) {
+    console.warn("[backfill] subscriptions failed", error instanceof Error ? error.message : error);
+    partial = true;
+  }
+
+  // Messages — iterate every owner-scoped row in one pass.
+  // listLocalMessages returns the full set via the by_owner index;
+  // partitioning by conversation isn't needed because
+  // notifyMessageUpsert serializes each individually. Sidesteps the
+  // partner-canonical-vs-conversation-id key shape mismatch that
+  // tripped earlier iterations of this code.
+  try {
+    const messages = await listLocalMessages(ownerCanonicalId);
+    for (const msg of messages) {
+      await notifyMessageUpsert(ownerCanonicalId, msg);
+      totalEvents++;
+    }
+  } catch (error) {
+    console.warn("[backfill] message enumeration failed", error instanceof Error ? error.message : error);
+    partial = true;
+  }
+
+  return { totalEvents, partial };
 }
 
 async function cancelActivePairing(options: { silent?: boolean } = {}): Promise<void> {
@@ -2421,26 +2525,11 @@ async function runLinkExistingAccount(): Promise<void> {
   try {
     account = await unlockBrowserCryptoAccountByHandle(handle, passphrase);
   } catch (error) {
-    // Wipe the half-written record so the user doesn't end up with
-    // a stuck account row that will never unlock with the
-    // passphrase they remember.
+    // Wipe the half-written record so the user doesn't end up with a
+    // stuck account row that will never unlock with the passphrase
+    // they remember.
     try {
-      const accounts = await listCryptoAccounts();
-      const stale = accounts.find((a) => a.canonical_id === identityDocument.canonical_id);
-      if (stale) {
-        // best-effort delete via direct IDB access — no helper exists
-        await new Promise<void>((resolve) => {
-          const req = indexedDB.open("sudo_local_state");
-          req.onsuccess = () => {
-            const db = req.result;
-            const tx = db.transaction("crypto_accounts", "readwrite");
-            tx.objectStore("crypto_accounts").delete(identityDocument.canonical_id);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => resolve();
-          };
-          req.onerror = () => resolve();
-        });
-      }
+      await deleteCryptoAccount(identityDocument.canonical_id);
     } catch { /* ignore cleanup failure */ }
     // Bad-passphrase from AES-GCM throws an OperationError with an
     // empty message, so falling back on error.message would surface
@@ -2509,7 +2598,14 @@ async function runLinkExistingAccount(): Promise<void> {
   linkDevicePassphrase.value = "";
   linkDeviceOwner.textContent = "";
   linkDeviceDialog.close();
-  flashFeedback("device linked. syncing…");
+  // The original device kicks off a backfill of contacts /
+  // subscriptions / messages right after pair/complete; the new
+  // coordinator polls every few seconds and projects them as they
+  // arrive. We fire a "syncing initial state…" toast immediately,
+  // then "synced" after a short window so the user sees progress
+  // even if no events are queued.
+  flashFeedback("device linked. syncing initial state…");
+  window.setTimeout(() => flashFeedback("synced"), 6000);
 }
 
 // PBKDF2(pairing_code) + AES-GCM wrapper around the (already
@@ -2563,15 +2659,73 @@ async function revokeDevice(deviceId: string): Promise<void> {
   if (currentIdentityDocument === null) {
     return;
   }
+  // Hard revoke. Without a signed_membership, the server only flips
+  // the trusted_devices cache the UI reads — sync gating still
+  // honors the device's current "active" SignedDeviceMembership and
+  // the revoked device can keep pulling /sync. To actually block
+  // sync, mint and POST a new signed membership with
+  // trust_state="revoked" and sequence strictly greater than the
+  // previous one. resolveActiveMembership on the server then
+  // returns null and /sync GETs return 403.
+  if (currentCryptoAccount === null) {
+    devicePanelFeedback.textContent = "unlock your account first";
+    return;
+  }
+
+  let signedMembership: import("./types.js").SignedDeviceMembership | undefined;
+  try {
+    signedMembership = await buildRevocationMembership(deviceId);
+  } catch (error) {
+    // Fall through to soft revoke if signing fails — the cache
+    // flip is still valuable for the UI even if hard revoke
+    // doesn't land. Surface the failure though, so an operator can
+    // see why sync gating didn't tighten.
+    console.warn("[devices] signed revocation membership build failed", error instanceof Error ? error.message : error);
+  }
 
   try {
-    const device = await revokeServerTrustedDevice(currentIdentityDocument.canonical_id, deviceId);
+    const device = await revokeServerTrustedDevice(currentIdentityDocument.canonical_id, deviceId, signedMembership);
     await revokeTrustedDevice(device.device_id);
-    devicePanelFeedback.textContent = "device revoked";
+    devicePanelFeedback.textContent = signedMembership !== undefined ? "device revoked" : "device revoked (sync gate may lag)";
     await refreshDevicePanel();
+    void refreshAccountMenuRecoveryIndicator();
   } catch (error) {
     devicePanelFeedback.textContent = error instanceof Error ? error.message : "device revoke failed";
   }
+}
+
+async function buildRevocationMembership(targetDeviceId: string): Promise<import("./types.js").SignedDeviceMembership> {
+  if (currentIdentityDocument === null || currentCryptoAccount === null) {
+    throw new Error("not signed in");
+  }
+  const owner = currentIdentityDocument.canonical_id;
+  // Find the target device's current row + latest membership
+  // sequence so we can mint a successor with sequence + 1.
+  const [memberships, devices] = await Promise.all([
+    listServerDeviceMemberships(owner).catch(() => []),
+    listServerTrustedDevices(owner).catch(() => [])
+  ]);
+  const targetDevice = devices.find((d) => d.device_id === targetDeviceId);
+  if (targetDevice === undefined) throw new Error("target device not in registry");
+  const targetMemberships = memberships.filter((m) => m.device_id === targetDeviceId);
+  const latestSequence = targetMemberships.reduce((max, m) => Math.max(max, m.sequence), 0);
+  const now = new Date().toISOString();
+  const signable: import("./types.js").SignableDeviceMembership = {
+    type: "sudo_device_membership",
+    protocol_version: "0.1.0",
+    owner_canonical_id: owner,
+    device_id: targetDevice.device_id,
+    device_public_key: targetDevice.device_public_key,
+    device_key_type: currentCryptoAccount.identity_key_type,
+    name: targetDevice.name,
+    capabilities: targetDevice.capabilities,
+    trust_state: "revoked",
+    created_at: targetDevice.created_at,
+    updated_at: now,
+    sequence: latestSequence + 1
+  };
+  const signature = await signDeviceMembership(signable, currentCryptoAccount.identity_key, currentCryptoAccount.identity_key_type);
+  return { ...signable, signature };
 }
 
 async function createEncryptedBootstrapPayload(

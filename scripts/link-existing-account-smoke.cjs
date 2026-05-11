@@ -451,26 +451,82 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   // tests in the suite.
   await pageA.evaluate(() => document.getElementById("pairing-card-cancel")?.click());
 
-  // ===== 13. Revoking B from the device list =====
-  // The revoke endpoint without a signed_membership flips the
-  // trusted_devices cache (what the linked-devices dialog reads)
-  // but does NOT yet revoke the SignedDeviceMembership that gates
-  // sync. Pinning the cache flip is what matters for the user-
-  // visible "this device is no longer linked" outcome; tightening
-  // the membership-side gate is tracked as a remaining gap.
-  const revokeResp = await fetch(`${BASE}/api/devices/${encodeURIComponent(deviceIdB)}/revoke`, {
+  // ===== 13. Hard revoke =====
+  // The in-app revoke flow (Settings → Linked devices → revoke)
+  // now mints + posts a signed SignedDeviceMembership with
+  // trust_state="revoked" and sequence + 1 in addition to flipping
+  // the cache. After it lands, /sync GET for the revoked device
+  // must return 403, not 200 — that's the cryptographic gate.
+  // Before revoke: B should be able to pull /sync (returns events).
+  const preSync = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(deviceIdB)}`);
+  if (preSync.status !== 200) {
+    fail("13.pre-sync", `B should be able to pull /sync before revoke; got ${preSync.status}`);
+  } else {
+    ok(`13a. before revoke, B's /sync GET returns 200`);
+  }
+  // Trigger the in-app revoke from A by clicking the revoke button
+  // in the device list. The renderer wires the click to the
+  // revokeDevice() function which builds + signs the revocation
+  // membership using A's identity key.
+  await pageA.evaluate(() => {
+    document.getElementById("account-button")?.click();
+    document.getElementById("account-menu-settings")?.click();
+  });
+  await waitFor(pageA, () => document.getElementById("settings-dialog")?.open === true);
+  await pageA.evaluate(() => document.getElementById("settings-devices")?.click());
+  await waitFor(pageA, () => document.getElementById("devices-dialog")?.open === true);
+  // The renderer renders one revoke button per non-self device.
+  // Click the one for B's device id.
+  const clicked = await pageA.evaluate((targetDeviceId) => {
+    const buttons = [...document.querySelectorAll('[data-device-action="revoke"]')];
+    const target = buttons.find((b) => b.getAttribute("data-device-id") === targetDeviceId);
+    if (target instanceof HTMLButtonElement) { target.click(); return true; }
+    return false;
+  }, deviceIdB);
+  if (!clicked) {
+    fail("13.click", "could not find a revoke button for B in the device list");
+    throw new Error();
+  }
+  // Wait for the revocation to land server-side: poll the device
+  // listing until trust_state flips to "revoked".
+  let revokedRow = null;
+  for (let i = 0; i < 30; i++) {
+    const post = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`).then((r) => r.json()).catch(() => ({}));
+    revokedRow = (post.devices ?? []).find((d) => d.device_id === deviceIdB);
+    if (revokedRow?.trust_state === "revoked") break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (!revokedRow || revokedRow.trust_state !== "revoked") {
+    fail("13b.cache-flip", `B trust_state never flipped to revoked: ${JSON.stringify(revokedRow)}`);
+  } else {
+    ok(`13b. B's trust_state flipped to 'revoked' in the listing`);
+  }
+  // The hard-revoke check: /sync GET for B should now return 403
+  // because resolveActiveMembership returns null for the revoked
+  // device. Allow a brief poll window so the membership upsert
+  // ordering settles.
+  let postSyncStatus = 0;
+  for (let i = 0; i < 30; i++) {
+    const r = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(deviceIdB)}`);
+    postSyncStatus = r.status;
+    if (postSyncStatus === 403) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  if (postSyncStatus !== 403) {
+    fail("13c.sync-gate", `expected 403 from /sync after hard revoke, got ${postSyncStatus}`);
+  } else {
+    ok(`13c. revoked device gets 403 from /sync GET (signed membership gate engaged)`);
+  }
+  // ACK should also be gated.
+  const ackResp = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/ack`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ owner_canonical_id: canonicalA })
+    body: JSON.stringify({ recipient_device_id: deviceIdB, last_server_seq: 0 })
   });
-  if (revokeResp.status !== 200) {
-    fail("13.revoke", `revoke failed: status=${revokeResp.status}`);
+  if (ackResp.status !== 403) {
+    fail("13d.ack-gate", `expected 403 from /sync/ack after revoke, got ${ackResp.status}`);
   } else {
-    const post = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`).then((r) => r.json()).catch(() => ({}));
-    const bRow = (post.devices ?? []).find((d) => d.device_id === deviceIdB);
-    if (!bRow) fail("13.listing", "B disappeared from device listing after revoke");
-    else if (bRow.trust_state !== "revoked") fail("13.trust-state", `B trust_state after revoke = '${bRow.trust_state}', expected 'revoked'`);
-    else ok(`13. revoke flips B's trust_state to 'revoked' in /api/devices listing`);
+    ok(`13d. revoked device gets 403 from /sync/ack POST`);
   }
 
   await pageA.close(); await ctxA.close();

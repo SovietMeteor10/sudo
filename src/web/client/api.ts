@@ -62,6 +62,22 @@ export async function listTrustedDevices(ownerCanonicalId: string): Promise<Trus
   return Array.isArray(body.devices) ? body.devices : [];
 }
 
+// /api/devices/:owner returns BOTH `devices` (the trusted_devices
+// cache) and `memberships` (the canonical signed docs). Hard-revoke
+// needs the latest membership sequence per device so it can mint a
+// new one with sequence + 1, which is the only way the server's
+// resolveActiveMembership stops gating sync for a revoked device.
+export async function listServerDeviceMemberships(
+  ownerCanonicalId: string
+): Promise<SignedDeviceMembership[]> {
+  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(ownerCanonicalId)}`, {
+    headers: { accept: "application/json" }
+  });
+  if (!response.ok) throw new Error(`device list failed: ${response.status}`);
+  const body = await response.json() as { memberships?: SignedDeviceMembership[] };
+  return Array.isArray(body.memberships) ? body.memberships : [];
+}
+
 export async function registerTrustedDevice(
   input: TrustedDevice,
   signedMembership?: SignedDeviceMembership
@@ -257,22 +273,28 @@ export async function fetchIdentityProfile(canonicalId: string): Promise<Identit
   return response.json() as Promise<IdentityDocument>;
 }
 
-export async function revokeTrustedDevice(ownerCanonicalId: string, deviceId: string): Promise<TrustedDevice> {
+export async function revokeTrustedDevice(
+  ownerCanonicalId: string,
+  deviceId: string,
+  signedMembership?: SignedDeviceMembership
+): Promise<TrustedDevice> {
+  const body: Record<string, unknown> = { owner_canonical_id: ownerCanonicalId };
+  if (signedMembership !== undefined) body["signed_membership"] = signedMembership;
   const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, {
     method: "POST",
     headers: {
       accept: "application/json",
       "content-type": "application/json"
     },
-    body: JSON.stringify({ owner_canonical_id: ownerCanonicalId })
+    body: JSON.stringify(body)
   });
 
-  const body = await response.json() as { ok?: boolean; device?: TrustedDevice; error?: string };
-  if (response.ok && body.device !== undefined) {
-    return body.device;
+  const responseBody = await response.json() as { ok?: boolean; device?: TrustedDevice; error?: string };
+  if (response.ok && responseBody.device !== undefined) {
+    return responseBody.device;
   }
 
-  throw new Error(body.error ?? `device revoke failed: ${response.status}`);
+  throw new Error(responseBody.error ?? `device revoke failed: ${response.status}`);
 }
 
 export async function registerIdentityDocument(identityDocument: IdentityDocument): Promise<IdentityDocument> {
