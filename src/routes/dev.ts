@@ -2,10 +2,8 @@ import type { Request, RequestHandler, Response } from "express";
 import { Router } from "express";
 import { listSyncCounts } from "../devices/syncStore.js";
 import {
-  handleIdentityRecover,
   handleIdentitySearch,
-  handleIdentitySession,
-  handleIdentitySignup
+  handleIdentitySession
 } from "../identity/identity-auth.handlers.js";
 import { readNodeRuntimeConfig } from "../node/node.config.js";
 
@@ -27,15 +25,11 @@ function deprecate(canonical: string): RequestHandler {
   };
 }
 
-// Transitional aliases. These keep cached browsers running while
-// clients migrate to the canonical /api/identity/* surface. Plan to
-// remove in the release after all known clients have migrated.
-devRouter.post("/dev/signup", deprecate("/api/identity/signup"), handleIdentitySignup);
-// /dev/signin alias removed in migration step 5 alongside the canonical
-// /api/identity/signin route. Cached clients that still POST here will
-// fall through to the catch-all 404 from app.ts, which is the right
-// signal: the route is gone.
-devRouter.post("/dev/recover", deprecate("/api/identity/recover"), handleIdentityRecover);
+// Transitional read-only aliases. /dev/signup, /dev/signin, and
+// /dev/recover were removed in migration steps 5 and 6 alongside their
+// canonical /api/identity/* counterparts. Cached clients that still POST
+// to those paths fall through to the app.ts catch-all 404, which is the
+// correct signal: the routes are gone.
 devRouter.get("/dev/session", deprecate("/api/identity/session"), handleIdentitySession);
 devRouter.get("/dev/search-handles", deprecate("/api/identity/search"), handleIdentitySearch);
 

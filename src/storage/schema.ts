@@ -288,17 +288,12 @@ export const schemaSql = `
   CREATE INDEX IF NOT EXISTS discovery_post_index_visibility_idx
     ON discovery_post_index(visibility);
 
-  CREATE TABLE IF NOT EXISTS dev_account_access (
-    canonical_id TEXT PRIMARY KEY,
-    password_salt TEXT,
-    password_hash TEXT,
-    recovery_secret_hash TEXT NOT NULL,
-    recovery_phrase_salt TEXT,
-    recovery_phrase_hash TEXT,
-    recovery_question TEXT,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (canonical_id) REFERENCES identities(canonical_id)
-  );
+  -- dev_account_access dropped in migration step 6. The table held
+  -- password salts, password hashes, recovery answer hashes, and
+  -- recovery secret hashes for the legacy /api/identity/{signup,signin,
+  -- recover} surface; all three routes are gone, every account is
+  -- client-key only, and runMigrations() drops the table on existing
+  -- databases.
 
   CREATE TABLE IF NOT EXISTS dev_sessions (
     token_hash TEXT PRIMARY KEY,

@@ -217,69 +217,18 @@ export async function registerIdentityDocument(identityDocument: IdentityDocumen
   throw new Error(body.message ?? `identity registration failed: ${response.status}`);
 }
 
-export type SignupDevResponse = {
-  identity: IdentityDocument;
-  backupCode: string;
-  sessionToken: string;
-};
-
 export type SigninDevResponse = {
   identity: IdentityDocument;
   sessionToken: string;
   expiresAt: string;
 };
 
-export async function signupDevHandle(
-  handle: string,
-  password: string,
-  recoveryQuestion: string,
-  recoveryAnswer: string
-): Promise<SignupDevResponse> {
-  const response = await fetchWithTimeout("/api/identity/signup", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ handle, password, recoveryQuestion, recoveryAnswer }),
-  });
-
-  if (response.ok) {
-    return response.json() as Promise<SignupDevResponse>;
-  }
-
-  const errorBody = await readErrorBody(response);
-  throw new Error(errorBody.message);
-}
-
-export async function recoverDevHandle(
-  handle: string,
-  backupCode: string,
-  recoveryQuestion: string,
-  recoveryAnswer: string
-): Promise<SigninDevResponse> {
-  const response = await fetchWithTimeout("/api/identity/recover", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ handle, backupCode, recoveryQuestion, recoveryAnswer }),
-  });
-
-  if (response.ok) {
-    return response.json() as Promise<SigninDevResponse>;
-  }
-
-  const errorBody = await readErrorBody(response);
-  throw new Error(errorBody.message);
-}
-
-// signinDevHandle removed in migration step 5. The production browser
-// portal uses the client-signed challenge flow below; the legacy
-// /api/identity/signin route is gone. SigninDevResponse stays
-// because it's the shared response shape recoverDevHandle and
-// exchangeChallengeForSession both still return.
+// signupDevHandle, recoverDevHandle, and signinDevHandle removed
+// across migration steps 5 and 6. Every account is client-key only
+// and authenticates via exchangeChallengeForSession below; account
+// recovery is via the encrypted-backup-file restore flow. The
+// SigninDevResponse type stays — it's the shape
+// exchangeChallengeForSession still returns.
 
 // ----- client-signed session bootstrap -----
 //

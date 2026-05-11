@@ -25,7 +25,7 @@ The intended long-term model is:
 
 Browser signup creates Ed25519 identity, feed, messaging, device, and account-sync keypairs entirely in the browser via WebCrypto, encrypts the private bundle under the user's passphrase (PBKDF2 250000 iters → AES-GCM), and stores it in the `crypto_accounts` IndexedDB store. The server only ever sees the signed identity document (public keys + handle), which it validates via `/api/identity/register` and stores in the `identities` table.
 
-Legacy server-mediated signup (`/api/identity/signup` and the `/dev/signup` alias) generates a keypair in memory, signs the identity document the registry stores, and immediately discards the private key. **No process now writes to `data/keys/`.** The legacy path is kept for HTTP-direct fixture smokes and any pre-7128bd3 callers; new code should call `/api/identity/register` instead.
+Legacy server-mediated signup was retired in migration step 6: `POST /api/identity/signup`, `POST /api/identity/recover`, and the `/dev/signup` and `/dev/recover` aliases all return 404. The server holds no password hash, no recovery-answer hash, and no backup-code hash — the entire `dev_account_access` table was dropped. **No process writes to `data/keys/`.** New accounts MUST go through `/api/identity/register` with a client-signed `IdentityDocument`.
 
 `data/keys/` on existing deployments may still hold dormant artifacts from before this commit (`*.dev-private-key.pem`, `*.dev-feed-private-key.pem`, `*.identity.json`, `*.fingerprint.json`). Operators should prune those once they confirm 7128bd3 (or later) is live — see [BACKUPS.md](./BACKUPS.md) and [OPERATOR.md](./OPERATOR.md).
 
@@ -36,9 +36,7 @@ Production feed posts must arrive client-signed. The server verifies the signatu
 Treat these as secrets:
 
 - Browser-held private identity / feed / messaging / device / account-sync keys (encrypted in IndexedDB; user must back up via `.sudo-backup.json` to survive losing the device)
-- Passwords
-- Backup codes
-- Recovery answers
+- The user's backup-file passphrase (only used in the browser to decrypt `.sudo-backup.json`; never sent to the server)
 - Session tokens
 
 Policy:
@@ -49,20 +47,13 @@ Policy:
 - Never print them in docs or screenshots.
 - Keep runtime material under `data/` and ignore it in Git.
 - The server must never persist plaintext private keys. The legacy `data/keys/` directory should be empty on any node running 7128bd3 or later.
+- The server must never accept a password, recovery answer, or backup code. Migration step 6 deleted the routes, the table, and the hashing helpers that ever did.
 
-## Password hashing
+## Account recovery
 
-Dev passwords are hashed with Node `crypto.scrypt` and a per-account salt.
+Account recovery on a fresh device is the encrypted-backup-file flow: the user exports `.sudo-backup.json` from a running portal, carries the file and the backup passphrase to the new device, and restores. The server holds nothing that could authenticate the user — no password hash, no recovery-answer hash, no backup-code hash.
 
-This is acceptable for local development, but the real product should move account access to device-held credentials and eventually passkeys/WebAuthn.
-
-## Backup codes and recovery
-
-Backup codes are generated once at signup and shown once.
-
-Recovery question and answer are stored only as salted hashes. They are scaffolding for future recovery flows, not a production recovery design.
-
-The recovery flow must always require more than a single factor alone.
+The legacy backup-code + recovery-answer + recovery-question flow (`POST /api/identity/recover`) was retired in migration step 6 along with the `dev_account_access` table that backed it.
 
 ## Key continuity
 
@@ -72,9 +63,9 @@ Future work should warn when a handle changes keys or when a canonical identity 
 
 ## Client-held keys
 
-Production browser signup generates and stores all private keys in the browser as of 7128bd3. The server never receives them. Sign-in unlocks the encrypted IndexedDB bundle locally with the user's passphrase; the server-side credential path is a fallback for legacy accounts only.
+Every account is client-key only. The browser generates and stores all private keys in IndexedDB, encrypted under the user's passphrase. The server never receives them. Sign-in unlocks the encrypted IndexedDB bundle locally, then mints a server session by signing a single-use challenge nonce with the local identity key — no password ever crosses the wire.
 
-Future hardening: move local-unlock from passphrase-derived AES-GCM to a passkey/WebAuthn-backed credential, and eliminate the bearer `sessionToken` entirely in favor of a client-signed challenge so the server's session table stops being a single trust point.
+Future hardening: move local-unlock from passphrase-derived AES-GCM to a passkey/WebAuthn-backed credential, and eliminate the bearer `sessionToken` entirely in favor of a per-request client-signed token so the server's session table stops being a single trust point.
 
 The server must never need the private key. There is no longer a code path that writes one to disk.
 

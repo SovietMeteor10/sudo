@@ -353,10 +353,7 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for public nginx deployment guidanc
 
 ## Security model and caveats
 
-- The server currently generates and stores dev private keys.
-- Private keys must move to the client device later.
-- Password auth is local-dev only.
-- Backup code and recovery Q&A are scaffolding.
+- Private keys are generated in the browser and never leave the device.
 - The registry is discovery, not trust.
 - Signatures and key continuity are what matter.
 - Messages should remain encrypted blobs only.
@@ -364,49 +361,31 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for public nginx deployment guidanc
 
 See [docs/SECURITY.md](docs/SECURITY.md) for the detailed threat model and [docs/ROADMAP.md](docs/ROADMAP.md) for the next implementation steps.
 
-## Local-dev auth
+## Auth
 
-Sign-in uses handle + password.
-
-Recovery uses the recovery code plus recovery answer only for local-dev recovery.
-
-Example request shapes:
+Every account is client-key only. The browser portal generates an Ed25519 identity keypair, posts the signed `IdentityDocument` to `/api/identity/register`, and authenticates via the client-signed challenge flow. The server stores no password, no recovery answer, and no backup-code hash.
 
 ```http
-POST /dev/signup
+POST /api/identity/register
 content-type: application/json
 
-{
-  "handle": "SovietMeteor",
-  "password": "example-password",
-  "recoveryQuestion": "first fictional world you obsessed over",
-  "recoveryAnswer": "example recovery answer"
-}
+{ "identity_document": { "type": "sudo_identity", "canonical_id": "...", "handle": "@SovietMeteor", "keys": { ... }, "signature": "..." } }
 ```
 
 ```http
-POST /dev/signin
-content-type: application/json
-
-{
-  "handle": "SovietMeteor",
-  "password": "example-password"
-}
+GET /api/identity/challenge/sudo:ed25519:abcd...
+→ { "nonce": "...", "expires_at": "...", "canonical_id": "..." }
 ```
 
 ```http
-POST /dev/recover
+POST /api/identity/session-from-challenge
 content-type: application/json
 
-{
-  "handle": "SovietMeteor",
-  "backupCode": "example-backup-code",
-  "recoveryQuestion": "first fictional world you obsessed over",
-  "recoveryAnswer": "example recovery answer"
-}
+{ "canonical_id": "...", "nonce": "...", "signature": "..." }
+→ { "identity": { ... }, "sessionToken": "...", "expiresAt": "..." }
 ```
 
-Sessions are restored with `/dev/session` using a bearer token stored in the browser for now. That is temporary dev scaffolding only.
+Sessions are restored with `GET /api/identity/session` using the bearer token stored in the browser. Account recovery on a new device is the encrypted backup-file flow: export `.sudo-backup.json` + passphrase, restore on the new device.
 
 ## Handle lookup and connections
 

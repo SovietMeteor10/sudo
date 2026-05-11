@@ -83,9 +83,9 @@ function deleteIdentityRows(canonicalId) {
       throw new Error(`identity row for ${canonicalId} not found in ${APP_DB_PATH}`);
     }
     // Order matters: drop dev_sessions first so /dev/session returns 401
-    // immediately, then drop the identity itself.
+    // immediately, then drop the identity itself. dev_account_access
+    // was retired in migration step 6 (the table is gone).
     db.prepare("DELETE FROM dev_sessions WHERE canonical_id = ?").run(canonicalId);
-    db.prepare("DELETE FROM dev_account_access WHERE canonical_id = ?").run(canonicalId);
     db.prepare("DELETE FROM identities WHERE canonical_id = ?").run(canonicalId);
     return true;
   } finally {

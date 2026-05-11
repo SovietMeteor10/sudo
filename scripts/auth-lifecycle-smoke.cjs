@@ -417,9 +417,9 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     await new Promise((r) => setTimeout(r, 200));
     await page.click('#signin-dialog [data-auth-action="restore"]');
     await new Promise((r) => setTimeout(r, 250));
-    await page.click("#restore-mode-file");
-    await new Promise((r) => setTimeout(r, 100));
 
+    // File mode is the only restore mode now (recovery mode was
+    // retired with /api/identity/recover in migration step 6).
     // Inject the file directly into the input.
     const fileInput = await page.$("#restore-file");
     const fs = require("node:fs");
@@ -463,9 +463,11 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     fail("backup-restore", "skipped — no backup blob produced");
   }
 
-  // ===== 9. Recovery answer / backup code path =====
-  // The current restore card has a "recovery" mode. Spec says: must clearly
-  // indicate availability or unavailability and never sit on a hang.
+  // ===== 9. Restore-from-file is the only restore path =====
+  // The legacy recovery-answer / backup-code restore mode was retired
+  // alongside POST /api/identity/recover in migration step 6. The
+  // restore dialog now exposes only the encrypted-backup-file form,
+  // and must not surface any recovery-mode controls or fields.
   await page.evaluate(() => {
     document.getElementById("account-button")?.click();
     document.getElementById("account-menu-logout")?.click();
@@ -475,14 +477,20 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   await new Promise((r) => setTimeout(r, 200));
   await page.click('#signin-dialog [data-auth-action="restore"]');
   await new Promise((r) => setTimeout(r, 250));
-  const recoveryHint = await page.evaluate(() => ({
-    hint: document.getElementById("restore-passkey-support")?.textContent ?? "",
-    recoveryFieldsVisible: !document.getElementById("restore-recovery-fields")?.hidden
+  const restoreShape = await page.evaluate(() => ({
+    hasRecoveryMode: document.getElementById("restore-mode-recovery") !== null,
+    hasRecoveryFields: document.getElementById("restore-recovery-fields") !== null,
+    hasFileInput: document.getElementById("restore-file") !== null,
+    hasPassphrase: document.getElementById("restore-passphrase") !== null,
+    submitText: document.getElementById("restore-submit")?.textContent?.trim() ?? ""
   }));
-  if (!recoveryHint.recoveryFieldsVisible) fail("recovery-mode", "recovery panel not visible by default");
-  else if (!/development|use backup file|not.*available|backup file restore/i.test(recoveryHint.hint)) {
-    fail("recovery-mode", `recovery copy must clearly point users to backup file: '${recoveryHint.hint}'`);
-  } else ok(`9. recovery mode copy is clear: '${recoveryHint.hint.slice(0, 80)}'`);
+  if (restoreShape.hasRecoveryMode || restoreShape.hasRecoveryFields) {
+    fail("restore-mode", `legacy recovery mode still rendered (recovery-mode=${restoreShape.hasRecoveryMode}, recovery-fields=${restoreShape.hasRecoveryFields})`);
+  } else if (!restoreShape.hasFileInput || !restoreShape.hasPassphrase) {
+    fail("restore-mode", `file restore inputs missing (file=${restoreShape.hasFileInput}, passphrase=${restoreShape.hasPassphrase})`);
+  } else if (!/file/i.test(restoreShape.submitText)) {
+    fail("restore-mode", `restore submit button copy should mention file restore: '${restoreShape.submitText}'`);
+  } else ok(`9. restore dialog exposes only file mode (submit='${restoreShape.submitText}')`);
 
   // ===== 10. Device linking foundation =====
   await page.click("#restore-cancel");

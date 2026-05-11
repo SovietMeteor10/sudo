@@ -160,93 +160,59 @@ log, and the browser-side fallback. The production browser portal
 now authenticates exclusively via the client-signed challenge flow
 (`GET /api/identity/challenge/:id` + `POST /api/identity/session-from-challenge`).
 
-The `dev_account_access` table is still in schema because
-`/api/identity/signup` and `/api/identity/recover` still write to /
-read from it. A future migration can drop the table once those
-two paths also move client-side or are themselves retired.
-
 Anything HTTP-direct that still POSTs `/api/identity/signin` will
 now get a 404 from the catch-all route — that's the death-watch
 signal. The smoke `client-signed-session` Phase 3 explicitly
-asserts this 404.
+asserts this 404. The `dev_account_access` table that survived
+this step was finally dropped in step 6 below.
 
-## Tracking legacy /api/identity/signup and /api/identity/recover usage
+## Legacy /api/identity/signup and /api/identity/recover removed
 
-These two routes are the last password/recovery surfaces still
-backed by `dev_account_access`. Before retiring them we want
-evidence that no real callers depend on them. Each request emits a
-single-line structured log so an operator can grep, group, and
-count without parsing multi-line records.
+Migration step 6 deleted the last two password/recovery routes:
 
-Every `POST /api/identity/signup` (and the `/dev/signup` alias)
-emits one `[legacy-signup]` line. Every `POST /api/identity/recover`
-(and the `/dev/recover` alias) emits one `[legacy-recover]` line.
-Shape:
+- `POST /api/identity/signup` and the `/dev/signup` alias
+- `POST /api/identity/recover` and the `/dev/recover` alias
+- `handleIdentitySignup`, `handleIdentityRecover`, and the
+  `[legacy-signup]` / `[legacy-recover]` instrumentation
+- `accountAccessProvider.createCredential` and
+  `recoverCredential` (the entire `DevRecoverySecretProvider`
+  class), along with the password/recovery hashing helpers
+- the `dev_account_access` table itself —
+  `runMigrations()` now `DROP TABLE IF EXISTS dev_account_access`,
+  so existing droplets shed the table on first restart after this
+  build lands and new installs never create it
+- the `recoverDevHandle` browser API export and the
+  `runRecover()` portal call site
+- the entire recovery-mode UI in the restore dialog (the
+  `restore-mode-recovery` / `restore-mode-file` toggle, the
+  recovery-fields panel, and the recovery-answer copy). Restore
+  is now exclusively backup-file-and-passphrase.
+- the `npm run create-user` CLI (`src/cli/createUser.ts` and
+  `src/identity/devSignup.ts`), which depended on
+  `accountAccessProvider.createCredential`. Admins now create
+  accounts the same way users do, via the browser portal.
 
-```
-[legacy-signup] {"timestamp":"2026-05-10T19:00:00.000Z","route":"/api/identity/signup","outcome":"ok","handle":"alice","user_agent":"Mozilla/5.0 ...","remote_ip":"203.0.113.4","canonical_id_prefix":"sudo:ed25519","canonical_id":"sudo:ed25519:abcd..."}
-[legacy-recover] {"timestamp":"2026-05-10T19:00:01.000Z","route":"/api/identity/recover","outcome":"invalid_credentials","handle":"alice","user_agent":"curl/8.7.1","remote_ip":"203.0.113.4"}
-```
+Telemetry over the 5dde8a3 release window showed only
+`sudo-probe-*` user agents on both routes — zero `Mozilla/*` and
+zero successful (`outcome:"ok"`) recoveries — so the password
+and backup-code-recovery surfaces were retired.
 
-`outcome` values:
+Anything HTTP-direct that still POSTs to any of those four paths
+will now get a 404 from the catch-all route — that's the
+death-watch signal. The smoke `client-signed-session` Phase 4
+explicitly asserts the 404 for each.
 
-- `[legacy-signup]`: `ok`, `signups_disabled`, `invite_required`,
-  `invalid_handle`, `weak_password`, `invalid_recovery_question`,
-  `invalid_recovery_answer`, `duplicate_handle` (and any other
-  `DevSignupError` code).
-- `[legacy-recover]`: `ok`, `invalid_payload`, `invalid_credentials`,
-  `recovery_unavailable` (and any other `AccountAccessError` code).
+What's left of the auth surface:
 
-What is **never** in the line: the password, the backup code, the
-recovery answer, the minted session token, or any private key
-material. The smoke `client-signed-session` Phase 4 asserts each
-of these never appears in the local server log after exercising
-both routes end to end.
+- `POST /api/identity/register` — signed `IdentityDocument` only.
+  No password or recovery material is ever sent or stored.
+- `GET  /api/identity/challenge/:canonicalId` —
+  single-use nonce.
+- `POST /api/identity/session-from-challenge` — nonce + client
+  signature → session token.
+- `GET  /api/identity/session` — bearer-token session restore.
 
-```sh
-# Count signup attempts in the last 24h.
-journalctl -u sudo.service --since "24 hours ago" \
-  | grep -F '[legacy-signup]' | wc -l
-
-# Count recover attempts in the last 24h.
-journalctl -u sudo.service --since "24 hours ago" \
-  | grep -F '[legacy-recover]' | wc -l
-
-# Group signup events by user agent (best signal for "are real
-# browsers still hitting this, or only smokes/curl/bots?").
-journalctl -u sudo.service --since "7 days ago" \
-  | grep -F '[legacy-signup]' \
-  | sed -n 's/.*"user_agent":"\([^"]*\)".*/\1/p' \
-  | sort | uniq -c | sort -rn
-
-# Group recover events by user agent.
-journalctl -u sudo.service --since "7 days ago" \
-  | grep -F '[legacy-recover]' \
-  | sed -n 's/.*"user_agent":"\([^"]*\)".*/\1/p' \
-  | sort | uniq -c | sort -rn
-
-# Group by outcome (signup).
-journalctl -u sudo.service --since "7 days ago" \
-  | grep -F '[legacy-signup]' \
-  | sed -n 's/.*"outcome":"\([^"]*\)".*/\1/p' \
-  | sort | uniq -c | sort -rn
-
-# Group by outcome (recover).
-journalctl -u sudo.service --since "7 days ago" \
-  | grep -F '[legacy-recover]' \
-  | sed -n 's/.*"outcome":"\([^"]*\)".*/\1/p' \
-  | sort | uniq -c | sort -rn
-
-# Pretty-print one event for inspection.
-journalctl -u sudo.service --since "1 hour ago" \
-  | grep -F '[legacy-signup]' | tail -1 \
-  | sed 's/^.*\[legacy-signup\] //' | jq .
-```
-
-Decommission criterion: zero non-fixture user agents (no `Mozilla/*`,
-no unfamiliar HTTP clients) on either route across a release cycle.
-At that point a follow-up commit can remove the handlers, the
-`/dev/signup` and `/dev/recover` aliases, the `accountAccessProvider.
-createCredential` and `recoverCredential` paths in
-`src/localState/accountAccess.ts`, and the `dev_account_access`
-table from `src/storage/schema.ts`.
+Account recovery on a new device is the encrypted backup-file
+flow: export `.sudo-backup.json` from the running portal, carry
+it to the new device, restore with the backup passphrase. The
+server holds nothing that could authenticate the user.

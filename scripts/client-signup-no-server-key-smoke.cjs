@@ -53,15 +53,6 @@ function listKeyFiles() {
   }
 }
 
-function devAccountAccessCount() {
-  try {
-    const out = execFileSync("sqlite3", [DB_PATH, "SELECT COUNT(*) FROM dev_account_access"], { encoding: "utf-8" });
-    return Number.parseInt(out.trim(), 10);
-  } catch {
-    return -1;
-  }
-}
-
 function identitiesCount() {
   try {
     const out = execFileSync("sqlite3", [DB_PATH, "SELECT COUNT(*) FROM identities"], { encoding: "utf-8" });
@@ -77,10 +68,9 @@ function identitiesCount() {
   // record the file list and check that no NEW file appears containing
   // the canonical id of the account we will create.
   const preKeyFiles = new Set(listKeyFiles());
-  const preAccessCount = devAccountAccessCount();
   const preIdentities = identitiesCount();
 
-  ok(`pre-state: ${preKeyFiles.size} pem(s) in data/keys, ${preAccessCount} dev_account_access row(s), ${preIdentities} identities`);
+  ok(`pre-state: ${preKeyFiles.size} pem(s) in data/keys, ${preIdentities} identities`);
 
   const browser = await puppeteer.launch({
     executablePath: CHROME_PATH,
@@ -140,40 +130,11 @@ function identitiesCount() {
     ok(`signup completed for @${handle} (${canonicalId.slice(0, 32)}...)`);
 
     if (signupNetworkPaths.has("POST /api/identity/signup") || signupNetworkPaths.has("POST /dev/signup")) {
-      fail("network", "browser hit a server-keygen endpoint during signup");
+      fail("network", "browser hit a removed legacy signup endpoint");
     } else if (signupNetworkPaths.has("POST /api/identity/register")) {
-      ok("browser used /api/identity/register (public-key-only) and never POST /api/identity/signup");
+      ok("browser used /api/identity/register (public-key-only); legacy /signup endpoint is gone");
     } else {
       fail("network", `unexpected: no signup-related POST observed. saw: ${[...signupNetworkPaths].join(", ")}`);
-    }
-
-    // The network assertion above pins the *client* side: the browser
-    // never POSTed to the legacy signup route. The server-side
-    // [legacy-signup] log is the symmetric proof — no log line should
-    // exist for this browser handle, because the server only emits
-    // the event from handleIdentitySignup which the browser never hit.
-    // Skipped if the local server log isn't readable (remote BASE).
-    const isLocalBaseForLog = /^http:\/\/127\.0\.0\.1(:|\/|$)|^http:\/\/localhost(:|\/|$)/.test(BASE);
-    const browserLogPath = process.env.SUDO_LOG_FILE || "/tmp/sudo-local.log";
-    let browserLogBody = "";
-    if (!isLocalBaseForLog && process.env.SUDO_LOG_FILE === undefined) {
-      ok(`browser-signup [legacy-signup] log assertion skipped (BASE=${BASE} is not local)`);
-    } else {
-      try {
-        browserLogBody = fs.readFileSync(browserLogPath, "utf-8");
-      } catch (e) {
-        ok(`browser-signup [legacy-signup] log assertion skipped (cannot read ${browserLogPath}: ${(e || {}).message})`);
-      }
-    }
-    if (browserLogBody.length > 0) {
-      const browserSignupLines = browserLogBody
-        .split("\n")
-        .filter((l) => l.includes("[legacy-signup]") && l.includes(`"handle":"${handle}"`));
-      if (browserSignupLines.length === 0) {
-        ok(`server log carries zero [legacy-signup] events for browser handle @${handle}`);
-      } else {
-        fail("browser-legacy-signup-event", `unexpected [legacy-signup] event(s) for browser handle @${handle}: ${browserSignupLines.slice(0, 2).join(" | ").slice(0, 400)}`);
-      }
     }
 
     // Sign out and reload. For client-key accounts today, reload
@@ -252,13 +213,6 @@ function identitiesCount() {
     fail("data-keys-canonical", `pem(s) contain new canonical id: ${matchingForCanonical.join(", ")}`);
   }
 
-  const postAccessCount = devAccountAccessCount();
-  if (postAccessCount === preAccessCount) {
-    ok(`dev_account_access unchanged at ${postAccessCount} (no server-stored credential created)`);
-  } else {
-    fail("dev-account-access", `dev_account_access went ${preAccessCount} -> ${postAccessCount}`);
-  }
-
   const postIdentities = identitiesCount();
   if (postIdentities === preIdentities + 1) {
     ok(`identities table grew by exactly 1 (public registry record created)`);
@@ -266,89 +220,11 @@ function identitiesCount() {
     fail("identities", `identities went ${preIdentities} -> ${postIdentities}, expected +1`);
   }
 
-  // ===== Phase 2a: legacy /api/identity/signup must be no-write. =====
-  // Mint an HTTP-direct fixture user and verify no PEM lands in
-  // data/keys/ even though the legacy server-side codepath ran.
-  // This phase keeps the legacy signup route covered; it stays
-  // when the legacy signin handler is removed in the next migration
-  // step. /dev/signup alias coverage stays here too.
-  const legacyHandle = `legsig${Date.now().toString().slice(-6)}`;
-  const preLegacyKeyFiles = new Set(listKeyFiles());
-  const preLegacyAccessCount = devAccountAccessCount();
-  let legacyResp;
-  try {
-    legacyResp = await fetch(`${BASE}/api/identity/signup`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        handle: legacyHandle,
-        password: PASSPHRASE,
-        recoveryQuestion: "first object",
-        recoveryAnswer: "kettle"
-      })
-    });
-  } catch (e) {
-    fail("legacy-fetch", `POST /api/identity/signup threw: ${(e || {}).message}`);
-    legacyResp = null;
-  }
-
-  if (legacyResp !== null && legacyResp.status === 201) {
-    const body = await legacyResp.json();
-    if (body?.identity?.canonical_id && body?.sessionToken && body?.backupCode) {
-      ok(`legacy /api/identity/signup returned the expected shape (identity + sessionToken + backupCode)`);
-    } else {
-      fail("legacy-shape", `legacy signup body missing fields: ${JSON.stringify(body).slice(0, 200)}`);
-    }
-    const legacyCanonical = body.identity.canonical_id;
-
-    const postLegacyKeyFiles = listKeyFiles();
-    const newLegacyKeyFiles = postLegacyKeyFiles.filter((f) => !preLegacyKeyFiles.has(f));
-    if (newLegacyKeyFiles.length === 0) {
-      ok("legacy /api/identity/signup writes zero new .pem files under data/keys/");
-    } else {
-      fail("legacy-keys", `new pem(s) appeared from legacy signup: ${newLegacyKeyFiles.join(", ")}`);
-    }
-    const matchingForLegacy = postLegacyKeyFiles.filter((f) => f.includes(legacyCanonical.replace(/^sudo:ed25519:/, "")));
-    if (matchingForLegacy.length === 0) {
-      ok(`no pem under data/keys/ contains the new legacy canonical id`);
-    } else {
-      fail("legacy-keys-canonical", `pem(s) contain new legacy canonical id: ${matchingForLegacy.join(", ")}`);
-    }
-
-    const postLegacyAccessCount = devAccountAccessCount();
-    if (postLegacyAccessCount === preLegacyAccessCount + 1) {
-      ok("legacy signup did add exactly one dev_account_access row (server credential for legacy signin path)");
-    } else {
-      fail("legacy-credential", `dev_account_access went ${preLegacyAccessCount} -> ${postLegacyAccessCount}, expected +1`);
-    }
-
-    // Phase 2b (legacy signin assertion) deleted in migration step 5
-    // — the route is gone. The death-watch canary in
-    // client-signed-session Phase 3 now asserts the route returns 404.
-
-    // /dev/signup alias still works.
-    const aliasResp = await fetch(`${BASE}/dev/signup`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        handle: `${legacyHandle}alias`,
-        password: PASSPHRASE,
-        recoveryQuestion: "first object",
-        recoveryAnswer: "kettle"
-      })
-    });
-    if (aliasResp.status === 201 && aliasResp.headers.get("deprecation") === "true") {
-      ok("/dev/signup alias still 201s and emits Deprecation: true");
-    } else {
-      fail("alias", `/dev/signup status=${aliasResp.status} deprecation=${aliasResp.headers.get("deprecation")}`);
-    }
-    const postAliasKeyFiles = listKeyFiles();
-    const newAliasKeys = postAliasKeyFiles.filter((f) => !postLegacyKeyFiles.includes(f));
-    if (newAliasKeys.length === 0) ok("/dev/signup alias also writes zero new .pem files");
-    else fail("alias-keys", `pem(s) appeared from /dev/signup: ${newAliasKeys.join(", ")}`);
-  } else {
-    fail("legacy-signup", `expected 201 from /api/identity/signup, got ${legacyResp?.status}`);
-  }
+  // Phase 2a (legacy /api/identity/signup no-write coverage) was
+  // deleted in migration step 6 alongside the route itself. The 404
+  // death-watch for both /api/identity/signup and /dev/signup is now
+  // in client-signed-session Phase 4. The dev_account_access table
+  // is also gone with the route, so we no longer count its rows.
 
   if (failures.length > 0) {
     console.error(`CLIENT-SIGNUP NO-SERVER-KEY SMOKE FAILED (${failures.length} failure(s))`);

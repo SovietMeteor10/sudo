@@ -27,7 +27,6 @@ import {
   startDevicePairing,
   exchangeChallengeForSession,
   fetchIdentityChallenge,
-  recoverDevHandle,
   restoreDevSession,
   searchHandles,
   upsertConnectionRelationship,
@@ -179,18 +178,9 @@ const signinSubmit = getRequiredButton("signin-submit");
 const restoreCancel = getRequiredButton("restore-cancel");
 const restoreDialog = getRequiredDialog("restore-dialog");
 const restoreForm = getRequiredForm("restore-form");
-const restoreModeRecovery = getRequiredButton("restore-mode-recovery");
-const restoreModeFile = getRequiredButton("restore-mode-file");
-const restoreRecoveryFields = getRequiredElement("restore-recovery-fields");
-const restoreFileFields = getRequiredElement("restore-file-fields");
-const restoreHandleInput = getRequiredInput("restore-handle");
-const restoreBackupCodeInput = getRequiredInput("restore-backup-code");
-const restoreQuestionInput = getRequiredSelect("restore-question");
-const restoreAnswerInput = getRequiredInput("restore-answer");
 const restoreFileInput = getRequiredInput("restore-file");
 const restorePassphraseInput = getRequiredInput("restore-passphrase");
 const restoreStateRoot = getRequiredElement("restore-state");
-const restorePasskeySupport = getRequiredElement("restore-passkey-support");
 const restoreSubmit = getRequiredButton("restore-submit");
 const recoveryPanel = getRequiredElement("recovery-panel");
 const recoveryPanelSecret = getRequiredElement("recovery-panel-secret");
@@ -240,7 +230,6 @@ let activeSearch: AbortController | null = null;
 let searchDebounce: number | null = null;
 let authSequence = 0;
 let authView: "menu" | "signin" | "signup" | "restore" | "signed-in" = "menu";
-let restoreMode: "recovery" | "file" = "recovery";
 let activeFeedTab: "personal" | "discover" = "personal";
 let chatTarget: { canonical: string; handle: string; fingerprint: string } | null = null;
 let brandFlickerTimeout: number | null = null;
@@ -504,9 +493,6 @@ restoreForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void submitRestoreAccount();
 });
-
-restoreModeRecovery.addEventListener("click", () => setRestoreMode("recovery"));
-restoreModeFile.addEventListener("click", () => setRestoreMode("file"));
 
 recoveryAck.addEventListener("change", () => {
   syncRecoveryDismissState();
@@ -1610,82 +1596,28 @@ function explainSigninFailure(localError: unknown): string {
   return "wrong passphrase, or this account is on another device.";
 }
 
-async function runRecover(
-  rawHandle: string,
-  backupCode: string,
-  recoveryQuestion: string,
-  recoveryAnswer: string
-): Promise<void> {
-  const handle = normalizeLookupInput(rawHandle);
-  if (handle.length === 0 || backupCode.trim().length === 0 || recoveryAnswer.trim().length === 0) {
-    setSigninState({ status: "error", message: "handle, recovery code, and recovery answer are required" });
-    return;
-  }
-
-  setSigninState({ status: "loading" });
-
-  try {
-    const result = await recoverDevHandle(
-      handle,
-      backupCode.trim(),
-      recoveryQuestion,
-      recoveryAnswer.trim()
-    );
-    // DEV ONLY: this browser session token is temporary scaffolding.
-    // Production should bind sessions to device-held credentials.
-    await writeDevSessionToken(result.sessionToken);
-    const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(result.identity));
-    setCurrentIdentity(result.identity, fingerprint);
-    setSigninState({ status: "signed_in", identity: result.identity });
-    setSignedIn(result.identity.handle);
-    // signed-in landing pane is the personal feed; tab state is reset by setFeedTab.
-  } catch (error) {
-    setSigninState({
-      status: "error",
-      message: error instanceof Error ? error.message : "recovery failed",
-    });
-  }
-}
+// runRecover (the legacy /api/identity/recover client) was removed
+// in migration step 6 alongside the server route. Account recovery
+// on a fresh device now happens entirely via importSelectedBackup
+// using the user's encrypted .sudo-backup.json + passphrase.
 
 async function submitRestoreAccount(): Promise<void> {
-  if (restoreMode === "file") {
-    const file = restoreFileInput.files?.[0];
-    const passphrase = restorePassphraseInput.value.trim();
-    if (file === undefined) {
-      setRestoreState({ status: "error", message: "choose a backup file" });
-      return;
-    }
-    if (passphrase.length === 0) {
-      setRestoreState({ status: "error", message: "enter the backup passphrase" });
-      return;
-    }
-
-    setRestoreState({ status: "loading" });
-    try {
-      await importSelectedBackup(file, passphrase);
-      restoreDialog.close();
-      flashFeedback("backup restored");
-    } catch (error) {
-      setRestoreState({
-        status: "error",
-        message: error instanceof Error ? error.message : "restore failed"
-      });
-    }
+  const file = restoreFileInput.files?.[0];
+  const passphrase = restorePassphraseInput.value.trim();
+  if (file === undefined) {
+    setRestoreState({ status: "error", message: "choose a backup file" });
     return;
   }
-
-  const handle = normalizeLookupInput(restoreHandleInput.value);
-  const backupCode = restoreBackupCodeInput.value.trim();
-  const recoveryAnswer = restoreAnswerInput.value.trim();
-  if (handle.length === 0 || backupCode.length === 0 || recoveryAnswer.length === 0) {
-    setRestoreState({ status: "error", message: "handle, recovery code, and recovery answer are required" });
+  if (passphrase.length === 0) {
+    setRestoreState({ status: "error", message: "enter the backup passphrase" });
     return;
   }
 
   setRestoreState({ status: "loading" });
   try {
-    await runRecover(handle, backupCode, restoreQuestionInput.value, recoveryAnswer);
+    await importSelectedBackup(file, passphrase);
     restoreDialog.close();
+    flashFeedback("backup restored");
   } catch (error) {
     setRestoreState({
       status: "error",
@@ -3467,13 +3399,8 @@ function openRestoreDialog(): void {
     setAuthView("restore");
   }
   clearRestoreForm();
-  setRestoreMode(restoreMode);
   restoreDialog.showModal();
-  if (restoreMode === "file") {
-    restoreFileInput.focus();
-  } else {
-    restoreHandleInput.focus();
-  }
+  restoreFileInput.focus();
 }
 
 function setSignedIn(handle: string): void {
@@ -3749,10 +3676,6 @@ function renderPasskeySupport(): void {
   const support = passkeyAccessProvider.isAvailable() ? "available" : "unavailable";
   signupPasskeySupport.textContent = `passkey support: ${support}`;
   signinPasskeySupport.textContent = `passkey support: ${support}`;
-  // Recovery-answer / recovery-code restore is dev scaffolding only. Backup
-  // file restore is the supported path today; say so plainly so users don't
-  // submit a recovery answer expecting it to work.
-  restorePasskeySupport.textContent = "restore by recovery answer is still a development path. use backup file restore.";
 }
 
 function clearSignupForm(): void {
@@ -3772,22 +3695,9 @@ function clearSigninForm(): void {
 
 function clearRestoreForm(): void {
   restoreForm.reset();
-  restoreHandleInput.value = "";
-  restoreBackupCodeInput.value = "";
-  restoreAnswerInput.value = "";
   restorePassphraseInput.value = "";
   restoreFileInput.value = "";
-  setRestoreMode("recovery");
   setRestoreState({ status: "idle" });
-}
-
-function setRestoreMode(mode: "recovery" | "file"): void {
-  restoreMode = mode;
-  restoreRecoveryFields.hidden = mode !== "recovery";
-  restoreFileFields.hidden = mode !== "file";
-  restoreModeRecovery.classList.toggle("is-active", mode === "recovery");
-  restoreModeFile.classList.toggle("is-active", mode === "file");
-  restoreSubmit.textContent = mode === "recovery" ? "restore account" : "restore from file";
 }
 
 function setRestoreState(nextState: { status: "idle" } | { status: "loading" } | { status: "error"; message: string } | { status: "ready"; message: string }): void {

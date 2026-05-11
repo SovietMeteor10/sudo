@@ -290,42 +290,17 @@
   <dialog class="signup-dialog signup-dialog--restore" id="restore-dialog" aria-labelledby="restore-title">
     <form class="signup-dialog__panel" id="restore-form" method="dialog" autocomplete="off" data-lpignore="true">
       <div class="signup-dialog__title" id="restore-title">restore account</div>
-      <p class="signup-dialog__warning">restore your sudo account on this device.</p>
-      <div class="signup-dialog__hint">choose recovery or backup file.</div>
-      <div class="restore-tabs" role="tablist" aria-label="restore mode">
-        <button class="lookup-card__button is-active" id="restore-mode-recovery" type="button" data-restore-mode="recovery">recovery</button>
-        <button class="lookup-card__button" id="restore-mode-file" type="button" data-restore-mode="file">backup file</button>
-      </div>
-      <div class="restore-panel" id="restore-recovery-fields">
-        <label class="signup-dialog__label" for="restore-handle">handle or username</label>
-        <input id="restore-handle" class="lookup__input" name="restore-handle" placeholder="@username" autocomplete="off" spellcheck="false" autocapitalize="none">
-        <label class="signup-dialog__label" for="restore-backup-code">recovery code</label>
-        <input id="restore-backup-code" class="lookup__input" name="restore-backup-code" autocomplete="new-password" spellcheck="false" autocapitalize="none">
-        <label class="signup-dialog__label" for="restore-question">recovery question</label>
-        <select class="signup-dialog__select" id="restore-question" name="restore-question">
-          <option>first computer you loved</option>
-          <option>favourite useless object</option>
-          <option>phrase only you would know</option>
-          <option>name of a place you made up</option>
-          <option>childhood nickname for something</option>
-          <option>first fictional world you obsessed over</option>
-          <option>weirdest object on your desk</option>
-          <option>private sentence you can remember</option>
-        </select>
-        <label class="signup-dialog__label" for="restore-answer">recovery answer</label>
-        <input id="restore-answer" class="lookup__input" name="restore-answer" autocomplete="new-password" spellcheck="false" autocapitalize="none">
-      </div>
-      <div class="restore-panel" id="restore-file-fields" hidden>
+      <p class="signup-dialog__warning">restore your sudo account on this device from your encrypted backup file.</p>
+      <div class="restore-panel" id="restore-file-fields">
         <label class="signup-dialog__label" for="restore-file">backup file</label>
         <input id="restore-file" class="lookup__input" type="file" accept=".json,.sudo-backup.json,application/json">
         <label class="signup-dialog__label" for="restore-passphrase">backup passphrase</label>
         <input id="restore-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false" autocapitalize="none">
       </div>
-      <div class="signup-dialog__hint" id="restore-passkey-support">restore by recovery answer is still a development path. use backup file restore.</div>
       <div class="signup-dialog__state" id="restore-state" aria-live="polite"></div>
       <div class="signup-dialog__actions">
         <button class="text-button" id="restore-cancel" type="button">back</button>
-        <button class="text-button text-button--primary" id="restore-submit" type="submit">restore account</button>
+        <button class="text-button text-button--primary" id="restore-submit" type="submit">restore from file</button>
       </div>
     </form>
   </dialog>

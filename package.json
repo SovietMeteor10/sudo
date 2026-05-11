@@ -9,7 +9,6 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev:reset": "npm run build && node dist/cli/devReset.js",
-    "create-user": "npm run build && node dist/cli/createUser.js",
     "check:env": "npm run build && node dist/cli/checkEnv.js",
     "smoke": "bash scripts/smoke.sh",
     "smoke:auth": "node scripts/test-register.cjs",

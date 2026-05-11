@@ -64,30 +64,12 @@ export function runMigrations(db: Database.Database): void {
   addColumnIfMissing(db, "discovery_post_index", "rising_score", "REAL");
   addColumnIfMissing(db, "discovery_post_index", "explanation", "TEXT");
 
-  const devAccountColumns = db
-    .prepare("PRAGMA table_info(dev_account_access)")
-    .all() as Array<{ name: string }>;
-  const devAccountColumnNames = new Set(devAccountColumns.map((column) => column.name));
-
-  if (!devAccountColumnNames.has("recovery_phrase_salt")) {
-    db.exec("ALTER TABLE dev_account_access ADD COLUMN recovery_phrase_salt TEXT");
-  }
-
-  if (!devAccountColumnNames.has("recovery_phrase_hash")) {
-    db.exec("ALTER TABLE dev_account_access ADD COLUMN recovery_phrase_hash TEXT");
-  }
-
-  if (!devAccountColumnNames.has("password_salt")) {
-    db.exec("ALTER TABLE dev_account_access ADD COLUMN password_salt TEXT");
-  }
-
-  if (!devAccountColumnNames.has("password_hash")) {
-    db.exec("ALTER TABLE dev_account_access ADD COLUMN password_hash TEXT");
-  }
-
-  if (!devAccountColumnNames.has("recovery_question")) {
-    db.exec("ALTER TABLE dev_account_access ADD COLUMN recovery_question TEXT");
-  }
+  // dev_account_access dropped in migration step 6. The legacy
+  // /api/identity/{signup,signin,recover} surface that wrote and read
+  // it is gone. DROP TABLE IF EXISTS so existing droplets shed the
+  // table on first restart after this build lands; new installs
+  // never create it (schema.ts no longer declares it).
+  db.exec("DROP TABLE IF EXISTS dev_account_access");
 }
 
 function addColumnIfMissing(
