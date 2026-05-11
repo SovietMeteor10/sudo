@@ -142,14 +142,22 @@
 
   <section class="chat-popup" id="chat-popup" hidden aria-labelledby="chat-popup-handle">
     <header class="chat-popup__header" id="chat-popup-header" role="button" tabindex="0" aria-label="collapse or expand chat">
+      <button class="chat-popup__icon chat-popup__back" id="chat-popup-back" type="button" aria-label="back to chat list" title="back to chat list">←</button>
       <div class="chat-popup__identity">
         <span class="chat-popup__handle" id="chat-popup-handle"></span>
+        <span class="chat-popup__ttl-badge" id="chat-popup-ttl-badge" hidden aria-live="polite"></span>
       </div>
       <div class="chat-popup__controls">
-        <button class="chat-popup__icon" id="chat-popup-close" type="button" aria-label="close">×</button>
+        <button class="chat-popup__icon" id="chat-popup-settings" type="button" aria-label="conversation settings" title="conversation settings">⚙</button>
+        <button class="chat-popup__icon" id="chat-popup-fullscreen" type="button" aria-label="enter fullscreen" title="enter fullscreen">⛶</button>
+        <button class="chat-popup__icon" id="chat-popup-close" type="button" aria-label="close" title="close">×</button>
       </div>
     </header>
     <div class="chat-popup__body" id="chat-popup-body" aria-live="polite"></div>
+    <div class="chat-popup__reply-context" id="chat-popup-reply-context" hidden aria-live="polite">
+      <div class="chat-popup__reply-snippet" id="chat-popup-reply-snippet"></div>
+      <button class="chat-popup__reply-cancel" id="chat-popup-reply-cancel" type="button" aria-label="cancel reply" title="cancel reply">×</button>
+    </div>
     <form class="chat-popup__form" id="chat-popup-form" autocomplete="off">
       <label class="sr-only" for="chat-popup-input">message</label>
       <textarea
@@ -163,6 +171,32 @@
       <button class="chat-popup__send" type="submit" aria-label="send">send</button>
     </form>
   </section>
+
+  <div class="message-menu" id="message-menu" hidden role="menu" aria-label="message actions">
+    <button class="message-menu__item" id="message-menu-reply" type="button" role="menuitem">reply</button>
+    <button class="message-menu__item" id="message-menu-forward" type="button" role="menuitem" disabled aria-disabled="true" title="forward coming soon">forward</button>
+    <button class="message-menu__item message-menu__item--danger" id="message-menu-delete" type="button" role="menuitem">delete</button>
+  </div>
+
+  <dialog class="signup-dialog signup-dialog--conversation" id="conversation-settings-dialog" aria-labelledby="conversation-settings-title">
+    <form class="signup-dialog__panel" id="conversation-settings-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="conversation-settings-title">conversation settings</div>
+      <p class="signup-dialog__hint">messages on your linked devices will be deleted after this time. the other person's devices apply the same setting when they sync.</p>
+      <label class="signup-dialog__label" for="conversation-settings-ttl">delete messages after</label>
+      <select id="conversation-settings-ttl" class="lookup__input">
+        <option value="0">off</option>
+        <option value="3600">1 hour</option>
+        <option value="86400">24 hours</option>
+        <option value="604800">7 days</option>
+        <option value="2592000">30 days</option>
+      </select>
+      <div class="signup-dialog__state" id="conversation-settings-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="conversation-settings-cancel" type="button">close</button>
+        <button class="text-button text-button--primary" id="conversation-settings-save" type="button">save</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="signup-dialog signup-dialog--confirm" id="remove-connection-dialog" aria-labelledby="remove-connection-title" aria-describedby="remove-connection-body">
     <form class="signup-dialog__panel" id="remove-connection-form" method="dialog" autocomplete="off">

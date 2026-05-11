@@ -63,6 +63,7 @@ import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/mes
 import "./sync/draftSync.js";
 import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
 import { notifyReadStateUpsert } from "./sync/readStateSync.js";
+import { notifyConversationSettingsUpsert } from "./sync/conversationSettingsSync.js";
 import { computeDeviceSyncHealth } from "./sync/sync-health.js";
 import {
   applyContactDeleteWithBroadcast,
@@ -125,7 +126,9 @@ import {
   revokeTrustedDevice,
   saveIdentitySeen,
   saveTrustedDevice,
-  upsertContact
+  upsertContact,
+  getConversationSettings,
+  listConversationSystemEventsLocal
 } from "./local/local-store.js";
 import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, resetCachedLocalDb, subscribeLocalStateBroadcasts, broadcastLocalStateChange, type LocalStateChangeKind } from "./local/local-db.js";
 import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
@@ -211,6 +214,22 @@ const chatPopupBody = getRequiredElement("chat-popup-body");
 const chatPopupForm = getRequiredForm("chat-popup-form");
 const chatPopupInput = getRequiredTextArea("chat-popup-input");
 const chatPopupClose = getRequiredButton("chat-popup-close");
+const chatPopupFullscreen = getRequiredButton("chat-popup-fullscreen");
+const chatPopupSettings = getRequiredButton("chat-popup-settings");
+const chatPopupBack = getRequiredButton("chat-popup-back");
+const chatPopupTtlBadge = getRequiredElement("chat-popup-ttl-badge");
+const chatPopupReplyContext = getRequiredElement("chat-popup-reply-context");
+const chatPopupReplySnippet = getRequiredElement("chat-popup-reply-snippet");
+const chatPopupReplyCancel = getRequiredButton("chat-popup-reply-cancel");
+const messageMenu = getRequiredElement("message-menu");
+const messageMenuReply = getRequiredButton("message-menu-reply");
+const messageMenuForward = getRequiredButton("message-menu-forward");
+const messageMenuDelete = getRequiredButton("message-menu-delete");
+const conversationSettingsDialog = getRequiredDialog("conversation-settings-dialog");
+const conversationSettingsTtl = getRequiredSelect("conversation-settings-ttl");
+const conversationSettingsState = getRequiredElement("conversation-settings-state");
+const conversationSettingsSave = getRequiredButton("conversation-settings-save");
+const conversationSettingsCancel = getRequiredButton("conversation-settings-cancel");
 const signupCancel = getRequiredButton("signup-cancel");
 const signupDialog = getRequiredDialog("signup-dialog");
 const signupForm = getRequiredForm("signup-form");
@@ -319,6 +338,15 @@ let authSequence = 0;
 let authView: "menu" | "signin" | "signup" | "restore" | "signed-in" = "menu";
 let activeFeedTab: "personal" | "discover" = "personal";
 let chatTarget: { canonical: string; handle: string; fingerprint: string } | null = null;
+// Per-chat ephemeral UI state. None of this is persisted: reopening
+// the dialog after a refresh resets it. Fullscreen mode toggles on
+// mobile by default and on explicit click on desktop; reply context
+// is what the composer is currently quoting; menu state tracks the
+// currently-open per-message kebab menu so Escape/outside-click can
+// close it cleanly.
+let chatFullscreen = false;
+let replyContext: { message_id: string; body: string; direction: "sent" | "received" } | null = null;
+let messageMenuTarget: { message_id: string; direction: "sent" | "received"; body: string; deleted: boolean } | null = null;
 let brandFlickerTimeout: number | null = null;
 let brandFlickerTick: number | null = null;
 let brandFlickerActive = false;
@@ -872,18 +900,91 @@ chatPopupClose.addEventListener("click", () => {
   closeChatPopup();
 });
 
-// Click anywhere in the popup header (except the close button) to collapse
-// or expand the body — replaces the dedicated minimize icon.
+// Click anywhere in the popup header (except the controls) to collapse
+// or expand the body — replaces the dedicated minimize icon. Skipping
+// the controls makes the icons feel like first-class clickables.
+const HEADER_CONTROL_SELECTOR = "#chat-popup-close, #chat-popup-fullscreen, #chat-popup-settings, #chat-popup-back";
 chatPopupHeader.addEventListener("click", (event) => {
-  if (event.target instanceof Element && event.target.closest("#chat-popup-close")) return;
+  if (event.target instanceof Element && event.target.closest(HEADER_CONTROL_SELECTOR)) return;
+  // Don't toggle minimized while fullscreen — the collapse animation
+  // would look like a glitch on a covering pane.
+  if (chatFullscreen) return;
   chatPopup.classList.toggle("is-minimized");
 });
 
 chatPopupHeader.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" && event.key !== " ") return;
-  if (event.target instanceof Element && event.target.closest("#chat-popup-close")) return;
+  if (event.target instanceof Element && event.target.closest(HEADER_CONTROL_SELECTOR)) return;
+  if (chatFullscreen) return;
   event.preventDefault();
   chatPopup.classList.toggle("is-minimized");
+});
+
+chatPopupFullscreen.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setChatFullscreen(!chatFullscreen);
+});
+
+chatPopupBack.addEventListener("click", (event) => {
+  event.stopPropagation();
+  closeChatPopup();
+});
+
+chatPopupSettings.addEventListener("click", (event) => {
+  event.stopPropagation();
+  void openConversationSettings();
+});
+
+chatPopupReplyCancel.addEventListener("click", () => {
+  clearReplyContext();
+});
+
+// Global Escape handler closes the message menu first; if no menu
+// is open, exits fullscreen; if neither, browsers handle Escape on
+// the <dialog> elements themselves.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!messageMenu.hidden) {
+    closeMessageMenu();
+    event.stopPropagation();
+    return;
+  }
+  if (chatFullscreen && !chatPopup.hidden && !isMobileViewport()) {
+    setChatFullscreen(false);
+    event.stopPropagation();
+  }
+});
+
+// Outside-click closes the message menu. Use mousedown rather than
+// click so the menu doesn't briefly flash if the user mouses down
+// elsewhere then mouses up over a menu item.
+document.addEventListener("mousedown", (event) => {
+  if (messageMenu.hidden) return;
+  if (event.target instanceof Element && event.target.closest("#message-menu")) return;
+  closeMessageMenu();
+});
+
+messageMenuReply.addEventListener("click", () => {
+  if (messageMenuTarget !== null && !messageMenuTarget.deleted) {
+    setReplyContext(messageMenuTarget.message_id, messageMenuTarget.body, messageMenuTarget.direction);
+    chatPopupInput.focus();
+  }
+  closeMessageMenu();
+});
+
+messageMenuDelete.addEventListener("click", () => {
+  const target = messageMenuTarget;
+  closeMessageMenu();
+  if (target === null || target.direction !== "sent" || target.deleted) return;
+  void handleChatMessageDelete(target.message_id);
+});
+
+conversationSettingsCancel.addEventListener("click", () => {
+  conversationSettingsDialog.close();
+});
+
+conversationSettingsSave.addEventListener("click", () => {
+  void saveConversationSettings();
 });
 
 chatPopupForm.addEventListener("submit", (event) => {
@@ -5299,9 +5400,21 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   chatPopupHandle.textContent = target.handle || target.canonical;
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
+  // Fullscreen-by-default on mobile widths so an opened chat reads
+  // as a full-page route. Desktop opens the floating popup unless
+  // the user already toggled fullscreen during this session.
+  if (isMobileViewport()) {
+    setChatFullscreen(true);
+  } else if (!chatFullscreen) {
+    // Make sure a stray fullscreen class from a prior mobile session
+    // doesn't carry into a resized desktop view.
+    setChatFullscreen(false);
+  }
   for (const row of chatsRoot.querySelectorAll<HTMLElement>("[data-chat-canonical]")) {
     row.classList.toggle("is-selected", row.dataset["chatCanonical"] === target.canonical);
   }
+  clearReplyContext();
+  await refreshConversationTtlBadge(target.canonical);
   await renderChatPopupBody(target.canonical);
   // Mark the conversation read up to its latest visible message. The
   // chat popup currently renders the full message list on open (no
@@ -5310,6 +5423,19 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   // virtualization, this should hook into the scroll handler instead.
   void markConversationRead(target.canonical);
   chatPopupInput.focus();
+}
+
+function isMobileViewport(): boolean {
+  return window.matchMedia("(max-width: 760px)").matches;
+}
+
+function setChatFullscreen(on: boolean): void {
+  chatFullscreen = on;
+  chatPopup.classList.toggle("is-fullscreen", on);
+  document.body.dataset["chatFullscreen"] = on ? "1" : "0";
+  chatPopupFullscreen.setAttribute("aria-label", on ? "exit fullscreen" : "enter fullscreen");
+  chatPopupFullscreen.setAttribute("title", on ? "exit fullscreen" : "enter fullscreen");
+  chatPopupFullscreen.textContent = on ? "⤡" : "⛶";
 }
 
 async function markConversationRead(partnerCanonicalId: string): Promise<void> {
@@ -5351,8 +5477,11 @@ async function markConversationRead(partnerCanonicalId: string): Promise<void> {
 function closeChatPopup(): void {
   chatPopup.hidden = true;
   chatPopup.classList.remove("is-minimized");
+  setChatFullscreen(false);
   chatPopupInput.value = "";
   chatTarget = null;
+  clearReplyContext();
+  closeMessageMenu();
   for (const row of chatsRoot.querySelectorAll<HTMLElement>(".is-selected")) {
     row.classList.remove("is-selected");
   }
@@ -5364,29 +5493,52 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
     return;
   }
   const conversationId = conversationKey(currentIdentityDocument.canonical_id, canonicalId);
-  let messages: Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }> = [];
+  let messages: ChatMessageView[] = [];
   try {
     messages = await listConversationMessages(conversationId);
   } catch {
     messages = [];
   }
+  // Apply local TTL: any message whose age exceeds the active TTL is
+  // hidden from the rendered list. Storage tombstoning (so the row
+  // disappears across sessions) is handled separately by the GC pass.
+  const ttl = await getConversationTtlSeconds(conversationId);
+  const visibleMessages = applyConversationTtlFilter(messages, ttl);
+  // Read system messages (TTL changes etc.) for this conversation.
+  const systemEvents = await listConversationSystemEvents(conversationId);
   // Stick scroll to bottom only if the user was already near the bottom
   // before this re-render. New messages while reading older history won't
   // yank the viewport.
   const distanceFromBottom = chatPopupBody.scrollHeight - chatPopupBody.scrollTop - chatPopupBody.clientHeight;
   const wasNearBottom = distanceFromBottom < 60 || chatPopupBody.scrollHeight === 0;
-  if (messages.length === 0) {
+  if (visibleMessages.length === 0 && systemEvents.length === 0) {
     chatPopupBody.replaceChildren(makeChatEmpty("no messages yet"));
     return;
   }
+  const messageById = new Map<string, ChatMessageView>();
+  for (const m of messages) messageById.set(m.message_id, m);
+  // Merge timeline: interleave messages and system events by created_at.
+  type Entry = { at: string; kind: "message"; m: ChatMessageView } | { at: string; kind: "system"; text: string };
+  const entries: Entry[] = [];
+  for (const m of visibleMessages) entries.push({ at: m.created_at, kind: "message", m });
+  for (const e of systemEvents) entries.push({ at: e.created_at, kind: "system", text: e.text });
+  entries.sort((a, b) => a.at.localeCompare(b.at));
   const fragment = document.createDocumentFragment();
-  for (const message of messages) {
-    fragment.append(renderChatMessage(message));
+  for (const entry of entries) {
+    if (entry.kind === "message") fragment.append(renderChatMessage(entry.m, messageById));
+    else fragment.append(renderChatSystem(entry.text));
   }
   chatPopupBody.replaceChildren(fragment);
   if (options.forceScrollToBottom || wasNearBottom) {
     chatPopupBody.scrollTop = chatPopupBody.scrollHeight;
   }
+}
+
+function renderChatSystem(text: string): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "chat-system";
+  el.textContent = text;
+  return el;
 }
 
 function makeChatEmpty(text: string): HTMLElement {
@@ -5396,58 +5548,174 @@ function makeChatEmpty(text: string): HTMLElement {
   return element;
 }
 
-function renderChatMessage(message: ChatMessageView): HTMLElement {
+function renderChatMessage(message: ChatMessageView, messageById: Map<string, ChatMessageView>): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
   wrapper.dataset.messageId = message.message_id;
+  // Tabindex makes the wrapper reachable by keyboard so :focus-within
+  // can reveal the kebab on keyboard navigation, not just hover.
+  wrapper.tabIndex = 0;
   const tombstoned = typeof message.deleted_at === "string";
   if (tombstoned) wrapper.classList.add("chat-message--deleted");
+
+  // Reply snippet preview — if this message replied to an earlier one
+  // we still have locally, render a compact quote line above the body.
+  // Tombstoned originals render as "message deleted" so the user
+  // sees a coherent thread even after a delete.
+  if (typeof message.reply_to_message_id === "string" && message.reply_to_message_id.length > 0) {
+    const original = messageById.get(message.reply_to_message_id);
+    const snippetText = original
+      ? (typeof original.deleted_at === "string" ? "message deleted" : original.body)
+      : "original message unavailable";
+    const snippet = document.createElement("div");
+    snippet.className = "chat-message__reply-snippet";
+    snippet.textContent = snippetText.length > 80 ? `${snippetText.slice(0, 80)}…` : snippetText;
+    snippet.title = snippetText;
+    snippet.dataset["replyTo"] = message.reply_to_message_id;
+    wrapper.append(snippet);
+  }
 
   const bubble = document.createElement("div");
   bubble.className = "chat-message__bubble";
   bubble.textContent = tombstoned ? "message deleted" : message.body;
+
   const meta = document.createElement("div");
   meta.className = "chat-message__meta";
   meta.textContent = formatChatTimestamp(message.created_at);
+
+  // Sent-tick. Honest single tick: the message is on this device and
+  // (presumably) at the relay. Cross-user delivered/read receipts are
+  // a future protocol addition — until then we don't claim more than
+  // we can prove. Tombstoned messages don't carry a tick.
+  if (message.direction === "sent" && !tombstoned) {
+    const tick = document.createElement("span");
+    tick.className = "chat-message__tick chat-message__tick--sent";
+    tick.textContent = "✓";
+    tick.setAttribute("aria-label", "sent");
+    tick.setAttribute("title", "sent");
+    tick.dataset["messageStatus"] = "sent";
+    meta.append(tick);
+  }
   wrapper.append(bubble, meta);
 
-  // Sent-only delete control. Two-press confirm so a stray tap can't
-  // erase a message — first press swaps the button into a "confirm"
-  // state for 4s; second press inside that window commits.
-  if (!tombstoned && message.direction === "sent") {
-    const actions = document.createElement("div");
-    actions.className = "chat-message__actions";
-    const deleteButton = document.createElement("button");
-    deleteButton.type = "button";
-    deleteButton.className = "chat-message__delete";
-    deleteButton.textContent = "delete";
-    deleteButton.dataset.armed = "0";
-    let armTimer: number | null = null;
-    deleteButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      if (deleteButton.dataset.armed !== "1") {
-        deleteButton.dataset.armed = "1";
-        deleteButton.textContent = "confirm delete";
-        if (armTimer !== null) window.clearTimeout(armTimer);
-        armTimer = window.setTimeout(() => {
-          deleteButton.dataset.armed = "0";
-          deleteButton.textContent = "delete";
-          armTimer = null;
-        }, 4000);
-        return;
-      }
-      if (armTimer !== null) {
-        window.clearTimeout(armTimer);
-        armTimer = null;
-      }
-      deleteButton.disabled = true;
-      deleteButton.textContent = "deleting…";
-      void handleChatMessageDelete(message.message_id);
-    });
-    actions.append(deleteButton);
-    wrapper.append(actions);
-  }
+  // Action kebab. Replaces the prior inline delete button. The
+  // trigger is in DOM for every message (so smokes can assert
+  // presence and keyboard users can tab to it) but CSS hides it
+  // until hover/focus-within on desktop. Long-press summons the
+  // same menu on touch devices.
+  const actions = document.createElement("div");
+  actions.className = "chat-message__actions";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "chat-message__menu-trigger";
+  trigger.textContent = "⋯";
+  trigger.setAttribute("aria-label", "message actions");
+  trigger.setAttribute("title", "message actions");
+  trigger.dataset["messageId"] = message.message_id;
+  trigger.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openMessageMenu(message, trigger.getBoundingClientRect());
+  });
+  actions.append(trigger);
+  wrapper.append(actions);
+
+  // Long-press → open menu. 500ms threshold; cancelled by move
+  // (any pointermove > 8px) so a swipe-to-scroll doesn't fire the
+  // menu. The pointer-events suite covers both touch and mouse so
+  // smokes can dispatch synthetic pointerdown/up.
+  attachLongPress(wrapper, () => {
+    openMessageMenu(message, trigger.getBoundingClientRect());
+  });
+
   return wrapper;
+}
+
+function attachLongPress(target: HTMLElement, handler: () => void): void {
+  let timer: number | null = null;
+  let startX = 0;
+  let startY = 0;
+  const clear = () => {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+  target.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    startX = event.clientX;
+    startY = event.clientY;
+    clear();
+    timer = window.setTimeout(() => {
+      timer = null;
+      handler();
+    }, 500);
+  });
+  target.addEventListener("pointermove", (event) => {
+    if (timer === null) return;
+    const dx = event.clientX - startX;
+    const dy = event.clientY - startY;
+    if (dx * dx + dy * dy > 64) clear();
+  });
+  target.addEventListener("pointerup", clear);
+  target.addEventListener("pointercancel", clear);
+  target.addEventListener("pointerleave", clear);
+}
+
+function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
+  messageMenuTarget = {
+    message_id: message.message_id,
+    direction: message.direction,
+    body: typeof message.deleted_at === "string" ? "" : message.body,
+    deleted: typeof message.deleted_at === "string"
+  };
+  // Position: prefer above the trigger but flip below if the
+  // anchored top would push the menu off-screen. Right-align with
+  // the trigger so the kebab and the menu read as paired.
+  messageMenu.hidden = false;
+  // Show first to measure
+  const menuRect = messageMenu.getBoundingClientRect();
+  const top = anchorRect.top - menuRect.height - 4;
+  const fitsAbove = top > 8;
+  const finalTop = fitsAbove ? top : anchorRect.bottom + 4;
+  const left = Math.min(
+    Math.max(8, anchorRect.right - menuRect.width),
+    window.innerWidth - menuRect.width - 8
+  );
+  messageMenu.style.top = `${Math.max(8, finalTop)}px`;
+  messageMenu.style.left = `${left}px`;
+
+  // Enable/disable actions based on the targeted message.
+  messageMenuReply.disabled = messageMenuTarget.deleted;
+  messageMenuReply.setAttribute("aria-disabled", String(messageMenuTarget.deleted));
+  messageMenuDelete.disabled = messageMenuTarget.direction !== "sent" || messageMenuTarget.deleted;
+  messageMenuDelete.setAttribute("aria-disabled", String(messageMenuDelete.disabled));
+  // Forward is gated globally; explicit per-target re-assert so the
+  // disabled state survives a previous open.
+  messageMenuForward.disabled = true;
+  messageMenuForward.setAttribute("aria-disabled", "true");
+  // Focus first enabled item for keyboard users.
+  const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuDelete].find((b) => !b.disabled);
+  if (firstEnabled) firstEnabled.focus();
+}
+
+function closeMessageMenu(): void {
+  messageMenu.hidden = true;
+  messageMenuTarget = null;
+}
+
+function setReplyContext(messageId: string, body: string, direction: "sent" | "received"): void {
+  replyContext = { message_id: messageId, body, direction };
+  const snippetText = body.length > 80 ? `${body.slice(0, 80)}…` : body;
+  chatPopupReplySnippet.textContent = snippetText;
+  chatPopupReplySnippet.title = body;
+  chatPopupReplyContext.hidden = false;
+}
+
+function clearReplyContext(): void {
+  replyContext = null;
+  chatPopupReplySnippet.textContent = "";
+  chatPopupReplySnippet.removeAttribute("title");
+  chatPopupReplyContext.hidden = true;
 }
 
 async function handleChatMessageDelete(messageId: string): Promise<void> {
@@ -5490,12 +5758,101 @@ function conversationKey(a: string, b: string): string {
   return [a, b].sort().join("|");
 }
 
+// ---- conversation-settings (disappearing messages) ------------------
+
+async function getConversationTtlSeconds(conversationId: string): Promise<number> {
+  if (currentIdentityDocument === null) return 0;
+  const row = await getConversationSettings(currentIdentityDocument.canonical_id, conversationId);
+  if (row === null) return 0;
+  return Math.max(0, Math.floor(row.message_ttl_seconds));
+}
+
+function applyConversationTtlFilter(messages: ChatMessageView[], ttlSeconds: number): ChatMessageView[] {
+  if (ttlSeconds <= 0) return messages;
+  const cutoff = Date.now() - ttlSeconds * 1000;
+  return messages.filter((m) => {
+    const at = Date.parse(m.created_at);
+    return Number.isNaN(at) ? true : at >= cutoff;
+  });
+}
+
+async function listConversationSystemEvents(conversationId: string): Promise<Array<{ created_at: string; text: string }>> {
+  if (currentIdentityDocument === null) return [];
+  const events = await listConversationSystemEventsLocal(currentIdentityDocument.canonical_id, conversationId);
+  return events.map((e) => ({ created_at: e.created_at, text: e.text }));
+}
+
+function ttlLabelShort(seconds: number): string {
+  if (seconds <= 0) return "";
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+  if (seconds < 2592000) return `${Math.round(seconds / 86400)}d`;
+  return `${Math.round(seconds / 2592000)}mo`;
+}
+
+async function refreshConversationTtlBadge(canonicalId: string): Promise<void> {
+  if (currentIdentityDocument === null) {
+    chatPopupTtlBadge.hidden = true;
+    return;
+  }
+  const conversationId = conversationKey(currentIdentityDocument.canonical_id, canonicalId);
+  const ttl = await getConversationTtlSeconds(conversationId);
+  if (ttl <= 0) {
+    chatPopupTtlBadge.hidden = true;
+    chatPopupTtlBadge.textContent = "";
+    return;
+  }
+  chatPopupTtlBadge.textContent = `⏱ ${ttlLabelShort(ttl)}`;
+  chatPopupTtlBadge.title = `disappearing messages: ${ttlLabelShort(ttl)}`;
+  chatPopupTtlBadge.hidden = false;
+}
+
+async function openConversationSettings(): Promise<void> {
+  if (chatTarget === null || currentIdentityDocument === null) return;
+  const conversationId = conversationKey(currentIdentityDocument.canonical_id, chatTarget.canonical);
+  const current = await getConversationTtlSeconds(conversationId);
+  conversationSettingsTtl.value = String(current);
+  conversationSettingsState.textContent = "";
+  if (!conversationSettingsDialog.open) conversationSettingsDialog.showModal();
+}
+
+async function saveConversationSettings(): Promise<void> {
+  if (chatTarget === null || currentIdentityDocument === null) return;
+  const conversationId = conversationKey(currentIdentityDocument.canonical_id, chatTarget.canonical);
+  const ttl = parseInt(conversationSettingsTtl.value, 10);
+  if (Number.isNaN(ttl) || ttl < 0) {
+    conversationSettingsState.textContent = "pick a valid expiry";
+    return;
+  }
+  conversationSettingsSave.disabled = true;
+  conversationSettingsState.textContent = "saving…";
+  try {
+    await notifyConversationSettingsUpsert(currentIdentityDocument.canonical_id, {
+      conversation_id: conversationId,
+      message_ttl_seconds: ttl,
+      updated_by_canonical_id: currentIdentityDocument.canonical_id,
+      updated_by_handle: currentIdentityDocument.handle
+    });
+    conversationSettingsState.textContent = "saved";
+    await refreshConversationTtlBadge(chatTarget.canonical);
+    await renderChatPopupBody(chatTarget.canonical);
+    window.setTimeout(() => {
+      if (conversationSettingsDialog.open) conversationSettingsDialog.close();
+    }, 600);
+  } catch (error) {
+    conversationSettingsState.textContent = error instanceof Error ? error.message : "save failed";
+  } finally {
+    conversationSettingsSave.disabled = false;
+  }
+}
+
 type ChatMessageView = {
   message_id: string;
   created_at: string;
   direction: "sent" | "received";
   body: string;
   deleted_at?: string;
+  reply_to_message_id?: string;
 };
 
 async function listConversationMessages(conversationId: string): Promise<ChatMessageView[]> {
@@ -5507,7 +5864,10 @@ async function listConversationMessages(conversationId: string): Promise<ChatMes
       created_at: record.created_at,
       direction: record.direction,
       body: record.body,
-      deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined
+      deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined,
+      reply_to_message_id: typeof (record as { reply_to_message_id?: string }).reply_to_message_id === "string"
+        ? (record as { reply_to_message_id?: string }).reply_to_message_id
+        : undefined
     }))
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
 }
@@ -5521,6 +5881,7 @@ async function sendChatPopupMessage(): Promise<void> {
   const body = chatPopupInput.value.trim();
   if (body.length === 0) return;
   const target = chatTarget;
+  const replyTo = replyContext?.message_id;
   try {
     const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: currentIdentityDocument.canonical_id,
@@ -5528,10 +5889,12 @@ async function sendChatPopupMessage(): Promise<void> {
       senderHandle: currentIdentityDocument.handle,
       recipientHandle: target.handle,
       body,
-      senderAccount: currentCryptoAccount
+      senderAccount: currentCryptoAccount,
+      replyToMessageId: replyTo
     });
     chatPopupInput.value = "";
     autoGrowTextarea(chatPopupInput, 28, 120);
+    clearReplyContext();
     await renderChatPopupBody(target.canonical, { forceScrollToBottom: true });
     await refreshLocalChats();
     if (!result.ok) {

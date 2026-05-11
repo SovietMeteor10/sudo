@@ -25,6 +25,7 @@ export async function queueAndSubmitLocalMessage(options: {
   recipientMessagingPublicKey?: string;
   recipientMessagingKeyType?: "x25519" | "ecdh-p256";
   recipientIdentityDocument?: Pick<IdentityDocument, "delivery_relays"> | null;
+  replyToMessageId?: string;
 }): Promise<{ ok: boolean; message_id: string; error?: string }> {
   const now = new Date().toISOString();
   const messageId = crypto.randomUUID();
@@ -96,7 +97,8 @@ export async function queueAndSubmitLocalMessage(options: {
     created_at: now,
     updated_at: now,
     status: "queued_local",
-    relay_message_id: envelope.message_id
+    relay_message_id: envelope.message_id,
+    reply_to_message_id: options.replyToMessageId
   };
 
   const outbound: PendingOutbound = {

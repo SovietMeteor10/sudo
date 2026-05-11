@@ -1951,8 +1951,46 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .chat-popup.is-minimized .chat-popup__body,
-.chat-popup.is-minimized .chat-popup__form {
+.chat-popup.is-minimized .chat-popup__form,
+.chat-popup.is-minimized .chat-popup__reply-context {
   display: none;
+}
+
+/* Fullscreen chat. Covers the main app area below the topbar and
+   above any safe-area inset. Behaves like a full-page route on
+   mobile (where it's the default for any opened chat) and like a
+   focused mode on desktop (one click of the fullscreen icon).
+   Animation is suppressed in fullscreen so the switch feels
+   instantaneous, not a slide-up popup. */
+.chat-popup.is-fullscreen {
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100vw;
+  max-width: 100vw;
+  height: calc(100vh - var(--topbar-h));
+  border: 0;
+  border-radius: 0;
+  animation: none;
+}
+
+.chat-popup.is-fullscreen .chat-popup__handle {
+  font-size: 15px;
+}
+
+.chat-popup.is-fullscreen.is-minimized {
+  /* Fullscreen never collapses; ignore the minimized class while
+     fullscreen is active so the row-click toggle (which mostly
+     exists for the floating popup) doesn't strand the user. */
+  height: calc(100vh - var(--topbar-h));
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+
+.chat-popup.is-fullscreen.is-minimized .chat-popup__body,
+.chat-popup.is-fullscreen.is-minimized .chat-popup__form {
+  display: flex;
 }
 
 .chat-popup__header {
@@ -1980,6 +2018,37 @@ body[data-auth-state="auth-restore"] .landing {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Back-arrow is hidden on the floating popup and only revealed in
+   fullscreen mode. It nests inside the header next to the handle so
+   the layout doesn't shift when fullscreen toggles. */
+.chat-popup__back {
+  display: none;
+  font-size: 18px;
+  margin-right: 4px;
+}
+
+.chat-popup.is-fullscreen .chat-popup__back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Compact TTL badge inline with the handle when disappearing
+   messages are active on this conversation. Tiny and muted so it
+   doesn't fight the handle for attention. */
+.chat-popup__ttl-badge {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.chat-popup__ttl-badge[hidden] {
+  display: none;
 }
 
 .chat-popup__handle {
@@ -2104,29 +2173,94 @@ body[data-auth-state="auth-restore"] .landing {
   justify-content: flex-end;
 }
 
-.chat-message__delete {
+/* Three-dot kebab button — only visible on hover/focus of the
+   message row on desktop. On touch devices long-press summons the
+   menu via JS; the button stays in DOM (so smokes can find it) but
+   the focus-only reveal keeps the resting chat tidy. */
+.chat-message__menu-trigger {
   background: transparent;
-  border: 1px solid var(--line-soft);
-  color: var(--dim);
+  border: 0;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 0 4px;
+  cursor: pointer;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.chat-message:hover .chat-message__menu-trigger,
+.chat-message:focus-within .chat-message__menu-trigger,
+.chat-message__menu-trigger:focus-visible {
+  opacity: 1;
+}
+
+/* On touch-primary devices (no hover) the menu trigger is always
+   visible so the user has a discoverable affordance even without
+   long-press. */
+@media (hover: none) {
+  .chat-message__menu-trigger {
+    opacity: 0.65;
+  }
+}
+
+.chat-message__menu-trigger:hover,
+.chat-message__menu-trigger:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+/* Inline reply-snippet shown above a reply's body. Compact preview
+   of the message being replied to. The snippet text is clamped so
+   the chat doesn't grow tall on a long quoted line. */
+.chat-message__reply-snippet {
+  display: block;
+  margin: 0 0 4px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--line);
+  background: rgba(255, 255, 255, 0.02);
   font-size: 11px;
-  padding: 2px 6px;
-  border-radius: 4px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
   cursor: pointer;
 }
 
-.chat-message__delete:hover:not(:disabled) {
-  color: var(--ink);
-  border-color: var(--line);
+.chat-message__reply-snippet:hover {
+  color: var(--text);
 }
 
-.chat-message__delete[data-armed="1"] {
-  color: var(--ink);
-  border-color: var(--accent, var(--line));
+/* Sent-message status indicators (ticks). One tick = locally
+   stored / submitted to relay; the placeholder is rendered next to
+   the timestamp inside .chat-message__meta. Delivered/read across
+   different accounts is not modeled yet and the meta text is
+   honest about that. */
+.chat-message__tick {
+  margin-left: 6px;
+  letter-spacing: -0.5px;
 }
+
+.chat-message__tick--sent { color: var(--dim); }
+.chat-message__tick--queued { color: var(--muted); }
 
 .chat-message--deleted .chat-message__bubble {
   font-style: italic;
   color: var(--dim);
+}
+
+/* System message rendered inline in the chat body for events like
+   "@A changed message expiry to 24 hours". Centered, dim, no
+   bubble. */
+.chat-system {
+  align-self: center;
+  max-width: 80%;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 4px 8px;
+  font-style: italic;
 }
 
 .chat-popup__empty {
@@ -2141,6 +2275,98 @@ body[data-auth-state="auth-restore"] .landing {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Reply context chip above the composer. Renders the snippet of
+   the message being replied to plus a cancel button. Hidden by
+   default; revealed when the user picks "reply" from a message's
+   action menu. */
+.chat-popup__reply-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line-soft);
+  background: var(--panel-soft);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.chat-popup__reply-context[hidden] {
+  display: none;
+}
+
+.chat-popup__reply-snippet {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+}
+
+.chat-popup__reply-cancel {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 14px;
+  width: 22px;
+  height: 22px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.chat-popup__reply-cancel:hover,
+.chat-popup__reply-cancel:focus-visible {
+  color: var(--text);
+  outline: none;
+}
+
+/* Floating action menu for individual messages. Positioned at the
+   pointer/long-press point by JS. Compact, keyboard-navigable. */
+.message-menu {
+  position: fixed;
+  z-index: 6;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+}
+
+.message-menu[hidden] {
+  display: none;
+}
+
+.message-menu__item {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.message-menu__item:hover:not(:disabled),
+.message-menu__item:focus-visible {
+  background: var(--panel-soft);
+  outline: none;
+}
+
+.message-menu__item:disabled {
+  color: var(--dim);
+  cursor: default;
+}
+
+.message-menu__item--danger {
+  color: #c66766;
 }
 
 .chat-popup__form {
@@ -2778,6 +3004,35 @@ body[data-auth-state="signed-in"] .shell {
     bottom: calc(60px + env(safe-area-inset-bottom, 0px));
     width: calc(100vw - 16px);
     height: min(60vh, 420px);
+  }
+
+  /* On mobile widths, fullscreen mode reclaims the whole viewport
+     under the topbar and covers the bottom tab bar so the chat
+     reads as a full-page route. The back arrow in the header is
+     the user's way out. */
+  .chat-popup.is-fullscreen {
+    right: 0;
+    left: 0;
+    bottom: 0;
+    width: 100vw;
+    max-width: 100vw;
+    height: calc(100vh - var(--topbar-h));
+  }
+
+  body[data-chat-fullscreen="1"] .mobile-tabs {
+    display: none;
+  }
+
+  body[data-chat-fullscreen="1"] {
+    /* Reclaim the mobile-tabs gutter when the chat takes over. */
+    padding-bottom: 0;
+  }
+
+  /* Desktop reveals message kebab on hover; on mobile we keep the
+     trigger always-visible for discoverability since long-press is
+     a hidden gesture. */
+  .chat-message__menu-trigger {
+    opacity: 0.8;
   }
 
   .signup-dialog__grid {

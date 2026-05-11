@@ -98,6 +98,11 @@ type MessageSyncPayload = {
   updated_at: string;
   status: string;
   relay_message_id?: string;
+  // Optional reply linkage. Old clients (no reply_to field) ignore it
+  // on the read path; new clients carry it across the sync stream so
+  // a reply made on the desktop renders the same quote line on the
+  // mobile device.
+  reply_to_message_id?: string;
 };
 
 type MessageDeletePayload = {
@@ -125,6 +130,7 @@ function serializeMessageForSync(message: LocalMessage): MessageSyncPayload | nu
   if (typeof message.body === "string") payload.body = message.body;
   if (typeof message.ciphertext === "string") payload.ciphertext = message.ciphertext;
   if (typeof message.relay_message_id === "string") payload.relay_message_id = message.relay_message_id;
+  if (typeof message.reply_to_message_id === "string") payload.reply_to_message_id = message.reply_to_message_id;
   return payload;
 }
 
@@ -169,7 +175,8 @@ registerSliceProjector("message", async (account, event, payload) => {
       created_at: candidate.created_at,
       updated_at: candidate.updated_at,
       status: candidate.status as RelayEnvelopeStatus,
-      relay_message_id: typeof candidate.relay_message_id === "string" ? candidate.relay_message_id : undefined
+      relay_message_id: typeof candidate.relay_message_id === "string" ? candidate.relay_message_id : undefined,
+      reply_to_message_id: typeof candidate.reply_to_message_id === "string" ? candidate.reply_to_message_id : undefined
     });
     return true;
   }

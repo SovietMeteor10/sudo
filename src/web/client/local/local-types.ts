@@ -53,6 +53,48 @@ export type LocalMessage = {
   // device, a later message.upsert (e.g. a re-replay during backfill)
   // must NOT resurrect the plaintext.
   deleted_at?: string;
+  // Optional reply linkage. When the user picks "reply" on an earlier
+  // message in the same conversation, the new message carries its id
+  // here so the recipient's render can show a compact quote line
+  // above the body. The reference is local-only metadata and
+  // tombstone-aware (rendering checks the referenced row's deleted_at
+  // to avoid resurrecting deleted text).
+  reply_to_message_id?: string;
+};
+
+// Per-conversation settings shared across both participants by sync.
+// Currently just message TTL ("disappearing messages"); future
+// settings (notification opts, etc.) can extend this row in place.
+// updated_at is monotonic — only newer rows overwrite the previous
+// state, so re-replays during backfill don't undo a recent change.
+export type LocalConversationSettings = {
+  owner_canonical_id: string;
+  conversation_id: string;
+  // 0 (or null) means TTL is off — messages stick around indefinitely.
+  // Positive seconds means messages older than this are filtered from
+  // the chat render and tombstoned by the local GC pass.
+  message_ttl_seconds: number;
+  updated_at: string;
+  updated_by_canonical_id: string;
+  // Optional preferred display handle for the user who last changed
+  // the setting — surfaced in the inline system message
+  // ("@alice changed message expiry to 24 hours") on every device.
+  updated_by_handle?: string;
+};
+
+// In-band system event rendered inline in the chat body. Currently
+// only used for conversation-settings changes; future system events
+// (account renamed, etc.) can reuse the same row. Stored locally
+// only — peer sees the same event by replaying the underlying sync
+// slice (e.g. conversation_settings.upsert) which inserts its own
+// system row.
+export type LocalConversationSystemEvent = {
+  event_id: string;
+  owner_canonical_id: string;
+  conversation_id: string;
+  created_at: string;
+  kind: "conversation_settings_change";
+  text: string;
 };
 
 export type LocalContact = {

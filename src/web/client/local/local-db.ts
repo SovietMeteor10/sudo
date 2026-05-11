@@ -10,7 +10,7 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-export const LOCAL_DB_VERSION = 6;
+export const LOCAL_DB_VERSION = 7;
 
 export const localStoreNames = [
   "events",
@@ -25,7 +25,9 @@ export const localStoreNames = [
   "pending_outbound",
   "device_sync_events",
   "backfill_state",
-  "read_state"
+  "read_state",
+  "conversation_settings",
+  "conversation_system_events"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -59,7 +61,7 @@ const BROADCAST_CHANNEL_NAME = "sudo_local_db";
 // can refresh their UI without re-polling the server. The owner stamp
 // keeps account isolation intact: sibling tabs ignore changes from
 // owners they aren't currently signed into.
-export type LocalStateChangeKind = "messages" | "contacts" | "feed" | "auth" | "read_state";
+export type LocalStateChangeKind = "messages" | "contacts" | "feed" | "auth" | "read_state" | "conversation_settings" | "conversation_system_events";
 
 type DbBroadcastMessage =
   | { type: "release-db"; reason?: string }
@@ -477,6 +479,28 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     const store = db.createObjectStore("read_state", {
       keyPath: ["owner_canonical_id", "conversation_id"]
     });
+    store.createIndex("by_owner", "owner_canonical_id");
+  }
+
+  // v7: conversation_settings + conversation_system_events.
+  // conversation_settings: one row per (owner, conversation_id),
+  // shared with the peer via the conversation_settings sync slice.
+  // Currently just holds the disappearing-messages TTL but laid out
+  // so future per-conversation prefs can land in the same row.
+  // conversation_system_events: in-band system notices ("@alice
+  // changed message expiry to 24 hours") rendered inline with the
+  // message timeline.
+  if (!db.objectStoreNames.contains("conversation_settings")) {
+    const store = db.createObjectStore("conversation_settings", {
+      keyPath: ["owner_canonical_id", "conversation_id"]
+    });
+    store.createIndex("by_owner", "owner_canonical_id");
+  }
+  if (!db.objectStoreNames.contains("conversation_system_events")) {
+    const store = db.createObjectStore("conversation_system_events", {
+      keyPath: "event_id"
+    });
+    store.createIndex("by_owner_conversation", ["owner_canonical_id", "conversation_id"]);
     store.createIndex("by_owner", "owner_canonical_id");
   }
 

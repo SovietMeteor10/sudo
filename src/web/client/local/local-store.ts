@@ -1,6 +1,8 @@
 import { broadcastLocalStateChange, clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName } from "./local-db.js";
 import type {
   LocalBackfillState,
+  LocalConversationSettings,
+  LocalConversationSystemEvent,
   LocalCryptoAccountRecord,
   LocalContact,
   LocalDraft,
@@ -384,6 +386,78 @@ export async function upsertReadStateMonotonic(
   await txDone(tx);
   broadcastLocalStateChange("read_state", ownerCanonicalId);
   return { row: next, written: true };
+}
+
+// Conversation settings — disappearing-messages TTL is the only
+// field today. Monotonic merge by updated_at so a re-replay of an
+// older event doesn't undo a recent change. Returns the row that
+// was stored (existing or new) and whether anything changed.
+export async function upsertConversationSettingsMonotonic(
+  ownerCanonicalId: string,
+  patch: { conversation_id: string; message_ttl_seconds: number; updated_at: string; updated_by_canonical_id: string; updated_by_handle?: string }
+): Promise<{ row: LocalConversationSettings; written: boolean }> {
+  const existing = await getConversationSettings(ownerCanonicalId, patch.conversation_id);
+  if (existing !== null && Date.parse(existing.updated_at) >= Date.parse(patch.updated_at)) {
+    return { row: existing, written: false };
+  }
+  const next: LocalConversationSettings = {
+    owner_canonical_id: ownerCanonicalId,
+    conversation_id: patch.conversation_id,
+    message_ttl_seconds: Math.max(0, Math.floor(patch.message_ttl_seconds)),
+    updated_at: patch.updated_at,
+    updated_by_canonical_id: patch.updated_by_canonical_id,
+    updated_by_handle: patch.updated_by_handle
+  };
+  const db = await openLocalDb();
+  const tx = db.transaction("conversation_settings", "readwrite");
+  tx.objectStore("conversation_settings").put(next);
+  await txDone(tx);
+  broadcastLocalStateChange("conversation_settings", ownerCanonicalId);
+  return { row: next, written: true };
+}
+
+export async function getConversationSettings(
+  ownerCanonicalId: string,
+  conversationId: string
+): Promise<LocalConversationSettings | null> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction("conversation_settings", "readonly")
+      .objectStore("conversation_settings")
+      .get([ownerCanonicalId, conversationId]);
+    request.onsuccess = () => resolve((request.result as LocalConversationSettings | undefined) ?? null);
+    request.onerror = () => reject(request.error ?? new Error("failed to read conversation_settings"));
+  });
+}
+
+// Local-only system event used to render the inline "X changed
+// message expiry to Y" line. Idempotent on event_id so a re-replay
+// can't double-insert the same change. Owner-scoped like every
+// other private row.
+export async function appendConversationSystemEvent(
+  ownerCanonicalId: string,
+  entry: Omit<LocalConversationSystemEvent, "owner_canonical_id">
+): Promise<void> {
+  const row: LocalConversationSystemEvent = { ...entry, owner_canonical_id: ownerCanonicalId };
+  const db = await openLocalDb();
+  const tx = db.transaction("conversation_system_events", "readwrite");
+  tx.objectStore("conversation_system_events").put(row);
+  await txDone(tx);
+  broadcastLocalStateChange("conversation_system_events", ownerCanonicalId);
+}
+
+export async function listConversationSystemEventsLocal(
+  ownerCanonicalId: string,
+  conversationId: string
+): Promise<LocalConversationSystemEvent[]> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("conversation_system_events", "readonly");
+    const index = tx.objectStore("conversation_system_events").index("by_owner_conversation");
+    const request = index.getAll([ownerCanonicalId, conversationId]);
+    request.onsuccess = () => resolve((request.result as LocalConversationSystemEvent[] | undefined) ?? []);
+    request.onerror = () => reject(request.error ?? new Error("failed to list conversation_system_events"));
+  });
 }
 
 export async function revokeTrustedDevice(deviceId: string): Promise<void> {
