@@ -46,6 +46,13 @@ export type LocalMessage = {
   updated_at: string;
   status: RelayEnvelopeStatus;
   relay_message_id?: string;
+  // Tombstone marker. When set, `body` and `ciphertext` are blanked
+  // and the row only carries enough metadata to keep conversation
+  // ordering stable. UI renders these as "message deleted". The
+  // tombstone is sticky: once a message is deleted on any linked
+  // device, a later message.upsert (e.g. a re-replay during backfill)
+  // must NOT resurrect the plaintext.
+  deleted_at?: string;
 };
 
 export type LocalContact = {

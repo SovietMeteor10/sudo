@@ -111,8 +111,8 @@ routing, dedupe, and replay protection):
 - `origin_device_id` — which paired device produced it
 - `slice` — `"contact"`, `"subscription"`, `"message"`, `"draft"`, or `"profile"`
 - `kind` — e.g. `"contact.upsert"`, `"subscription.delete"`,
-  `"message.upsert"`, `"draft.upsert"`, `"draft.delete"`,
-  `"profile.upsert"`
+  `"message.upsert"`, `"message.delete"`, `"draft.upsert"`,
+  `"draft.delete"`, `"profile.upsert"`
 - `sequence` — per-(owner, origin_device) monotonic counter
 - `created_at`, `server_received_at`
 - `signature` — the origin device's device-key signature, used to

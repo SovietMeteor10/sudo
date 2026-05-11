@@ -42,8 +42,64 @@ export async function appendLocalEvent(ownerCanonicalId: string, event: Omit<Loc
 }
 
 export async function saveLocalMessage(ownerCanonicalId: string, message: Omit<LocalMessage, "owner_canonical_id">): Promise<void> {
+  // A tombstoned row is sticky: don't let a later send-path write
+  // (e.g. a relay status update that runs after the user pressed
+  // delete) re-introduce the body. The tombstone wins; any
+  // post-delete write is dropped.
+  const existing = await getRecord<LocalMessage>("messages", message.message_id);
+  if (existing !== null && typeof existing.deleted_at === "string") return;
   await putRecord("messages", { ...message, owner_canonical_id: ownerCanonicalId });
   broadcastLocalStateChange("messages", ownerCanonicalId);
+}
+
+// Replace a message with a tombstone row. The conversation_id,
+// sender, recipient, and created_at are preserved so ordering is
+// stable; body and ciphertext are blanked. Idempotent — a duplicate
+// tombstone call leaves deleted_at at its earlier timestamp. If the
+// message is not in the local store yet (e.g. a peer's delete
+// arrived before the original upsert reached us), we still write a
+// tombstone shell keyed by message_id so the subsequent upsert is
+// suppressed by saveLocalMessage / projectIncomingMessage.
+export async function tombstoneLocalMessage(
+  ownerCanonicalId: string,
+  args: {
+    message_id: string;
+    conversation_id?: string;
+    sender_canonical_id?: string;
+    recipient_canonical_id?: string;
+    created_at?: string;
+    deleted_at: string;
+  }
+): Promise<{ written: boolean }> {
+  const existing = await getRecord<LocalMessage>("messages", args.message_id);
+  if (existing !== null && existing.owner_canonical_id !== ownerCanonicalId) return { written: false };
+  if (existing !== null && typeof existing.deleted_at === "string") {
+    // Already tombstoned — preserve the earliest deleted_at so the
+    // local timestamp reflects when the user actually pressed delete
+    // rather than when the latest re-broadcast landed.
+    return { written: false };
+  }
+  const base: LocalMessage = existing !== null
+    ? { ...existing }
+    : {
+      message_id: args.message_id,
+      owner_canonical_id: ownerCanonicalId,
+      conversation_id: args.conversation_id ?? "",
+      direction: "sent",
+      sender_canonical_id: args.sender_canonical_id ?? "",
+      recipient_canonical_id: args.recipient_canonical_id ?? "",
+      body: "",
+      created_at: args.created_at ?? args.deleted_at,
+      updated_at: args.deleted_at,
+      status: "acked"
+    };
+  base.body = "";
+  if ("ciphertext" in base) delete base.ciphertext;
+  base.deleted_at = args.deleted_at;
+  base.updated_at = args.deleted_at;
+  await putRecord("messages", base);
+  broadcastLocalStateChange("messages", ownerCanonicalId);
+  return { written: true };
 }
 
 // Idempotent message-sync projection. Receiver-side path used by the
@@ -51,8 +107,11 @@ export async function saveLocalMessage(ownerCanonicalId: string, message: Omit<L
 // local store. Returns false (without writing) when an existing local
 // row is at least as fresh as the incoming one — keeping replays
 // stable and preventing newer state from being clobbered by an older
-// queued event. The owner_canonical_id stamp is enforced so a sync
-// event from another account can never overwrite a row.
+// queued event. Tombstoned rows are sticky: a subsequent upsert
+// (e.g. a backfill from an older device that still has the body)
+// cannot resurrect the plaintext. The owner_canonical_id stamp is
+// enforced so a sync event from another account can never overwrite
+// a row.
 export async function projectIncomingMessage(
   ownerCanonicalId: string,
   message: Omit<LocalMessage, "owner_canonical_id">
@@ -61,6 +120,12 @@ export async function projectIncomingMessage(
   if (existing !== null && existing.owner_canonical_id !== ownerCanonicalId) {
     // Should never happen in practice (message_ids are UUIDv4) but if
     // it ever did, refuse to cross account boundaries.
+    return { written: false };
+  }
+  if (existing !== null && typeof existing.deleted_at === "string") {
+    // Tombstone wins. The peer either hasn't seen our delete yet or
+    // is replaying an older state; either way we don't re-introduce
+    // the body locally.
     return { written: false };
   }
   if (existing !== null && Date.parse(existing.updated_at) >= Date.parse(message.updated_at)) {
@@ -126,7 +191,7 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
     const candidate: Acc = {
       canonical: partner,
       handle: existing?.handle ?? "(unknown)",
-      lastLine: previewLine(message.body),
+      lastLine: typeof message.deleted_at === "string" ? "message deleted" : previewLine(message.body),
       lastAt: message.updated_at || message.created_at
     };
     if (existing === undefined || existing.lastAt < candidate.lastAt) {

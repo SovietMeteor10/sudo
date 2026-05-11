@@ -327,9 +327,9 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 //
 // Add new slices here as they come online. Shipped today: contact,
 // subscription, message, draft, profile. read-receipts are not
-// synced yet. There is no "message.delete" because the message store
-// has no local-tombstone concept; message removal will land
-// alongside that work in a future slice.
+// synced yet. Message deletion is now modeled by `message.delete`,
+// which writes a tombstone (deleted_at set, body/ciphertext cleared)
+// in the local store and on every linked device.
 //
 // Sync is explicit, not automatic. There is intentionally NO generic
 // "settings.upsert" slice that replicates the local settings store
@@ -350,6 +350,7 @@ export type SyncEventKind =
   | "subscription.upsert"
   | "subscription.delete"
   | "message.upsert"
+  | "message.delete"
   | "draft.upsert"
   | "draft.delete"
   | "profile.upsert";

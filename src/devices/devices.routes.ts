@@ -541,7 +541,7 @@ devicesRouter.get("/:ownerCanonicalId/sync/cursor", (request, response) => {
 function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "contact") return kind === "contact.upsert" || kind === "contact.delete";
   if (slice === "subscription") return kind === "subscription.upsert" || kind === "subscription.delete";
-  if (slice === "message") return kind === "message.upsert";
+  if (slice === "message") return kind === "message.upsert" || kind === "message.delete";
   if (slice === "draft") return kind === "draft.upsert" || kind === "draft.delete";
   if (slice === "profile") return kind === "profile.upsert";
   return false;

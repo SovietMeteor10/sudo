@@ -52,7 +52,7 @@ import {
   setActiveCoordinator,
   startPolling as startContactSyncPolling
 } from "./sync/coordinator.js";
-import { notifyMessageUpsert } from "./sync/messageSync.js";
+import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/messageSync.js";
 // Side-effect import: registers the draft slice projector at module
 // load. The broadcast wrappers (applyDraftUpsertWithBroadcast,
 // applyDraftDeleteWithBroadcast) aren't called from main yet because
@@ -2472,13 +2472,28 @@ async function backfillToNewDevice(
     lastError = `subscriptions: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
-  // Messages.
+  // Messages — tombstoned rows publish as message.delete so the
+  // body never re-enters the sync log. Live rows publish as upsert
+  // via the standard wrapper. notifyMessageUpsert itself short-
+  // circuits if it sees a tombstone, so the order here is just an
+  // efficiency: skip building a sync payload only to have the
+  // wrapper drop it.
   try {
     const messages = await listLocalMessages(ownerCanonicalId);
     let count = 0;
     let failed = 0;
     for (const msg of messages) {
-      const ok = await notifyMessageUpsert(ownerCanonicalId, msg);
+      let ok = false;
+      if (typeof msg.deleted_at === "string") {
+        ok = await buildAndPostSyncEvent("message", "message.delete", {
+          message_id: msg.message_id,
+          owner_canonical_id: ownerCanonicalId,
+          conversation_id: msg.conversation_id,
+          deleted_at: msg.deleted_at
+        });
+      } else {
+        ok = await notifyMessageUpsert(ownerCanonicalId, msg);
+      }
       if (ok) count++; else failed++;
     }
     sliceProgress.message = count;
@@ -4821,17 +4836,73 @@ function makeChatEmpty(text: string): HTMLElement {
   return element;
 }
 
-function renderChatMessage(message: { message_id: string; created_at: string; direction: "sent" | "received"; body: string }): HTMLElement {
+function renderChatMessage(message: ChatMessageView): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
+  wrapper.dataset.messageId = message.message_id;
+  const tombstoned = typeof message.deleted_at === "string";
+  if (tombstoned) wrapper.classList.add("chat-message--deleted");
+
   const bubble = document.createElement("div");
   bubble.className = "chat-message__bubble";
-  bubble.textContent = message.body;
+  bubble.textContent = tombstoned ? "message deleted" : message.body;
   const meta = document.createElement("div");
   meta.className = "chat-message__meta";
   meta.textContent = formatChatTimestamp(message.created_at);
   wrapper.append(bubble, meta);
+
+  // Sent-only delete control. Two-press confirm so a stray tap can't
+  // erase a message — first press swaps the button into a "confirm"
+  // state for 4s; second press inside that window commits.
+  if (!tombstoned && message.direction === "sent") {
+    const actions = document.createElement("div");
+    actions.className = "chat-message__actions";
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "chat-message__delete";
+    deleteButton.textContent = "delete";
+    deleteButton.dataset.armed = "0";
+    let armTimer: number | null = null;
+    deleteButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (deleteButton.dataset.armed !== "1") {
+        deleteButton.dataset.armed = "1";
+        deleteButton.textContent = "confirm delete";
+        if (armTimer !== null) window.clearTimeout(armTimer);
+        armTimer = window.setTimeout(() => {
+          deleteButton.dataset.armed = "0";
+          deleteButton.textContent = "delete";
+          armTimer = null;
+        }, 4000);
+        return;
+      }
+      if (armTimer !== null) {
+        window.clearTimeout(armTimer);
+        armTimer = null;
+      }
+      deleteButton.disabled = true;
+      deleteButton.textContent = "deleting…";
+      void handleChatMessageDelete(message.message_id);
+    });
+    actions.append(deleteButton);
+    wrapper.append(actions);
+  }
   return wrapper;
+}
+
+async function handleChatMessageDelete(messageId: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const owner = currentIdentityDocument.canonical_id;
+  try {
+    await applyMessageDeleteWithBroadcast(owner, messageId);
+  } catch (error) {
+    console.warn("[chat] delete failed", error instanceof Error ? error.message : error);
+    flashFeedback("could not delete message");
+  }
+  if (chatTarget !== null) {
+    await renderChatPopupBody(chatTarget.canonical);
+  }
+  void refreshLocalChats();
 }
 
 function formatChatTimestamp(value: string): string {
@@ -4859,15 +4930,24 @@ function conversationKey(a: string, b: string): string {
   return [a, b].sort().join("|");
 }
 
-async function listConversationMessages(conversationId: string): Promise<Array<{ message_id: string; created_at: string; direction: "sent" | "received"; body: string }>> {
+type ChatMessageView = {
+  message_id: string;
+  created_at: string;
+  direction: "sent" | "received";
+  body: string;
+  deleted_at?: string;
+};
+
+async function listConversationMessages(conversationId: string): Promise<ChatMessageView[]> {
   if (currentIdentityDocument === null) return [];
   const records = await listLocalMessagesByConversation(currentIdentityDocument.canonical_id, conversationId);
   return records
-    .map((record) => ({
+    .map((record): ChatMessageView => ({
       message_id: record.message_id,
       created_at: record.created_at,
       direction: record.direction,
-      body: record.body
+      body: record.body,
+      deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined
     }))
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
 }

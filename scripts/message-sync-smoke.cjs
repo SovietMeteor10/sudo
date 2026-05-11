@@ -17,7 +17,7 @@
 //   8. Server-stored sync rows expose only ciphertext — the plaintext
 //      message body, peer canonical_ids, and conversation_id appear
 //      nowhere readable through the public listing.
-//   9. Slice/kind mismatches (e.g. "message" + "message.delete") are
+//   9. Slice/kind mismatches (e.g. "message" + "contact.delete") are
 //      rejected at the edge.
 
 const {
@@ -515,21 +515,24 @@ async function getJson(path) {
   if (leaked.length > 0) fail(`server-stored sync rows leak plaintext: ${leaked.join(", ")}`);
   ok(`server-stored sync rows expose only ciphertext (no plaintext body / peer / conversation)`);
 
-  // 10. Slice/kind mismatches at the edge.
+  // 10. Slice/kind mismatches at the edge. The `message` slice now
+  // accepts `message.upsert` and `message.delete`, so to exercise the
+  // validator we pick a kind that belongs to a different slice
+  // ("contact.delete") and post it under `slice: message`.
   const mismatched = buildSignedSyncEvent({
     ownerCanonicalId: owner.canonicalId,
     originDeviceId: deviceAId,
     originDevicePrivateKey: deviceA.privateKey,
     slice: "message",
-    kind: "message.delete",
+    kind: "contact.delete",
     sequence: 5,
     encryptedPayload: encryptSyncPayload("{}", symKey)
   });
   const mismatchedResp = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync`, {
     signed_event: mismatched
   });
-  if (mismatchedResp.status !== 400) fail(`message.delete (not yet a kind) was not rejected: ${mismatchedResp.status}`);
-  ok(`server rejects message.delete (no local tombstone concept yet) at the edge (400)`);
+  if (mismatchedResp.status !== 400) fail(`slice/kind mismatch was not rejected: ${mismatchedResp.status}`);
+  ok(`server rejects slice/kind mismatch (message + contact.delete) at the edge (400)`);
 
   console.log("\nmessage-sync smoke passed");
 })().catch((error) => {
