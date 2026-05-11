@@ -305,24 +305,6 @@
     </form>
   </dialog>
 
-  <section class="recovery-panel" id="recovery-panel" hidden aria-labelledby="recovery-panel-title">
-    <div class="recovery-panel__inner">
-      <div class="signup-dialog__title" id="recovery-panel-title">save your recovery information</div>
-      <div class="backup-code-row">
-        <div class="signup-result__secret" id="recovery-panel-secret" tabindex="-1"></div>
-        <button class="text-button backup-code-copy" id="backup-code-copy" type="button" aria-label="copy recovery code">⧉</button>
-      </div>
-      <div class="backup-code-feedback" id="backup-code-feedback" aria-live="polite"></div>
-      <div class="signup-dialog__warning">your account lives on your devices.</div>
-      <div class="signup-dialog__warning">save your backup code or create a backup now.</div>
-      <label class="recovery-panel__ack">
-        <input id="recovery-ack" type="checkbox">
-        I saved this
-      </label>
-      <button class="text-button text-button--primary" id="recovery-dismiss" type="button" disabled>dismiss</button>
-    </div>
-  </section>
-
   <div class="account-feedback" id="local-maintenance-feedback" role="status" aria-live="polite"></div>
 
   <script type="module" src="/client/main.js"></script>

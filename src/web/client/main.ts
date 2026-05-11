@@ -182,12 +182,6 @@ const restoreFileInput = getRequiredInput("restore-file");
 const restorePassphraseInput = getRequiredInput("restore-passphrase");
 const restoreStateRoot = getRequiredElement("restore-state");
 const restoreSubmit = getRequiredButton("restore-submit");
-const recoveryPanel = getRequiredElement("recovery-panel");
-const recoveryPanelSecret = getRequiredElement("recovery-panel-secret");
-const backupCodeCopy = getRequiredButton("backup-code-copy");
-const backupCodeFeedback = getRequiredElement("backup-code-feedback");
-const recoveryAck = getRequiredInput("recovery-ack");
-const recoveryDismiss = getRequiredButton("recovery-dismiss");
 const localStateStatus = getRequiredElement("local-storage-status");
 const deviceCurrentStatus = getRequiredElement("device-current-status");
 const deviceList = getRequiredElement("device-list");
@@ -492,23 +486,6 @@ restoreDialog.addEventListener("close", () => {
 restoreForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void submitRestoreAccount();
-});
-
-recoveryAck.addEventListener("change", () => {
-  syncRecoveryDismissState();
-});
-
-recoveryDismiss.addEventListener("click", () => {
-  if (!recoveryAck.checked) return;
-  recoveryPanel.hidden = true;
-  recoveryPanelSecret.textContent = "";
-  backupCodeFeedback.textContent = "";
-  recoveryAck.checked = false;
-  syncRecoveryDismissState();
-});
-
-backupCodeCopy.addEventListener("click", () => {
-  void copyBackupCode();
 });
 
 deviceLinkStart.addEventListener("click", () => {
@@ -1438,7 +1415,7 @@ async function doSignup(handle: string, password: string): Promise<void> {
   currentCryptoAccount = draft.account;
   currentDeviceId = trustedDevice.device_id;
   setCurrentIdentity(identity, fingerprint);
-  setSignupState({ status: "created", identity, fingerprint, backupCode: "" });
+  setSignupState({ status: "created", identity, fingerprint });
   signupDialog.close();
   setSignedIn(identity.handle);
   flashFeedback("account created");
@@ -1772,7 +1749,7 @@ async function waitForLocalDbWritable(
 class StaleLocalAccountError extends Error {
   constructor(readonly handle: string, readonly reason: "not_found" | "canonical_mismatch") {
     super(reason === "not_found"
-      ? `this local account no longer exists on this node. please sign up again.`
+      ? `this account no longer exists on this node. if you have a backup file, restore it. otherwise the account is gone — sign up for a new one.`
       : `the handle @${handle} now belongs to a different account on this node.`);
   }
 }
@@ -1806,8 +1783,28 @@ async function verifyServerKnowsAccount(canonicalId: string, handle: string): Pr
 function showStaleAccountBanner(handle: string): void {
   if (landingStaleBanner === null) return;
   // Stored handles can carry a leading "@"; strip it before re-prefixing.
+  // The wording is deliberately honest: with the password/recovery-answer
+  // flows gone, an account that the server no longer knows can only be
+  // brought back by an encrypted backup file the user kept. There is no
+  // server-side recovery path. If they have no backup, the account is
+  // permanently gone — say so plainly so they don't sit waiting for help
+  // that isn't coming. The CTA opens the restore-from-file dialog
+  // directly so users don't have to discover restore via the signin
+  // flow. data-stale-action keeps it distinct from data-auth-action,
+  // which the auth-lifecycle smoke asserts is absent on landing.
   const display = handle.replace(/^@+/, "");
-  landingStaleBanner.textContent = `the local account @${display} no longer exists on this node. please sign up again — or reset this browser to clear stored data.`;
+  const message = document.createElement("div");
+  message.className = "landing__stale-message";
+  message.textContent = `@${display} is no longer on this node. if you exported an encrypted backup file, restore it to bring the account back. otherwise the account is gone — sign up for a new one or reset this browser.`;
+
+  const cta = document.createElement("button");
+  cta.type = "button";
+  cta.className = "text-button text-button--primary landing__stale-restore";
+  cta.textContent = "restore from backup file";
+  cta.dataset["staleAction"] = "restore";
+  cta.addEventListener("click", () => openRestoreDialog());
+
+  landingStaleBanner.replaceChildren(message, cta);
   landingStaleBanner.hidden = false;
 }
 
@@ -3108,14 +3105,24 @@ async function exportEncryptedBackup(): Promise<void> {
 }
 
 async function importSelectedBackup(file: File, passphrase: string): Promise<void> {
+  let imported;
   try {
     const backup = JSON.parse(await file.text()) as EncryptedSudoBackup;
-    await importEncryptedBackup(backup, passphrase);
+    imported = await importEncryptedBackup(backup, passphrase);
     await refreshLocalChats();
     await refreshLocalStorageStatus();
     flashFeedback("encrypted backup imported");
   } catch {
     flashFeedback("backup import failed");
+    return;
+  }
+  // Chain straight into the challenge-flow signin so the user lands
+  // signed-in instead of being dumped on the signin form to retype
+  // the passphrase they just typed. The restored crypto_account is
+  // already in IndexedDB; runSignin unlocks it locally and mints a
+  // server session via /api/identity/challenge + session-from-challenge.
+  if (imported.handle !== null) {
+    await runSignin(imported.handle, passphrase);
   }
 }
 
@@ -3624,53 +3631,13 @@ function logout(): void {
   setSignedOut();
 }
 
-function hideRecoveryPanel(): void {
-  recoveryPanel.hidden = true;
-  recoveryPanelSecret.textContent = "";
-  backupCodeFeedback.textContent = "";
-  recoveryAck.checked = false;
-  syncRecoveryDismissState();
-}
-
-function showRecoveryPanel(backupCode: string): void {
-  recoveryPanelSecret.textContent = backupCode;
-  backupCodeFeedback.textContent = backupCode.length === 0
-    ? "backup your account or copy your recovery information now"
-    : "";
-  recoveryPanel.hidden = false;
-  recoveryAck.checked = false;
-  syncRecoveryDismissState();
-}
-
-function syncRecoveryDismissState(): void {
-  const isActive = recoveryAck.checked;
-  recoveryDismiss.disabled = !isActive;
-  recoveryDismiss.title = isActive ? "dismiss recovery code panel" : "check I saved this first";
-}
-
-async function copyBackupCode(): Promise<void> {
-  const backupCode = recoveryPanelSecret.textContent ?? "";
-  if (backupCode.length === 0) return;
-
-  try {
-    await navigator.clipboard?.writeText(backupCode);
-    backupCodeFeedback.textContent = "copied";
-    window.setTimeout(() => {
-      if (backupCodeFeedback.textContent === "copied") backupCodeFeedback.textContent = "";
-    }, 1800);
-  } catch {
-    selectBackupCode();
-    backupCodeFeedback.textContent = "copy manually";
-  }
-}
-
-function selectBackupCode(): void {
-  const selection = window.getSelection();
-  const range = document.createRange();
-  range.selectNodeContents(recoveryPanelSecret);
-  selection?.removeAllRanges();
-  selection?.addRange(range);
-}
+// hideRecoveryPanel/showRecoveryPanel and the backup-code copy helpers
+// were removed in migration step 7. The DOM panel they targeted
+// (#recovery-panel) was vestigial: its only field was a backup code
+// the legacy /api/identity/signup once minted, and showRecoveryPanel
+// was never called once /api/identity/signup itself was deleted in
+// step 6. The post-signup nudge now lives directly in the signup
+// result render in components.ts.
 
 function renderPasskeySupport(): void {
   const support = passkeyAccessProvider.isAvailable() ? "available" : "unavailable";

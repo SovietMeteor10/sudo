@@ -177,7 +177,7 @@ function deleteIdentityRows(canonicalId) {
   const afterReload = await waitForState(page, (s) => s.authState === "menu" && s.staleBanner !== "", FLOW_BUDGET_MS);
   if (afterReload.kind !== "match") {
     fail("3.reload", `expected signed-out landing with stale banner, got authState=${afterReload.snap.authState} banner='${afterReload.snap.staleBanner}'`);
-  } else if (!/no longer exists/i.test(afterReload.snap.staleBanner)) {
+  } else if (!/no longer (exists|on this node)|backup file/i.test(afterReload.snap.staleBanner)) {
     fail("3.reload", `stale banner text not informative: '${afterReload.snap.staleBanner}'`);
   } else {
     ok(`3. after reload: signed out + stale banner: '${afterReload.snap.staleBanner.slice(0, 80)}...'`);
@@ -194,7 +194,7 @@ function deleteIdentityRows(canonicalId) {
     fail("4.signin", `signin state never settled: '${signinStale.snap.signinState}'`);
   } else if (signinStale.snap.authState === "signed-in") {
     fail("4.signin", "stale local account was allowed to sign in");
-  } else if (!/no longer exists|sign up again/i.test(signinStale.snap.signinState)) {
+  } else if (!/no longer (exists|on this node)|backup file|sign up/i.test(signinStale.snap.signinState)) {
     fail("4.signin", `expected stale-state error, got '${signinStale.snap.signinState}'`);
   } else {
     ok(`4. sign-in blocked with stale-state error: '${signinStale.snap.signinState.slice(0, 80)}...'`);

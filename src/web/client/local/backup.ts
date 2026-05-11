@@ -53,7 +53,15 @@ export async function createEncryptedBackup(ownerCanonicalId: string, passphrase
   };
 }
 
-export async function importEncryptedBackup(backup: EncryptedSudoBackup, passphrase: string): Promise<void> {
+export type ImportedBackupResult = {
+  handle: string | null;
+  canonicalId: string | null;
+};
+
+export async function importEncryptedBackup(
+  backup: EncryptedSudoBackup,
+  passphrase: string
+): Promise<ImportedBackupResult> {
   validateBackupEnvelope(backup);
   const salt = base64UrlToBytes(backup.kdf.salt);
   const iv = base64UrlToBytes(backup.cipher.iv);
@@ -63,6 +71,16 @@ export async function importEncryptedBackup(backup: EncryptedSudoBackup, passphr
   const snapshot = JSON.parse(new TextDecoder().decode(plaintext)) as LocalStateSnapshot;
   validateSnapshot(snapshot);
   await importLocalSnapshot(snapshot);
+  // Return the restored account's handle so the caller can chain
+  // straight into the challenge-flow signin without prompting the
+  // user for the passphrase a second time. A backup file is expected
+  // to carry exactly one crypto_account; if there's none the caller
+  // falls back to manual signin.
+  const account = snapshot.crypto_accounts[0] ?? null;
+  return {
+    handle: account?.handle ?? null,
+    canonicalId: account?.canonical_id ?? null
+  };
 }
 
 function validateBackupEnvelope(value: EncryptedSudoBackup): void {

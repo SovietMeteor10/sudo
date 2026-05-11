@@ -74,7 +74,7 @@ export type SignupState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "waiting_for_local_data"; attempt: number }
-  | { status: "created"; identity: IdentityDocument; fingerprint: string; backupCode: string }
+  | { status: "created"; identity: IdentityDocument; fingerprint: string }
   | { status: "error"; message: string };
 
 export type SigninState =

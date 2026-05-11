@@ -43,8 +43,7 @@ textarea {
 
 /* Auth-state visibility */
 body:not([data-auth-state="signed-in"]) .topbar,
-body:not([data-auth-state="signed-in"]) .shell,
-body:not([data-auth-state="signed-in"]) .recovery-panel {
+body:not([data-auth-state="signed-in"]) .shell {
   display: none;
 }
 
@@ -1899,112 +1898,19 @@ body[data-auth-state="auth-restore"] .landing {
   white-space: nowrap;
 }
 
-.backup-code-row {
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  max-width: 100%;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: #101211;
-}
-
-.backup-code-copy {
-  flex: 0 0 34px;
-  width: 34px;
-  min-width: 34px;
-  aspect-ratio: 1 / 1;
-  align-self: stretch;
-  padding: 0;
-  border: 0;
-  border-left: 1px solid var(--line);
-  border-radius: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
-  font-size: 14px;
-  transition: transform 90ms ease, border-color 120ms ease, color 120ms ease, background-color 120ms ease;
-}
-
-.backup-code-copy:active {
-  transform: translateY(1px) scale(0.98);
-}
-
-.backup-code-feedback {
-  min-height: 18px;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.recovery-panel {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 4;
-  width: fit-content;
-  max-width: min(720px, calc(100vw - 48px));
-  border: 1px solid var(--line);
-  background: var(--panel);
-}
-
-.recovery-panel__inner {
-  padding: 14px;
-  max-width: inherit;
-}
-
-.recovery-panel .signup-result__secret {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: min(520px, calc(100vw - 128px));
-  margin: 0;
-  border: 0;
-  border-right: 1px solid var(--line);
-  border-radius: 0;
-}
-
-.recovery-panel__ack {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .signup-dialog__panel .signup-dialog__warning:last-of-type {
   margin-bottom: 14px;
 }
 
-#recovery-dismiss {
-  transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+/* Stale-account banner CTA shown when the local account is no longer
+   on the server. Restores from an encrypted backup file in one click,
+   without sending the user through the signin dialog first. */
+.landing__stale-message {
+  margin-bottom: 8px;
 }
 
-#recovery-dismiss:disabled {
-  opacity: 0.36;
-  color: var(--muted);
-  border-color: var(--line-soft);
-  background: #101211;
-  cursor: default;
-  filter: grayscale(1);
-  animation: recovery-dismiss-standby 1.8s ease-in-out infinite;
-}
-
-#recovery-dismiss:not(:disabled) {
-  opacity: 1;
-  filter: none;
-  animation: none;
-}
-
-#recovery-dismiss:disabled:hover {
-  color: var(--muted);
-  border-color: var(--line-soft);
-  background: #101211;
-}
-
-@keyframes recovery-dismiss-standby {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-1px); }
+.landing__stale-restore {
+  margin-top: 4px;
 }
 
 /* Devices dialog */

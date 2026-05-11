@@ -37,6 +37,7 @@
     "smoke:reply-notification-focus": "node scripts/reply-notification-focus-smoke.cjs",
     "smoke:feed-engagement-live-refresh": "node scripts/feed-engagement-live-refresh-smoke.cjs",
     "smoke:client-signed-session": "node scripts/client-signed-session-smoke.cjs",
+    "smoke:lost-device-recovery": "node scripts/lost-device-recovery-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

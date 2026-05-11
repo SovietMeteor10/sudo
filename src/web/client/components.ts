@@ -270,13 +270,13 @@ export function renderSignupState(root: HTMLElement, state: SignupState): void {
   root.replaceChildren(
     block("signup-result", [
       line(`created ${state.identity.handle}`),
-      ...(state.backupCode.length === 0
-        ? [line("save your recovery information in the panel below.", "is-muted")]
-        : [
-            line("account recovery code:", "signup-result__label"),
-            line(state.backupCode, "signup-result__secret"),
-            line("shown once. store it somewhere safe. the server only keeps a hash.", "is-muted")
-          ]),
+      // Post-signup nudge. Recovery is the user's responsibility now —
+      // the server holds nothing that could authenticate them. Both
+      // paths (encrypted backup file and a paired second device) are
+      // mentioned so the user understands they have options. The
+      // account menu surfaces "backup account" and "linked devices".
+      line("your account keys live on this device.", "signup-result__label"),
+      line("export an encrypted backup or pair another device so you don't lose access — open the account menu (top right) when you're ready.", "is-muted"),
       line(`fingerprint: ${state.fingerprint.slice(0, 12)}...`, "is-muted"),
     ]),
   );
