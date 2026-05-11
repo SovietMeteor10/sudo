@@ -234,7 +234,16 @@
       <label class="signup-dialog__label" for="link-device-passphrase">account passphrase</label>
       <input id="link-device-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false">
 
-      <button class="text-button signup-dialog__mode" id="link-device-scan" type="button" disabled aria-disabled="true" title="camera scanning is coming soon">scan QR (coming soon)</button>
+      <button class="text-button signup-dialog__mode" id="link-device-scan" type="button" hidden>scan QR</button>
+
+      <section class="qr-scanner" id="qr-scanner-panel" hidden aria-labelledby="qr-scanner-hint">
+        <div class="qr-scanner__hint" id="qr-scanner-hint">camera active — point it at the QR code</div>
+        <video class="qr-scanner__video" id="qr-scanner-video" playsinline muted aria-label="camera preview"></video>
+        <div class="qr-scanner__feedback is-muted" id="qr-scanner-feedback" aria-live="polite"></div>
+        <div class="qr-scanner__actions">
+          <button class="text-button" id="qr-scanner-cancel" type="button">cancel scan</button>
+        </div>
+      </section>
 
       <div class="signup-dialog__hint" id="link-device-owner" aria-live="polite"></div>
       <div class="signup-dialog__state" id="link-device-state" aria-live="polite"></div>

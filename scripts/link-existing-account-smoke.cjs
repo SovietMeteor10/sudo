@@ -298,7 +298,10 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
     submit: document.getElementById("link-device-submit")?.textContent?.trim() ?? "",
     codeLabel: document.querySelector('label[for="link-device-code"]')?.textContent?.trim() ?? "",
     scanQrPresent: !!document.getElementById("link-device-scan"),
-    scanQrDisabled: document.getElementById("link-device-scan")?.disabled ?? false
+    scanQrLabel: document.getElementById("link-device-scan")?.textContent?.trim() ?? "",
+    scanQrHidden: document.getElementById("link-device-scan")?.hidden ?? null,
+    hasBarcodeDetector: typeof globalThis.BarcodeDetector === "function",
+    scannerPanelHidden: document.getElementById("qr-scanner-panel")?.hidden ?? null
   }));
   if (!/collect/i.test(collectShape.title)) fail("6c.title", `dialog title not collect-flavored: '${collectShape.title}'`);
   else ok(`6c. dialog title: '${collectShape.title}'`);
@@ -306,14 +309,48 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   else ok(`6d. submit copy: '${collectShape.submit}'`);
   if (!/temporary passcode/i.test(collectShape.codeLabel)) fail("6e.code-label", `code label unexpected: '${collectShape.codeLabel}'`);
   else ok(`6e. code field labelled '${collectShape.codeLabel}'`);
-  if (!collectShape.scanQrPresent || !collectShape.scanQrDisabled) {
-    fail("6f.scan-qr", `'scan QR' placeholder missing or not disabled: present=${collectShape.scanQrPresent} disabled=${collectShape.scanQrDisabled}`);
+  // Scan-QR button: visible iff BarcodeDetector is available, label is
+  // plain "scan QR" (no more "coming soon"), and the scanner panel
+  // itself stays hidden until the user clicks the button.
+  if (!collectShape.scanQrPresent) {
+    fail("6f.scan-qr", "scan QR button missing");
+  } else if (collectShape.hasBarcodeDetector && collectShape.scanQrHidden !== false) {
+    fail("6f.scan-qr-hidden", "BarcodeDetector available but scan QR button is hidden");
+  } else if (!collectShape.hasBarcodeDetector && collectShape.scanQrHidden !== true) {
+    fail("6f.scan-qr-shown", "no BarcodeDetector but scan QR button still showing");
+  } else if (/coming soon/i.test(collectShape.scanQrLabel)) {
+    fail("6f.scan-qr-label", `'coming soon' copy still on scan button: '${collectShape.scanQrLabel}'`);
+  } else if (collectShape.scannerPanelHidden !== true) {
+    fail("6f.scanner-panel", "scanner panel should be hidden until the user clicks scan QR");
   } else {
-    ok(`6f. 'scan QR (coming soon)' placeholder present and disabled`);
+    ok(`6f. scan QR button gated on BarcodeDetector (available=${collectShape.hasBarcodeDetector}, hidden=${collectShape.scanQrHidden}, label='${collectShape.scanQrLabel}')`);
   }
 
-  // ===== 7. Type code + passphrase, submit =====
-  await pageB.type("#link-device-code", pairing.code);
+  // ===== 6g. ?collect= URL pre-fills the code field =====
+  // The trusted-device QR encodes ?collect=CODE; opening that URL on
+  // a fresh browser should auto-open the collect-account dialog with
+  // the code pre-filled. Doing this AFTER step 6f means we navigate
+  // away (which closes the dialog from step 6b), verify the prefill
+  // path, and then continue the flow normally. The code is single-
+  // use server-side, so we still consume it via the typed-entry
+  // path below — both paths land on the same submit handler.
+  await pageB.goto(`${BASE}/?collect=${encodeURIComponent(pairing.code)}`, { waitUntil: "networkidle0" });
+  if (!await waitFor(pageB, () => document.getElementById("link-device-dialog")?.open === true, 5000)) {
+    fail("6g.collect-url-open", "?collect= URL did not auto-open the dialog"); throw new Error();
+  }
+  const prefilled = await pageB.evaluate(() => ({
+    code: document.getElementById("link-device-code")?.value ?? "",
+    urlClean: !window.location.search.includes("collect=") && !window.location.search.includes("pair=")
+  }));
+  if (prefilled.code !== pairing.code) {
+    fail("6g.prefill", `expected prefilled code '${pairing.code}', got '${prefilled.code}'`);
+  } else if (!prefilled.urlClean) {
+    fail("6g.url-strip", "collect/pair search param not stripped from URL after auto-open");
+  } else {
+    ok(`6g. ?collect=${pairing.code.slice(0, 6)}... auto-opened dialog with prefilled code + stripped URL`);
+  }
+
+  // ===== 7. Type passphrase (code is already prefilled), submit =====
   await pageB.type("#link-device-passphrase", PASSPHRASE);
   await pageB.click("#link-device-submit");
   if (!await waitFor(pageB, () => document.body.dataset.authState === "signed-in", 30000)) {

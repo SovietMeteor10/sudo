@@ -52,6 +52,7 @@
     "smoke:account-dialog-layout": "node scripts/account-dialog-layout-smoke.cjs",
     "smoke:linked-devices-layout": "node scripts/linked-devices-layout-smoke.cjs",
     "smoke:locked-device-prompt": "node scripts/locked-device-prompt-smoke.cjs",
+    "smoke:qr-collect": "node scripts/qr-collect-smoke.cjs",
     "smoke:directory-responsive": "node scripts/directory-responsive-smoke.cjs",
     "smoke:sync-rate-limit": "node scripts/sync-rate-limit-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"

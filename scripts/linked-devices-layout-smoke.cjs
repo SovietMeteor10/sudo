@@ -99,16 +99,55 @@ async function collectAccountOnPage(page, code) {
     throw new Error();
   }
 
-  // ===== Pairing card hidden by default =====
+  // ===== Pairing card hidden by default (computed display, not just IDL) =====
+  // The earlier regression was that `.pairing-card { display: flex }`
+  // overrode the user-agent `[hidden] { display: none }` rule, so
+  // setting `el.hidden = true` left the panel visible. Read the
+  // computed display + offsetParent to catch that, not just the IDL.
   const initial = await pageA.evaluate(() => {
     const card = document.getElementById("pairing-card");
     const codeText = document.getElementById("pairing-card-code")?.textContent?.trim() ?? "";
-    return { hidden: card instanceof HTMLElement ? card.hidden : null, codeText };
+    const passprompt = document.getElementById("device-passphrase-prompt");
+    return {
+      hiddenAttr: card instanceof HTMLElement ? card.hidden : null,
+      computed: card instanceof HTMLElement ? window.getComputedStyle(card).display : null,
+      offsetParent: card instanceof HTMLElement ? card.offsetParent !== null : null,
+      promptVisible: passprompt instanceof HTMLElement && !passprompt.hidden,
+      codeText
+    };
   });
-  if (initial.hidden !== true) {
-    fail("2.pairing-hidden", `pairing card not hidden on open: ${JSON.stringify(initial)}`);
+  if (initial.hiddenAttr !== true || initial.computed !== "none" || initial.offsetParent !== false) {
+    fail("2.pairing-hidden", `pairing card visible/reserving space on open: ${JSON.stringify(initial)}`);
+  } else if (initial.promptVisible) {
+    fail("2b.prompt-hidden", `passphrase prompt should be hidden by default`);
   } else {
-    ok(`2. pairing card hidden by default (no code shown)`);
+    ok(`2. pairing card fully hidden by default (display=none, no offsetParent)`);
+  }
+
+  // Also assert no leaked "temporary passcode" / hint text in the
+  // *visible* surface of the dialog. Pre-fix, the panel was visible
+  // and its hint copy appeared in the user's textContent read.
+  const visibleText = await pageA.evaluate(() => {
+    // textContent of *visible* descendants only — skip anything
+    // whose computed display is "none" or any ancestor's display:none.
+    function visibleTextOf(node) {
+      if (!(node instanceof HTMLElement)) return node.textContent ?? "";
+      const cs = window.getComputedStyle(node);
+      if (cs.display === "none" || cs.visibility === "hidden") return "";
+      let out = "";
+      for (const child of node.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) out += child.textContent ?? "";
+        else if (child instanceof HTMLElement) out += visibleTextOf(child);
+      }
+      return out;
+    }
+    const dlg = document.getElementById("devices-dialog");
+    return dlg ? visibleTextOf(dlg).toLowerCase() : "";
+  });
+  if (/temporary passcode|use this code only on your own device|expires in/.test(visibleText)) {
+    fail("2c.no-leaked-pairing-copy", `pairing card copy visible by default: '${visibleText.slice(0, 200)}'`);
+  } else {
+    ok(`2c. no temporary-passcode copy visible in the dialog by default`);
   }
 
   // ===== Section layout: this device + linked devices (no revoked yet) =====

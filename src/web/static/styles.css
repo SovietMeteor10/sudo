@@ -476,6 +476,16 @@ body[data-auth-state="auth-restore"] .landing {
   background: #101211;
 }
 
+/* The HTML `hidden` attribute maps to `display: none` in the user-
+   agent stylesheet, but `.device-passphrase-prompt { display: flex }`
+   above wins on specificity grounds and keeps the panel visible
+   (and reserving space) even when JS sets `el.hidden = true`. The
+   same trap bit the pairing card below. Make `[hidden]` authoritative
+   on both. */
+.device-passphrase-prompt[hidden] {
+  display: none;
+}
+
 .device-passphrase-prompt__hint {
   font-size: 13px;
   color: var(--text);
@@ -504,6 +514,55 @@ body[data-auth-state="auth-restore"] .landing {
   padding: 12px;
   border: 1px solid var(--line);
   background: #101211;
+}
+
+.pairing-card[hidden],
+.pairing-card__success[hidden] {
+  display: none;
+}
+
+/* Camera QR scanner panel shown inside the collect-account dialog
+   after the user clicks "scan QR". The video element is sized to
+   the dialog width and the hint sits above it so the user knows
+   the camera is live. Hidden by default; only the "scan QR" button
+   reveals it, and any close path (cancel/success/dialog close)
+   tears down the video tracks. */
+.qr-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #101211;
+}
+
+.qr-scanner[hidden] {
+  display: none;
+}
+
+.qr-scanner__hint {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.qr-scanner__video {
+  width: 100%;
+  max-height: 260px;
+  background: #050605;
+  border: 1px solid var(--line-soft, var(--line));
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+.qr-scanner__feedback {
+  font-size: 12px;
+}
+
+.qr-scanner__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .pairing-card__title {

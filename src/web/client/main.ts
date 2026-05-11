@@ -260,6 +260,11 @@ const linkDeviceOwner = getRequiredElement("link-device-owner");
 const linkDeviceState = getRequiredElement("link-device-state");
 const linkDeviceCancel = getRequiredButton("link-device-cancel");
 const linkDeviceSubmit = getRequiredButton("link-device-submit");
+const linkDeviceScan = getRequiredButton("link-device-scan");
+const qrScannerPanel = getRequiredElement("qr-scanner-panel");
+const qrScannerVideo = getRequiredVideo("qr-scanner-video");
+const qrScannerFeedback = getRequiredElement("qr-scanner-feedback");
+const qrScannerCancel = getRequiredButton("qr-scanner-cancel");
 const localMaintenanceFeedback = getRequiredElement("local-maintenance-feedback");
 const authActionButtons = [...document.querySelectorAll("[data-auth-action]")];
 const landingBrand = getRequiredButton("landing-brand");
@@ -297,6 +302,13 @@ let pairingExpiresInterval: number | null = null;
 // is replayed so the user doesn't have to click twice.
 type PendingDeviceAction = { type: "link" } | { type: "revoke"; deviceId: string };
 let pendingDeviceAction: PendingDeviceAction | null = null;
+// QR scanner state. Lives at the module top so the IIFE that auto-
+// opens the collect-account dialog from a ?collect= URL (which fires
+// during module evaluation, before any function bodies have been
+// reached) doesn't trip the TDZ on these locals.
+let qrScannerStream: MediaStream | null = null;
+let qrScannerInterval: number | null = null;
+let qrScannerRunning = false;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -691,6 +703,18 @@ linkDeviceCancel.addEventListener("click", () => {
 linkDeviceForm.addEventListener("submit", (event) => {
   event.preventDefault();
   void runLinkExistingAccount();
+});
+
+linkDeviceScan.addEventListener("click", () => {
+  void startQrScanner();
+});
+
+qrScannerCancel.addEventListener("click", () => {
+  closeQrScanner();
+});
+
+linkDeviceDialog.addEventListener("close", () => {
+  closeQrScanner({ silent: true });
 });
 
 for (const button of authActionButtons) {
@@ -3134,9 +3158,127 @@ function openLinkDeviceDialog(prefilledCode?: string): void {
   linkDevicePassphrase.value = "";
   linkDeviceState.textContent = "";
   linkDeviceOwner.textContent = "";
+  // Show the "scan QR" button only on devices that expose the
+  // browser-native BarcodeDetector. Anywhere else (Firefox today,
+  // older Safari, etc.) manual entry is the only path — we don't
+  // ship a JS QR decoder. Feature detection is one-shot per dialog
+  // open so the UI doesn't flicker if the API materializes late.
+  linkDeviceScan.hidden = !isBarcodeDetectorAvailable();
+  closeQrScanner({ silent: true });
   if (!linkDeviceDialog.open) linkDeviceDialog.showModal();
   if (prefilledCode && prefilledCode.length > 0) linkDevicePassphrase.focus();
   else linkDeviceCode.focus();
+}
+
+type GlobalWithBarcodeDetector = typeof globalThis & {
+  BarcodeDetector?: new (init?: { formats?: string[] }) => {
+    detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]>;
+  };
+};
+
+function isBarcodeDetectorAvailable(): boolean {
+  const g = globalThis as GlobalWithBarcodeDetector;
+  return typeof g.BarcodeDetector === "function"
+    && typeof navigator !== "undefined"
+    && typeof navigator.mediaDevices?.getUserMedia === "function";
+}
+
+// Permissive collect-URL parser. Accepts /?collect= and the legacy
+// /?pair= alias, requires the canonical 6-6 hex passcode format,
+// rejects anything else (random URLs, javascript:, file:, etc.).
+// Returns the extracted code or null.
+function extractCollectCodeFromPayload(payload: string): string | null {
+  if (typeof payload !== "string" || payload.length === 0) return null;
+  let url: URL;
+  try {
+    url = new URL(payload, window.location.origin);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  // Allow any host — pairing happens between devices that may be on
+  // different hosts (dev/prod, ngrok, onion) — but require the path
+  // to be root so attacker-controlled deep links can't impersonate
+  // a collect URL.
+  if (url.pathname !== "/" && url.pathname !== "") return null;
+  const code = (url.searchParams.get("collect") ?? url.searchParams.get("pair") ?? "").toUpperCase();
+  return /^[0-9A-F]{6}-[0-9A-F]{6}$/.test(code) ? code : null;
+}
+
+async function startQrScanner(): Promise<void> {
+  if (qrScannerRunning) return;
+  if (!isBarcodeDetectorAvailable()) {
+    qrScannerPanel.hidden = false;
+    qrScannerFeedback.textContent = "camera unavailable — type the code instead.";
+    return;
+  }
+  qrScannerPanel.hidden = false;
+  qrScannerFeedback.textContent = "requesting camera…";
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment" },
+      audio: false
+    });
+  } catch {
+    qrScannerFeedback.textContent = "camera unavailable — type the code instead.";
+    return;
+  }
+  qrScannerStream = stream;
+  qrScannerVideo.srcObject = stream;
+  try {
+    await qrScannerVideo.play();
+  } catch {
+    // Some browsers reject autoplay until a user gesture — but we're
+    // already inside a click handler so this rarely fires. If it
+    // does, the user can still cancel and re-click.
+    qrScannerFeedback.textContent = "could not start camera preview.";
+    closeQrScanner();
+    return;
+  }
+  qrScannerFeedback.textContent = "";
+  qrScannerRunning = true;
+  const detector = new (globalThis as GlobalWithBarcodeDetector).BarcodeDetector!({ formats: ["qr_code"] });
+  qrScannerInterval = window.setInterval(async () => {
+    if (!qrScannerRunning) return;
+    let detections: { rawValue: string }[];
+    try {
+      detections = await detector.detect(qrScannerVideo);
+    } catch {
+      return;
+    }
+    for (const det of detections) {
+      const code = extractCollectCodeFromPayload(det.rawValue);
+      if (code !== null) {
+        onQrScanSuccess(code);
+        return;
+      }
+    }
+  }, 250);
+}
+
+function onQrScanSuccess(code: string): void {
+  linkDeviceCode.value = code;
+  closeQrScanner({ silent: true });
+  linkDeviceState.textContent = "code scanned. enter your passphrase.";
+  linkDevicePassphrase.focus();
+}
+
+function closeQrScanner(options: { silent?: boolean } = {}): void {
+  qrScannerRunning = false;
+  if (qrScannerInterval !== null) {
+    window.clearInterval(qrScannerInterval);
+    qrScannerInterval = null;
+  }
+  if (qrScannerStream !== null) {
+    for (const track of qrScannerStream.getTracks()) {
+      try { track.stop(); } catch { /* defensive — tracks may already be ending */ }
+    }
+    qrScannerStream = null;
+  }
+  qrScannerVideo.srcObject = null;
+  qrScannerPanel.hidden = true;
+  if (!options.silent) qrScannerFeedback.textContent = "";
 }
 
 async function revokeDevice(deviceId: string): Promise<void> {
@@ -5451,6 +5593,12 @@ function getRequiredSelect(id: string): HTMLSelectElement {
 function getRequiredDialog(id: string): HTMLDialogElement {
   const element = document.getElementById(id);
   if (!(element instanceof HTMLDialogElement)) throw new Error(`Missing dialog #${id}`);
+  return element;
+}
+
+function getRequiredVideo(id: string): HTMLVideoElement {
+  const element = document.getElementById(id);
+  if (!(element instanceof HTMLVideoElement)) throw new Error(`Missing video #${id}`);
   return element;
 }
 

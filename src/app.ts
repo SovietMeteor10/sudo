@@ -30,7 +30,11 @@ export function createApp() {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Frame-Options", "DENY");
-    response.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    // Camera is allowed on this origin (camera=(self)) so the
+    // collect-account dialog can scan QR codes via BarcodeDetector +
+    // getUserMedia. Geolocation and microphone are still fully
+    // disabled — nothing in sudo needs them.
+    response.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=(self)");
     response.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
     response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
     next();
