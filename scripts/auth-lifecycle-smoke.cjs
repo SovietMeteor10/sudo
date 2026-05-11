@@ -156,18 +156,27 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
     if (!directoryHint.ok) fail("directory-hint", `expected hint directly below search input, got '${directoryHint.text ?? "(missing)"}'`);
     else ok(`3g. directory hint sits below search input: '${directoryHint.text}'`);
 
-    // 3h. account menu surfaces honest relay status (no fake onion claim).
-    const relayCopy = await page.evaluate(() => {
+    // 3h. account menu is now the slim launcher pattern: handle +
+    // account / settings / lock / logout. The previous relay-status
+    // line was removed in the UX cleanup. Assert the slim shape and
+    // the absence of any leaked relay/transport/protocol wording.
+    const menuShape = await page.evaluate(() => {
       document.getElementById("account-button")?.click();
-      const text = document.getElementById("account-menu-relay")?.textContent ?? "";
+      const root = document.getElementById("account-menu");
+      const items = root === null ? [] : [...root.querySelectorAll(".account-menu__item")].map((b) => b.id);
+      const text = root?.textContent?.toLowerCase() ?? "";
       document.getElementById("account-button")?.click();
-      return text.toLowerCase();
+      return { items, text, hasRelayLine: !!document.getElementById("account-menu-relay") };
     });
-    if (!/https fallback|encrypted, not onion-routed|onion|unavailable/.test(relayCopy)) {
-      fail("relay-status", `account menu does not surface honest relay status: '${relayCopy}'`);
-    } else if (/onion-routed/.test(relayCopy) && !/not onion-routed/.test(relayCopy)) {
-      fail("relay-status", `relay copy claims onion routing without onion transport: '${relayCopy}'`);
-    } else ok(`3h. relay status: '${relayCopy}'`);
+    const expectedItems = ["account-menu-account", "account-menu-settings", "account-menu-lock", "account-menu-logout"];
+    const missingItems = expectedItems.filter((id) => !menuShape.items.includes(id));
+    if (missingItems.length > 0) {
+      fail("account-menu-shape", `missing menu items: ${missingItems.join(", ")} (saw=${menuShape.items.join(", ")})`);
+    } else if (menuShape.hasRelayLine) {
+      fail("account-menu-shape", `account menu still renders #account-menu-relay (relay leak)`);
+    } else if (/relay|onion|transport/i.test(menuShape.text)) {
+      fail("account-menu-shape", `account menu still leaks relay/transport wording: '${menuShape.text}'`);
+    } else ok(`3h. account menu has slim shape (account/settings/lock/logout, no relay leak)`);
 
     // 3i. After posting, the composer status text should not linger as 'posted'.
     const composerProbe = await page.evaluate(async () => {
@@ -369,10 +378,15 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
         reader.readAsText(blob);
         return origCreate(blob);
       };
-      // Backup lives in the top-right account dropdown; open it then click.
+      // Backup lives inside the settings dialog now (account menu →
+      // settings → backup). The export button itself is
+      // #settings-backup.
       document.getElementById("account-button")?.click();
-      const button = document.getElementById("account-menu-backup");
-      if (!button) { resolve({ ok: false, reason: "backup button missing" }); return; }
+      const settings = document.getElementById("account-menu-settings");
+      if (!settings) { resolve({ ok: false, reason: "settings menu item missing" }); return; }
+      settings.click();
+      const button = document.getElementById("settings-backup");
+      if (!button) { resolve({ ok: false, reason: "settings backup button missing" }); return; }
       button.click();
       const start = Date.now();
       const feedbackText = () => document.getElementById("local-maintenance-feedback")?.textContent ?? "";
@@ -503,10 +517,14 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   await page.type("#signin-password", password);
   await page.click("#signin-submit");
   await waitForState(page, (s) => s.authState === "signed-in", FLOW_BUDGET_MS);
-  // Devices live behind the account-menu -> linked devices dialog.
+  // Devices live behind account menu → settings → linked devices.
   await page.evaluate(() => {
     document.getElementById("account-button")?.click();
-    document.getElementById("account-menu-devices")?.click();
+    document.getElementById("account-menu-settings")?.click();
+  });
+  await new Promise((r) => setTimeout(r, 200));
+  await page.evaluate(() => {
+    document.getElementById("settings-devices")?.click();
   });
   await new Promise((r) => setTimeout(r, 250));
   const linkResult = await page.evaluate(async () => {

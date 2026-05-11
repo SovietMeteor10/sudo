@@ -91,9 +91,17 @@ async function exportBackupBlob(page) {
         return origCreate(blob);
       };
       document.getElementById("account-button")?.click();
-      const button = document.getElementById("account-menu-backup");
-      if (!button) { resolve({ ok: false, reason: "backup button missing" }); return; }
-      button.click();
+      const settings = document.getElementById("account-menu-settings");
+      if (!settings) { resolve({ ok: false, reason: "settings menu item missing" }); return; }
+      settings.click();
+      // Settings dialog opens synchronously via showModal(); the
+      // backup button is rendered immediately so we can click it on
+      // the next microtask.
+      setTimeout(() => {
+        const button = document.getElementById("settings-backup");
+        if (!button) { resolve({ ok: false, reason: "settings backup button missing" }); return; }
+        button.click();
+      }, 50);
       const start = Date.now();
       const tick = () => {
         if (captured !== null) { resolve({ ok: true, body: captured }); return; }

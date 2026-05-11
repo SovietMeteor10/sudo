@@ -272,25 +272,151 @@ body[data-auth-state="auth-restore"] .landing {
   max-width: min(86vw, 320px);
 }
 
-.landing__advanced {
+/* Plain-language hint shown under the brand on the landing page.
+   Replaces the prior "save your recovery information" / reset
+   surface with a single line that sets expectations: keys live on
+   this device, not on the server. */
+.landing__hint {
+  margin: 8px auto 14px;
+  max-width: min(86vw, 360px);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ----- Settings dialog ----- */
+.settings-section {
   display: flex;
-  justify-content: center;
-  margin-top: 12px;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line-soft, var(--line));
 }
 
-.landing__reset {
+.settings-section:last-of-type {
+  border-bottom: 0;
+}
+
+.settings-section__action {
+  align-self: flex-start;
+}
+
+.settings-section__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.settings-danger {
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  background: #1a1112;
+}
+
+.settings-danger--quiet {
   background: transparent;
-  border: 0;
-  color: var(--text-muted, #888);
-  font-size: 11px;
-  text-decoration: underline;
-  cursor: pointer;
-  padding: 4px 8px;
+  border-color: var(--line-soft, var(--line));
 }
 
-.landing__reset:hover,
-.landing__reset:focus-visible {
-  color: var(--text, #333);
+.settings-danger__summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.settings-danger__summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-danger[open] .settings-danger__summary {
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+
+.settings-danger__body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-danger__warning {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.settings-danger__label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-danger__action {
+  align-self: flex-start;
+}
+
+/* ----- Account dialog ----- */
+.account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.account-card__handle {
+  font-size: 18px;
+  color: var(--text);
+}
+
+.account-card__fingerprint {
+  margin: 4px 0;
+}
+
+.account-card__fingerprint-text {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.account-card__bio {
+  resize: vertical;
+  min-height: 64px;
+}
+
+.account-card__status {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--line);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.account-card__status.is-ok {
+  border-left-color: #2e7d32;
+}
+
+.account-card__status.is-warn {
+  border-left-color: #b78605;
+}
+
+.account-card__status.is-danger {
+  border-left-color: #b32424;
+  background: #1a1112;
+}
+
+.account-card__canonical {
+  word-break: break-all;
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
 /* ============================================================
@@ -1911,6 +2037,23 @@ body[data-auth-state="auth-restore"] .landing {
 
 .landing__stale-restore {
   margin-top: 4px;
+}
+
+.landing__stale-reset {
+  background: transparent;
+  border: 0;
+  padding: 6px 0 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.landing__stale-reset:hover,
+.landing__stale-reset:focus-visible {
+  color: var(--text);
 }
 
 /* Devices dialog */

@@ -27,6 +27,7 @@
   <section class="landing" id="landing-screen" aria-label="sudo sign in">
     <div class="landing__inner">
       <button class="landing__brand" id="landing-brand" type="button" aria-label="sudo">sudo</button>
+      <p class="landing__hint">your account keys live on this device. sign up creates them, sign in unlocks them.</p>
       <div class="landing__actions">
         <div class="landing__row">
           <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
@@ -34,9 +35,6 @@
         </div>
       </div>
       <div class="landing__stale" id="landing-stale" role="status" aria-live="polite" hidden></div>
-      <div class="landing__advanced">
-        <button class="landing__reset" id="landing-reset" type="button">reset this browser</button>
-      </div>
     </div>
   </section>
 
@@ -136,13 +134,10 @@
   <section class="account-menu" id="account-menu" hidden role="menu" aria-label="account">
     <div class="account-menu__head">
       <div class="account-menu__handle" id="account-menu-handle"></div>
-      <div class="account-menu__fingerprint" id="account-menu-fingerprint"></div>
-      <div class="account-menu__relay" id="account-menu-relay"></div>
     </div>
-    <button class="account-menu__item" id="account-menu-backup" type="button" role="menuitem">backup account</button>
-    <button class="account-menu__item" id="account-menu-restore" type="button" role="menuitem">restore from backup</button>
-    <button class="account-menu__item" id="account-menu-devices" type="button" role="menuitem">linked devices</button>
-    <button class="account-menu__item" id="account-menu-lock" type="button" role="menuitem">lock account</button>
+    <button class="account-menu__item" id="account-menu-account" type="button" role="menuitem">account</button>
+    <button class="account-menu__item" id="account-menu-settings" type="button" role="menuitem">settings</button>
+    <button class="account-menu__item" id="account-menu-lock" type="button" role="menuitem">lock</button>
     <button class="account-menu__item account-menu__item--danger" id="account-menu-logout" type="button" role="menuitem">logout</button>
   </section>
 
@@ -185,7 +180,7 @@
     <form class="signup-dialog__panel" id="devices-form" method="dialog" autocomplete="off">
       <div class="signup-dialog__title" id="devices-dialog-title">linked devices</div>
       <div class="signup-dialog__hint" id="device-current-status">not signed in</div>
-      <div class="signup-dialog__hint" id="local-storage-status">device status: checking</div>
+      <div class="signup-dialog__hint" id="local-storage-status">checking…</div>
       <div class="devices-panel__list" id="device-list"></div>
       <div class="devices-panel__actions">
         <button class="text-button" id="device-link-start" type="button">create pairing code</button>
@@ -196,6 +191,74 @@
       <input id="backup-import-file" type="file" accept=".json,.sudo-backup.json,application/json" hidden>
       <div class="signup-dialog__actions">
         <button class="text-button" id="devices-cancel" type="button">close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog signup-dialog--settings" id="settings-dialog" aria-labelledby="settings-title">
+    <form class="signup-dialog__panel" id="settings-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="settings-title">settings</div>
+
+      <div class="settings-section">
+        <button class="text-button text-button--primary settings-section__action" id="settings-backup" type="button">backup account</button>
+        <p class="settings-section__hint">save an encrypted file you can use to restore this account on another device.</p>
+      </div>
+
+      <div class="settings-section">
+        <button class="text-button settings-section__action" id="settings-restore" type="button">restore from backup</button>
+        <p class="settings-section__hint">load an encrypted backup file you exported earlier.</p>
+      </div>
+
+      <div class="settings-section">
+        <button class="text-button settings-section__action" id="settings-devices" type="button">linked devices</button>
+        <p class="settings-section__hint">pair a second device or revoke one you no longer use.</p>
+      </div>
+
+      <details class="settings-danger" id="settings-danger">
+        <summary class="settings-danger__summary">danger zone</summary>
+        <div class="settings-danger__body">
+          <p class="settings-danger__warning">
+            this removes this browser's copy of your account keys, messages, contacts, and settings. if you have no backup or paired device, you may permanently lose access.
+          </p>
+          <label class="settings-danger__label" for="settings-reset-confirm">type <strong>RESET</strong> to confirm</label>
+          <input id="settings-reset-confirm" class="lookup__input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false">
+          <button class="text-button text-button--danger settings-danger__action" id="settings-reset" type="button" disabled>reset this browser</button>
+        </div>
+      </details>
+
+      <div class="signup-dialog__state" id="settings-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="settings-cancel" type="button">close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog signup-dialog--account" id="account-dialog" aria-labelledby="account-title">
+    <form class="signup-dialog__panel" id="account-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="account-title">account</div>
+
+      <div class="account-card">
+        <div class="account-card__handle" id="account-card-handle"></div>
+        <div class="account-card__fingerprint" id="account-card-fingerprint-grid" aria-label="visual fingerprint"></div>
+        <div class="account-card__fingerprint-text is-muted" id="account-card-fingerprint-text"></div>
+        <div class="account-card__status" id="account-card-status" aria-live="polite"></div>
+      </div>
+
+      <label class="signup-dialog__label" for="account-bio">bio</label>
+      <textarea id="account-bio" class="lookup__input account-card__bio" rows="3" maxlength="280" placeholder="say something about yourself"></textarea>
+      <div class="signup-dialog__state" id="account-state" aria-live="polite"></div>
+
+      <details class="settings-danger settings-danger--quiet" id="account-advanced">
+        <summary class="settings-danger__summary">advanced</summary>
+        <div class="settings-danger__body">
+          <div class="signup-dialog__label">canonical id</div>
+          <div class="account-card__canonical is-muted" id="account-card-canonical"></div>
+        </div>
+      </details>
+
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="account-cancel" type="button">close</button>
+        <button class="text-button text-button--primary" id="account-save-bio" type="button">save bio</button>
       </div>
     </form>
   </dialog>

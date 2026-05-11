@@ -869,7 +869,7 @@ function renderChat(chat: ChatSummary): HTMLElement {
   return row;
 }
 
-function renderFingerprintGrid(fingerprint: IdentityFingerprint): HTMLElement {
+export function renderFingerprintGrid(fingerprint: IdentityFingerprint): HTMLElement {
   const grid = document.createElement("div");
   grid.className = "identity-fingerprint-grid";
   grid.setAttribute("aria-label", `identity fingerprint ${fingerprint.fingerprint}`);

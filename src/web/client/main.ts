@@ -64,6 +64,7 @@ import {
   renderChatList,
   renderDiscoveryPanel,
   renderDevicePanel,
+  renderFingerprintGrid,
   renderLookupResult,
   renderSearchResults,
   renderSigninState,
@@ -77,17 +78,20 @@ import {
   writeDevSessionToken
 } from "./localState.js";
 import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup } from "./local/backup.js";
+import { gridFromFingerprintHex } from "./local/fingerprint.js";
 import { base64Url, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
   deleteLocalContact,
   getLocalStorageStatus,
+  getSetting,
   initializeLocalState,
   listConversations,
   listCryptoAccounts,
   listLocalMessagesByConversation,
   listTrustedDevices,
   getLocalDeviceMetadata,
+  putSetting,
   revokeTrustedDevice,
   saveIdentitySeen,
   saveTrustedDevice,
@@ -140,15 +144,30 @@ const accountButton = getRequiredButton("account-button");
 const accountButtonHandle = getRequiredElement("account-button-handle");
 const accountMenu = getRequiredElement("account-menu");
 const accountMenuHandle = getRequiredElement("account-menu-handle");
-const accountMenuFingerprint = getRequiredElement("account-menu-fingerprint");
-const accountMenuRelay = getRequiredElement("account-menu-relay");
-const accountMenuBackup = getRequiredButton("account-menu-backup");
-const accountMenuRestore = getRequiredButton("account-menu-restore");
-const accountMenuDevices = getRequiredButton("account-menu-devices");
+const accountMenuAccount = getRequiredButton("account-menu-account");
+const accountMenuSettings = getRequiredButton("account-menu-settings");
 const accountMenuLock = getRequiredButton("account-menu-lock");
 const accountMenuLogout = getRequiredButton("account-menu-logout");
 const devicesDialog = getRequiredDialog("devices-dialog");
 const devicesCancel = getRequiredButton("devices-cancel");
+const settingsDialog = getRequiredDialog("settings-dialog");
+const settingsBackupButton = getRequiredButton("settings-backup");
+const settingsRestoreButton = getRequiredButton("settings-restore");
+const settingsDevicesButton = getRequiredButton("settings-devices");
+const settingsResetConfirmInput = getRequiredInput("settings-reset-confirm");
+const settingsResetButton = getRequiredButton("settings-reset");
+const settingsCancel = getRequiredButton("settings-cancel");
+const settingsState = getRequiredElement("settings-state");
+const accountDialog = getRequiredDialog("account-dialog");
+const accountCardHandle = getRequiredElement("account-card-handle");
+const accountCardFingerprintGrid = getRequiredElement("account-card-fingerprint-grid");
+const accountCardFingerprintText = getRequiredElement("account-card-fingerprint-text");
+const accountCardStatus = getRequiredElement("account-card-status");
+const accountCardCanonical = getRequiredElement("account-card-canonical");
+const accountBioInput = document.getElementById("account-bio") as HTMLTextAreaElement | null;
+const accountSaveBio = getRequiredButton("account-save-bio");
+const accountCancel = getRequiredButton("account-cancel");
+const accountState = getRequiredElement("account-state");
 const removeConnectionDialog = getRequiredDialog("remove-connection-dialog");
 const removeConnectionCancel = getRequiredButton("remove-connection-cancel");
 const removeConnectionConfirm = getRequiredButton("remove-connection-confirm");
@@ -196,7 +215,8 @@ const landingBrand = getRequiredButton("landing-brand");
 // missing element doesn't strand the auth wiring (we got burned by
 // getRequiredElement on optional notification panels before).
 const landingStaleBanner = document.getElementById("landing-stale");
-const landingResetButton = document.getElementById("landing-reset") as HTMLButtonElement | null;
+// landing-reset removed in the UX cleanup — reset now lives inside
+// the settings dialog under "danger zone" with a typed-RESET confirm.
 
 const passkeyAccessProvider = new BrowserPasskeyAccessProvider();
 
@@ -509,10 +529,6 @@ for (const button of authActionButtons) {
   });
 }
 
-if (landingResetButton !== null) {
-  landingResetButton.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
-}
-
 landingBrand.addEventListener("mouseenter", () => {
   void startBrandFlicker();
 });
@@ -551,19 +567,55 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
-accountMenuBackup.addEventListener("click", () => {
+accountMenuAccount.addEventListener("click", () => {
   setAccountMenuOpen(false);
+  void openAccountDialog();
+});
+
+accountMenuSettings.addEventListener("click", () => {
+  setAccountMenuOpen(false);
+  openSettingsDialog();
+});
+
+settingsBackupButton.addEventListener("click", () => {
+  // Close settings before triggering the backup so the file-save
+  // prompt and the toast feedback are both visible without the
+  // modal in the way.
+  settingsDialog.close();
   void exportEncryptedBackup();
 });
 
-accountMenuRestore.addEventListener("click", () => {
-  setAccountMenuOpen(false);
+settingsRestoreButton.addEventListener("click", () => {
+  settingsDialog.close();
   openRestoreDialog();
 });
 
-accountMenuDevices.addEventListener("click", () => {
-  setAccountMenuOpen(false);
+settingsDevicesButton.addEventListener("click", () => {
+  settingsDialog.close();
   openDevicesDialog();
+});
+
+settingsResetConfirmInput.addEventListener("input", () => {
+  // Two-step destructive confirm: the reset button only enables when
+  // the user has typed RESET exactly. Trim trailing whitespace so a
+  // tab/enter doesn't keep it disabled.
+  settingsResetButton.disabled = settingsResetConfirmInput.value.trim() !== "RESET";
+});
+
+settingsResetButton.addEventListener("click", () => {
+  void runSettingsReset();
+});
+
+settingsCancel.addEventListener("click", () => {
+  settingsDialog.close();
+});
+
+accountSaveBio.addEventListener("click", () => {
+  void saveAccountBio();
+});
+
+accountCancel.addEventListener("click", () => {
+  accountDialog.close();
 });
 
 accountMenuLock.addEventListener("click", () => {
@@ -681,7 +733,7 @@ async function initializeLocalRuntime(): Promise<void> {
     await refreshLocalStorageStatus();
     await refreshDevicePanel();
   } catch (error) {
-    localStateStatus.textContent = `device status: ${error instanceof Error ? error.message : "unavailable"}`;
+    localStateStatus.textContent = `local data: ${error instanceof Error ? error.message : "unavailable"}`;
   }
 }
 
@@ -1804,7 +1856,20 @@ function showStaleAccountBanner(handle: string): void {
   cta.dataset["staleAction"] = "restore";
   cta.addEventListener("click", () => openRestoreDialog());
 
-  landingStaleBanner.replaceChildren(message, cta);
+  // Reset escape hatch for stale-state users with no backup. They can
+  // never reach Settings (which requires being signed-in), so without
+  // this link they would have no way to clear local data and start
+  // fresh on this browser. Visually de-emphasized — small underline,
+  // not a primary button — and still gated by window.confirm() inside
+  // resetThisDeviceWithConfirm().
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "landing__stale-reset";
+  reset.textContent = "reset this browser";
+  reset.dataset["staleAction"] = "reset";
+  reset.addEventListener("click", () => { void resetThisDeviceWithConfirm(); });
+
+  landingStaleBanner.replaceChildren(message, cta, reset);
   landingStaleBanner.hidden = false;
 }
 
@@ -1900,7 +1965,18 @@ async function detectStaleStoredAccountsAndBanner(): Promise<void> {
 
 async function refreshLocalStorageStatus(): Promise<void> {
   const status = await getLocalStorageStatus();
-  localStateStatus.textContent = `device status: ${status.messages} messages, ${status.contacts} contacts, ${status.events} events, ${status.pending_outbound} queued, ${status.trusted_devices} devices`;
+  // Plain language for what's on this device. Drop "events" (an
+  // internal sync-log count that means nothing to a user) and avoid
+  // the word "device status" which the prior copy led with.
+  const pieces = [
+    `${status.messages} message${status.messages === 1 ? "" : "s"}`,
+    `${status.contacts} contact${status.contacts === 1 ? "" : "s"}`,
+    `${status.trusted_devices} linked device${status.trusted_devices === 1 ? "" : "s"}`
+  ];
+  if (status.pending_outbound > 0) {
+    pieces.push(`${status.pending_outbound} pending`);
+  }
+  localStateStatus.textContent = `this browser holds ${pieces.join(", ")}.`;
   void refreshDevicePanel();
 }
 
@@ -3098,6 +3174,11 @@ async function exportEncryptedBackup(): Promise<void> {
     link.download = `sudo-backup-${backup.created_at.slice(0, 10)}.sudo-backup.json`;
     link.click();
     URL.revokeObjectURL(url);
+    // Stamp the moment a backup was actually exported. The account
+    // dialog reads this to flip recovery posture from "unprotected"
+    // to "backup file saved" so the user has visible feedback that
+    // the lever they just pulled is the lever that protects them.
+    void putSetting(profileLastBackupKey(currentIdentityDocument.canonical_id), backup.created_at).catch(() => {});
     flashFeedback("encrypted backup exported");
   } catch (error) {
     flashFeedback(error instanceof Error ? error.message : "backup export failed");
@@ -3460,44 +3541,19 @@ function setAccountButtonHandle(handle: string | null): void {
     accountButtonHandle.textContent = "";
     accountButton.removeAttribute("data-handle");
     accountMenuHandle.textContent = "";
-    accountMenuFingerprint.textContent = "";
-    accountMenuRelay.textContent = "";
     return;
   }
   accountButtonHandle.textContent = handle;
   accountButton.setAttribute("data-handle", handle);
   accountMenuHandle.textContent = handle;
-  accountMenuFingerprint.textContent = currentIdentityFingerprint
-    ? `fingerprint ${currentIdentityFingerprint.slice(0, 12)}...`
-    : "";
-  accountMenuRelay.textContent = describeRelayStatus();
-}
-
-// Honest relay status string. We never claim onion routing unless the node
-// actually advertises an onion relay capability with a usable URL.
-function describeRelayStatus(): string {
-  const node = currentNodeDocument;
-  if (node === null) return "relay: unknown";
-  const capabilities = node.relay_capabilities ?? [];
-  const onion = capabilities.find((r) => r.transport === "onion" && typeof r.url === "string" && r.url.length > 0);
-  if (onion !== undefined && node.onion_base_url) {
-    return "relay: onion";
-  }
-  const https = capabilities.find((r) => r.transport === "https");
-  if (https !== undefined) {
-    return "relay: https fallback (encrypted, not onion-routed)";
-  }
-  const localDev = capabilities.find((r) => r.transport === "local_dev");
-  if (localDev !== undefined) {
-    return "relay: local development (encrypted, not onion-routed)";
-  }
-  return "relay: unavailable";
 }
 
 function refreshRelayStatusUi(): void {
-  accountMenuRelay.textContent = currentIdentityDocument === null ? "" : describeRelayStatus();
-  // Chat popup header now shows only the partner handle; relay status lives
-  // on the account menu only.
+  // The account menu used to surface a "relay: ..." line that leaked
+  // protocol-level wording (onion / https / local_dev) into the
+  // signed-in dropdown. Cleaned up in the UX pass — relay state is
+  // an operator-level concern that doesn't belong in front of users.
+  // Kept as a no-op so existing callers don't need to be rewired.
 }
 
 function setAccountMenuOpen(open: boolean): void {
@@ -3508,6 +3564,151 @@ function setAccountMenuOpen(open: boolean): void {
 function openDevicesDialog(): void {
   void refreshDevicePanel();
   if (!devicesDialog.open) devicesDialog.showModal();
+}
+
+// Settings dialog. Single launcher for the destructive/maintenance
+// surface that used to clutter the account dropdown: backup,
+// restore, linked devices, and the danger-zone reset. The dialog
+// itself is a thin layer — backup runs immediately, the other three
+// open the existing dedicated dialogs (restore, devices) or the
+// typed-RESET destructive flow.
+function openSettingsDialog(): void {
+  resetSettingsDangerZone();
+  settingsState.textContent = "";
+  if (!settingsDialog.open) settingsDialog.showModal();
+}
+
+function resetSettingsDangerZone(): void {
+  settingsResetConfirmInput.value = "";
+  settingsResetButton.disabled = true;
+  const details = document.getElementById("settings-danger");
+  if (details instanceof HTMLDetailsElement) details.open = false;
+}
+
+async function runSettingsReset(): Promise<void> {
+  // The reset button is gated on the user typing RESET into the
+  // confirmation input, but we double-check here so a programmatic
+  // .click() can't bypass the typed confirmation. Once that's
+  // satisfied we drop the local IndexedDB and reload, mirroring the
+  // legacy resetThisDeviceWithConfirm() flow without the
+  // window.confirm() prompt (the dialog itself is the confirmation).
+  if (settingsResetConfirmInput.value.trim() !== "RESET") return;
+  settingsState.textContent = "clearing local data…";
+  try {
+    await deleteLocalDb();
+  } catch (error) {
+    settingsState.textContent = error instanceof Error ? error.message : "reset failed";
+    return;
+  }
+  settingsState.textContent = "this browser is now empty. reloading…";
+  window.setTimeout(() => window.location.reload(), 200);
+}
+
+// Account dialog. User-facing snapshot of who they are on this
+// device: handle, visual + text fingerprint, recovery posture
+// (backed up / paired device / unprotected), editable bio, and an
+// "advanced" disclosure that surfaces the canonical_id for
+// power-users. Nothing about relays, transports, or storage
+// internals is exposed here.
+async function openAccountDialog(): Promise<void> {
+  if (currentIdentityDocument === null || currentIdentityFingerprint === null) {
+    return;
+  }
+  const identity = currentIdentityDocument;
+  const fingerprintHex = currentIdentityFingerprint;
+  accountCardHandle.textContent = identity.handle;
+  accountCardCanonical.textContent = identity.canonical_id;
+
+  // Visual fingerprint grid. Use the document's signed fingerprint if
+  // it carries one, otherwise derive from the fingerprint hex we
+  // already have. Either way the user sees a deterministic glyph
+  // unique to their public key.
+  const grid = identity.visual_fingerprint ?? gridFromFingerprintHex(fingerprintHex);
+  accountCardFingerprintGrid.replaceChildren(renderFingerprintGrid(grid));
+  accountCardFingerprintText.textContent = `${fingerprintHex.slice(0, 4)}-${fingerprintHex.slice(4, 8)}-${fingerprintHex.slice(8, 12)}-${fingerprintHex.slice(12, 16)}`;
+
+  await Promise.all([
+    refreshAccountBio(identity.canonical_id),
+    refreshAccountRecoveryStatus(identity.canonical_id)
+  ]);
+  accountState.textContent = "";
+  if (!accountDialog.open) accountDialog.showModal();
+}
+
+async function refreshAccountBio(canonicalId: string): Promise<void> {
+  if (accountBioInput === null) return;
+  const value = await getSetting(profileBioKey(canonicalId));
+  accountBioInput.value = typeof value === "string" ? value : "";
+}
+
+async function saveAccountBio(): Promise<void> {
+  if (accountBioInput === null || currentIdentityDocument === null) return;
+  const next = accountBioInput.value.slice(0, 280);
+  accountState.textContent = "saving…";
+  try {
+    await putSetting(profileBioKey(currentIdentityDocument.canonical_id), next);
+    accountState.textContent = "saved";
+    window.setTimeout(() => {
+      if (accountState.textContent === "saved") accountState.textContent = "";
+    }, 1600);
+  } catch (error) {
+    accountState.textContent = error instanceof Error ? error.message : "save failed";
+  }
+}
+
+// Recovery posture: green light if the user has a usable recovery
+// path (an exported backup or a second paired device), yellow if
+// only one of those, red if neither. Plain language, no scare copy.
+async function refreshAccountRecoveryStatus(canonicalId: string): Promise<void> {
+  let backedUp = false;
+  let pairedDeviceCount = 0;
+  try {
+    const lastBackup = await getSetting(profileLastBackupKey(canonicalId));
+    backedUp = typeof lastBackup === "string" && lastBackup.length > 0;
+  } catch {
+    backedUp = false;
+  }
+  try {
+    // Active devices excluding the current one.
+    const devices = await listTrustedDevices(canonicalId);
+    pairedDeviceCount = devices.filter((d) => d.trust_state === "active" && d.device_id !== currentDeviceId).length;
+  } catch {
+    pairedDeviceCount = 0;
+  }
+
+  const lines: string[] = [];
+  let level: "ok" | "warn" | "danger";
+  if (backedUp && pairedDeviceCount > 0) {
+    level = "ok";
+    lines.push("recovery: backup file + linked device");
+  } else if (backedUp) {
+    level = "ok";
+    lines.push("recovery: backup file saved");
+    lines.push("tip: pair a second device for a faster recovery path.");
+  } else if (pairedDeviceCount > 0) {
+    level = "warn";
+    lines.push(`recovery: ${pairedDeviceCount} linked device${pairedDeviceCount > 1 ? "s" : ""}`);
+    lines.push("tip: also export an encrypted backup file in case all devices are wiped.");
+  } else {
+    level = "danger";
+    lines.push("recovery: unprotected");
+    lines.push("you have no backup file and no linked devices. if this browser is wiped, the account cannot be recovered.");
+  }
+  accountCardStatus.classList.remove("is-ok", "is-warn", "is-danger");
+  accountCardStatus.classList.add(`is-${level}`);
+  accountCardStatus.replaceChildren(...lines.map((text) => {
+    const div = document.createElement("div");
+    div.textContent = text;
+    return div;
+  }));
+}
+
+function profileBioKey(canonicalId: string): string {
+  return `profile.bio.${canonicalId}`;
+}
+
+function profileLastBackupKey(canonicalId: string): string {
+  return `profile.lastBackupAt.${canonicalId}`;
 }
 
 function setSignedOut(): void {

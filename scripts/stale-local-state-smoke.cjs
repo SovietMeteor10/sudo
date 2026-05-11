@@ -209,8 +209,11 @@ function deleteIdentityRows(canonicalId) {
   // resetThisDeviceWithConfirm calls deleteLocalDb() then schedules
   // window.location.reload(). Wait for the navigation rather than
   // racing the reload with our next evaluate().
+  // Reset moved out of landing into (a) the stale-banner escape
+  // hatch for unauthenticated users and (b) the settings dialog
+  // for signed-in users. The stale-state user here uses path (a).
   const navWait = page.waitForNavigation({ waitUntil: "networkidle0", timeout: FLOW_BUDGET_MS });
-  await page.click("#landing-reset");
+  await page.click('#landing-stale [data-stale-action="reset"]');
   await navWait;
   await page.waitForFunction(
     () => document.body.dataset.authState === "menu",

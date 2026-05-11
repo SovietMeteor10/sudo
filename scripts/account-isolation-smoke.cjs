@@ -247,7 +247,8 @@ async function waitForChatListSettle(page, timeoutMs = 4000) {
       return origCreate(blob);
     };
     document.getElementById("account-button")?.click();
-    document.getElementById("account-menu-backup")?.click();
+    document.getElementById("account-menu-settings")?.click();
+    setTimeout(() => document.getElementById("settings-backup")?.click(), 100);
     const start = Date.now();
     const tick = () => {
       if (captured !== null) { resolve(captured); return; }
