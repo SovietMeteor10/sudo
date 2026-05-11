@@ -628,6 +628,12 @@ body[data-auth-state="auth-restore"] .landing {
 
 .column__top {
   min-height: 0;
+  /* Without min-width: 0, this flex child's intrinsic content
+     (a long lookup row) lets the column grow past the grid track
+     width. Pinning min-width to 0 keeps the column bounded by its
+     parent track, which lets per-element ellipsis truncation
+     actually fire. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -636,7 +642,12 @@ body[data-auth-state="auth-restore"] .landing {
 .column__top .lookup__result {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  /* Vertical scroll for long result lists; never horizontal. Without
+     overflow-x: hidden, a row whose content (long handle, long bio)
+     exceeds the column width would let the row expand AND scroll
+     horizontally, defeating the per-element ellipsis truncation. */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .column__bottom {
@@ -1260,6 +1271,25 @@ body[data-auth-state="auth-restore"] .landing {
 
 .search-result__handle {
   color: var(--text);
+  /* Truncate handles at the row's content width so long usernames
+     don't push the +/follow button onto a new line. The element
+     also carries the full handle for title/aria-label fallbacks
+     handled by the renderer (search-result rows mirror the
+     lookup-card pattern). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result > .is-muted {
+  /* Clamp the bio line to 2 visual lines and ellipsis the rest.
+     Without this, a long bio pushes the row tall and the action
+     button drifts away from the handle. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  word-break: break-word;
 }
 
 .search-result__add {
@@ -1285,7 +1315,11 @@ body[data-auth-state="auth-restore"] .landing {
   height: 30px;
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 0 10px;
+  /* Reserve right padding so the browser-native clear button on
+     <input type="search"> (rendered by Safari/Chrome) doesn't sit
+     on top of the user's text. 24px is wide enough for the glyph;
+     keeps left padding at 10px. */
+  padding: 0 24px 0 10px;
   background: var(--panel);
   color: var(--text);
   outline: none;
@@ -1330,6 +1364,19 @@ body[data-auth-state="auth-restore"] .landing {
   position: relative;
   padding-left: 32px;
   color: var(--text);
+}
+
+.lookup-card__handle {
+  display: block;
+  /* `white-space: nowrap` alone doesn't shrink-wrap the element;
+     it grows to content width and overflows the parent. Capping
+     `max-width: 100%` makes the element bound by the parent so
+     `overflow: hidden + text-overflow: ellipsis` can actually fire
+     when the handle exceeds the column. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .lookup-card__actions {
@@ -2475,6 +2522,62 @@ body[data-auth-state="signed-in"] .shell {
 @media (max-width: 1100px) {
   :root {
     --column-side: 220px;
+  }
+
+  /* Compact directory mode. At narrow desktop widths (where the
+     side column shrinks but we're still in the 3-column layout)
+     the directory row was wrapping awkwardly: the follow/remove
+     button would slip onto a second line after a long handle. The
+     fix is to swap the button's text label for a single-character
+     glyph (+ / ×) while preserving the full label on `title` and
+     `aria-label` so screen readers still announce the action. We
+     also tighten the lookup-card layout so the icon, handle, and
+     button stay on one row. */
+  .column--left .lookup-card__actions {
+    flex-wrap: nowrap;
+  }
+  .column--left .lookup-card__button {
+    flex: 0 0 auto;
+    min-width: 28px;
+    padding: 2px 6px;
+    text-align: center;
+  }
+  .column--left .lookup-card__button-text {
+    display: none;
+  }
+  /* set-subscribe → "follow"  → "+" */
+  /* set-unsubscribe → "unfollow" → "×" */
+  /* set-block → "block" → "×" (also destructive) */
+  /* set-unblock → "unblock" → "+" */
+  .column--left .lookup-card__button[data-relationship-action="set-subscribe"]::before,
+  .column--left .lookup-card__button[data-relationship-action="set-unblock"]::before {
+    content: "+";
+  }
+  .column--left .lookup-card__button[data-relationship-action="set-unsubscribe"]::before,
+  .column--left .lookup-card__button[data-relationship-action="set-block"]::before {
+    content: "×";
+  }
+  /* search-result rows render their own follow button with full
+     "follow"/"following" text; compact-mode swaps it via the same
+     pseudo-element trick. */
+  .column--left .search-result__add {
+    font-size: 0;
+    min-width: 28px;
+    padding: 0;
+  }
+  .column--left .search-result__add::before {
+    font-size: 14px;
+    content: "+";
+  }
+  .column--left .search-result {
+    /* Tighten the right padding so the +/× sits closer to the
+       column edge; the smaller button reduces the reserved gutter
+       that the original 78px right-pad was sized for. */
+    padding-right: 42px;
+  }
+  .column--left .search-result__add[disabled]::before,
+  .column--left .search-result__add[data-following="true"]::before {
+    content: "✓";
   }
 }
 

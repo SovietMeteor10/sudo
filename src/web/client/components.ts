@@ -931,6 +931,13 @@ export function renderSearchResults(
     button.type = "button";
     button.textContent = isPending ? "following…" : isFollowed ? "following" : "follow";
     button.disabled = isPending;
+    // Compact-mode CSS swaps the label for a glyph; preserve the
+    // full label on title/aria-label, and flag the "already
+    // following" state so the glyph can switch to a tick instead of
+    // a plus.
+    button.title = button.textContent;
+    button.setAttribute("aria-label", button.textContent);
+    if (isFollowed) button.dataset["following"] = "true";
     button.addEventListener("click", () => onToggle(result));
     row.append(button);
     fragment.append(row);
@@ -1124,7 +1131,18 @@ function button(label: string, action: string): HTMLButtonElement {
   element.type = "button";
   element.className = "lookup-card__button";
   element.dataset["relationshipAction"] = action;
-  element.textContent = label;
+  // Carry the full label on title + aria-label so the compact-symbol
+  // CSS (used at narrow widths to swap "follow"/"unfollow" for
+  // "+"/"×") still announces the action to screen readers and
+  // surfaces it on hover.
+  element.title = label;
+  element.setAttribute("aria-label", label);
+  // The full label lives in a wrapper span so the compact-mode CSS
+  // can hide it while a pseudo-element supplies the symbolic glyph.
+  const inner = document.createElement("span");
+  inner.className = "lookup-card__button-text";
+  inner.textContent = label;
+  element.append(inner);
   return element;
 }
 
