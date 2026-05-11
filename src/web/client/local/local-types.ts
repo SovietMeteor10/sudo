@@ -107,6 +107,18 @@ export type LocalBackfillState = {
   last_error?: string;
   total_events?: number;
   slice_progress?: { [slice: string]: number };
+  // Ring buffer of the last N (currently 5) backfill attempts for
+  // this peer. Newest entry is appended at end. Used by the
+  // Settings → Linked devices "advanced" disclosure to surface a
+  // short history when operators / users triage a stuck peer.
+  attempt_history?: BackfillAttempt[];
+};
+
+export type BackfillAttempt = {
+  at: string;             // ISO timestamp the attempt completed
+  ok: boolean;            // true on full success, false on partial or hard failure
+  error?: string;         // short error string (last_error from the run)
+  total_events?: number;  // events successfully posted in this attempt
 };
 
 // Per-conversation read marker, scoped by owner so two accounts in

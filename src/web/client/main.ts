@@ -721,6 +721,13 @@ devicesCancel.addEventListener("click", () => {
   devicesDialog.close();
 });
 
+// Native <dialog> "close" fires for both the cancel button and Esc.
+// Tear down the live-refresh interval here so any close path
+// (cancel, Esc, programmatic close) drops the timer.
+devicesDialog.addEventListener("close", () => {
+  stopDevicePanelLivePoll();
+});
+
 // ----- feed tabs -----
 for (const button of feedTabButtons) {
   button.addEventListener("click", () => {
@@ -2109,8 +2116,50 @@ async function refreshDevicePanel(): Promise<void> {
       : await computeDeviceSyncHealth(owner, currentDeviceId, device);
     return { device, health } satisfies DevicePanelRow;
   }));
+
+  // Diff-skip: the live-refresh interval fires every 5s, but most
+  // ticks don't change anything. Build a stable signature from
+  // rendered fields and skip the DOM swap if it matches the previous
+  // render. Status, label, last-seen, retry availability, and the
+  // advanced fields users actually see are included; raw timestamps
+  // tick every second so we round to whole minutes when comparing
+  // (a "2m ago" line shouldn't force a re-render until it would
+  // visibly change).
+  const signature = JSON.stringify({
+    pairing: activePairingCode,
+    rows: rows.map((r) => ({
+      id: r.device.device_id,
+      n: r.device.name,
+      t: r.device.trust_state,
+      s: r.health.status,
+      l: r.health.label,
+      ls: r.health.lastSeenLine,
+      cr: r.health.canRetry,
+      a: r.health.advanced
+    }))
+  });
+  if (signature === lastDevicePanelSignature) return;
+  lastDevicePanelSignature = signature;
+
+  // Preserve the per-row "advanced" disclosure open/closed state
+  // across the swap. Without this, the 5s live refresh would
+  // snap-close any operator-expanded technical view.
+  const openIds = new Set<string>();
+  for (const det of deviceList.querySelectorAll<HTMLDetailsElement>(".device-row .device-row__advanced[open]")) {
+    const owner = det.closest(".device-row") as HTMLElement | null;
+    const id = owner?.dataset["deviceId"];
+    if (typeof id === "string") openIds.add(id);
+  }
   renderDevicePanel(deviceList, currentDeviceId, rows, activePairingCode);
+  if (openIds.size > 0) {
+    for (const det of deviceList.querySelectorAll<HTMLDetailsElement>(".device-row .device-row__advanced")) {
+      const owner = det.closest(".device-row") as HTMLElement | null;
+      const id = owner?.dataset["deviceId"];
+      if (typeof id === "string" && openIds.has(id)) det.open = true;
+    }
+  }
 }
+let lastDevicePanelSignature: string | null = null;
 
 async function syncCurrentDeviceToServer(
   device: import("./types.js").TrustedDevice,
@@ -2415,6 +2464,17 @@ function stopPairingCompletionPoll(): void {
 // partial run doesn't immediately re-fire.
 const RETRY_BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
 const MAX_BACKFILL_ATTEMPTS = 5;
+const ATTEMPT_HISTORY_MAX = 5;
+
+function appendAttemptHistory(
+  prev: import("./local/local-types.js").BackfillAttempt[] | undefined,
+  entry: import("./local/local-types.js").BackfillAttempt
+): import("./local/local-types.js").BackfillAttempt[] {
+  const buf = Array.isArray(prev) ? prev.slice() : [];
+  buf.push(entry);
+  while (buf.length > ATTEMPT_HISTORY_MAX) buf.shift();
+  return buf;
+}
 
 // Iterate the owner's local state and publish each row as an
 // encrypted sync event. The target_device_id is recorded against
@@ -2437,7 +2497,8 @@ async function backfillToNewDevice(
     status: "running",
     attempts,
     last_attempt_at: new Date().toISOString(),
-    slice_progress: existing?.slice_progress
+    slice_progress: existing?.slice_progress,
+    attempt_history: existing?.attempt_history
   });
 
   let lastError = "";
@@ -2610,15 +2671,25 @@ async function backfillToNewDevice(
     lastError = `read_state: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
+  const completedAt = new Date().toISOString();
+  const attemptEntry: import("./local/local-types.js").BackfillAttempt = {
+    at: completedAt,
+    ok: !partial,
+    total_events: totalEvents
+  };
+  if (partial && lastError.length > 0) attemptEntry.error = lastError;
+  const history = appendAttemptHistory(existing?.attempt_history, attemptEntry);
+
   await putBackfillState({
     owner_canonical_id: ownerCanonicalId,
     target_device_id: targetDeviceId,
     status: partial ? "pending" : "complete",
     attempts,
-    last_attempt_at: new Date().toISOString(),
+    last_attempt_at: completedAt,
     last_error: partial ? lastError : undefined,
     total_events: totalEvents,
-    slice_progress: sliceProgress
+    slice_progress: sliceProgress,
+    attempt_history: history
   });
 
   return { totalEvents, partial };
@@ -4371,8 +4442,35 @@ function setAccountMenuOpen(open: boolean): void {
 }
 
 function openDevicesDialog(): void {
+  // Force a fresh render on open: the cached signature might be
+  // stale if the user reloaded or signed in as a different account
+  // since the last open.
+  lastDevicePanelSignature = null;
   void refreshDevicePanel();
   if (!devicesDialog.open) devicesDialog.showModal();
+  startDevicePanelLivePoll();
+}
+
+// Singleton 5s interval that re-renders the device list while the
+// dialog is open. We don't reuse the inbox/feed poller because those
+// have ownership semantics tied to signed-in identity; this is a
+// purely-local read that should keep ticking even if the coordinator
+// is busy. The dialog `close` event tears the timer down.
+let devicePanelLivePoll: number | null = null;
+function startDevicePanelLivePoll(): void {
+  if (devicePanelLivePoll !== null) return;
+  devicePanelLivePoll = window.setInterval(() => {
+    if (!devicesDialog.open) {
+      stopDevicePanelLivePoll();
+      return;
+    }
+    void refreshDevicePanel();
+  }, 5000);
+}
+function stopDevicePanelLivePoll(): void {
+  if (devicePanelLivePoll === null) return;
+  window.clearInterval(devicePanelLivePoll);
+  devicePanelLivePoll = null;
 }
 
 // Settings dialog. Single launcher for the destructive/maintenance

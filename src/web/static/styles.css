@@ -2301,6 +2301,16 @@ body[data-auth-state="auth-restore"] .landing {
   border-left: 1px solid var(--line-soft);
 }
 
+.device-row__history {
+  margin: 2px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+}
+
+.device-row__history li {
+  list-style: disc;
+}
+
 /* Floating account-feedback toast (status messages) */
 .account-feedback {
   position: fixed;

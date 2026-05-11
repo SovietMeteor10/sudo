@@ -307,7 +307,9 @@ async function readBSnapshot(page) {
     fail("8b.retry-visible", `Settings did not surface retry status: ${JSON.stringify(retrySnap)}`);
   } else {
     if (!retryRow.hasRetry) fail("8c.retry-button", `expected retry button on row with status=${retryRow.status}`);
-    else ok(`8b. Settings → Linked devices surfaces retry state ('${retryRow.statusLabel}') with retry button`);
+    else if (retryRow.statusLabel !== "sync will retry soon" && retryRow.statusLabel !== "sync paused — retry available") {
+      fail("8d.retry-copy", `expected calm retry copy, got '${retryRow.statusLabel}'`);
+    } else ok(`8b. Settings → Linked devices surfaces retry state ('${retryRow.statusLabel}') with retry button`);
   }
 
   // ===== Wait for retry to converge =====

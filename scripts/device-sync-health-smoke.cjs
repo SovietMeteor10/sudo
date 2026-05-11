@@ -348,7 +348,9 @@ function findPeer(rows) {
     fail("7.retry-state", `no row reached retry_pending/failed: ${JSON.stringify(failedSnap)}`);
   } else {
     if (!failedPeer.hasRetry) fail("7b.retry-button", `expected retry button on row with status=${failedPeer.status}`);
-    else ok(`7. row with simulated outage shows status='${failedPeer.statusLabel}' + retry button`);
+    else if (failedPeer.statusLabel !== "sync will retry soon" && failedPeer.statusLabel !== "sync paused — retry available") {
+      fail("7c.retry-copy", `expected calm retry copy, got '${failedPeer.statusLabel}'`);
+    } else ok(`7. row with simulated outage shows status='${failedPeer.statusLabel}' + retry button`);
   }
 
   // ===== Unblock fetch + click retry =====
@@ -378,6 +380,236 @@ function findPeer(rows) {
       fail("8.retry-recovered", `manual retry did not return any row to synced: ${JSON.stringify(after.rows.map((r) => ({ name: r.name, status: r.status })))}`);
     } else {
       ok(`8. manual retry click drove the failed row back to synced`);
+    }
+  }
+
+  // ===== Live refresh while dialog stays open =====
+  // Externally mutate backfill_state for a peer (simulate the
+  // coordinator marking a row "running" mid-session). The 5s
+  // interval should pick up the change and flip the status to
+  // "retrying sync…" without the user re-opening the dialog.
+  const peerRowsForLive = await snapshotDeviceList(pageA);
+  const livePeer = peerRowsForLive.rows.find((r) => r.status === "synced");
+  if (!livePeer) {
+    fail("9a.live-peer-missing", "no synced peer to drive live-refresh test");
+  } else {
+    // Read the row's data-device-id from DOM.
+    const livePeerId = await pageA.evaluate((name) => {
+      const root = document.getElementById("device-list");
+      if (root === null) return null;
+      const row = [...root.querySelectorAll(".device-row")].find(
+        (r) => (r.querySelector(".device-row__name")?.textContent ?? "").trim() === name
+      );
+      return row instanceof HTMLElement ? (row.dataset.deviceId ?? null) : null;
+    }, livePeer.name);
+    if (!livePeerId) {
+      fail("9a.live-peer-id", `couldn't read data-device-id for '${livePeer.name}'`);
+    } else {
+      // Write a backfill_state row with status=running and attempts=2
+      // so the helper picks "retrying sync…" copy.
+      await pageA.evaluate(async (owner, deviceId) => {
+        const db = await new Promise((resolve, reject) => {
+          const r = indexedDB.open("sudo_local_state");
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+        const tx = db.transaction("backfill_state", "readwrite");
+        const existing = await new Promise((resolve) => {
+          const r = tx.objectStore("backfill_state").get([owner, deviceId]);
+          r.onsuccess = () => resolve(r.result ?? null);
+          r.onerror = () => resolve(null);
+        });
+        const row = existing ?? { owner_canonical_id: owner, target_device_id: deviceId };
+        row.status = "running";
+        row.attempts = 2;
+        row.last_attempt_at = new Date().toISOString();
+        tx.objectStore("backfill_state").put(row);
+        await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+      }, canonicalA, livePeerId);
+      // Wait up to 8s (one full 5s interval + render slack) for the
+      // panel to flip without any user action.
+      let flipped = null;
+      for (let i = 0; i < 16; i++) {
+        const s = await snapshotDeviceList(pageA);
+        const r = s.rows.find((row) => row.name === livePeer.name);
+        if (r && r.status === "syncing") { flipped = r; break; }
+        await new Promise((rr) => setTimeout(rr, 500));
+      }
+      if (!flipped) {
+        const after = await snapshotDeviceList(pageA);
+        fail("9a.live-refresh", `panel did not auto-refresh to syncing status: ${JSON.stringify(after.rows.find((r) => r.name === livePeer.name))}`);
+      } else if (flipped.statusLabel !== "retrying sync…") {
+        fail("9a.live-copy", `expected 'retrying sync…' label, got '${flipped.statusLabel}'`);
+      } else {
+        ok(`9a. dialog auto-refreshed status to '${flipped.statusLabel}' without close/reopen`);
+      }
+      // Restore the row so subsequent phases see a clean state.
+      await pageA.evaluate(async (owner, deviceId) => {
+        const db = await new Promise((resolve, reject) => {
+          const r = indexedDB.open("sudo_local_state");
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+        const tx = db.transaction("backfill_state", "readwrite");
+        const existing = await new Promise((resolve) => {
+          const r = tx.objectStore("backfill_state").get([owner, deviceId]);
+          r.onsuccess = () => resolve(r.result ?? null);
+          r.onerror = () => resolve(null);
+        });
+        if (existing) {
+          existing.status = "complete";
+          tx.objectStore("backfill_state").put(existing);
+        }
+        await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+      }, canonicalA, livePeerId);
+    }
+  }
+
+  // ===== Open/close twice should not produce duplicate rows or
+  // stale timers. The visible symptom of a stacked timer is wrong
+  // row count (the live-refresh callback writing on top of itself
+  // mid-render), so the strongest probe is "after open + close +
+  // open, do we still see the expected single set of rows AND does
+  // live refresh still work?"
+  await closeDialogs(pageA);
+  await new Promise((r) => setTimeout(r, 250));
+  await openDevicesDialog(pageA);
+  await new Promise((r) => setTimeout(r, 250));
+  const reopenSnap = await snapshotDeviceList(pageA);
+  // Row count expectations: 1 current + N peers. We pair B and C in
+  // this smoke, so we expect exactly 3 rows.
+  if (reopenSnap.rows.length !== 3) {
+    fail("9b.duplicate-rows", `expected 3 rows after open/close/open, got ${reopenSnap.rows.length}: ${JSON.stringify(reopenSnap.rows.map((r) => r.name))}`);
+  } else {
+    ok(`9b. open/close/open produced exactly 3 rows (no duplicates)`);
+  }
+
+  // ===== Attempt history caps at 5 =====
+  // Seed 5 synthetic attempt_history entries on a peer row; trigger
+  // a real backfill via retry; verify oldest synthetic is dropped
+  // and the new attempt is appended at the end.
+  const histPeer = peerRowsForLive.rows.find((r) => r.status === "synced");
+  const histPeerId = histPeer ? await pageA.evaluate((name) => {
+    const root = document.getElementById("device-list");
+    if (root === null) return null;
+    const row = [...root.querySelectorAll(".device-row")].find(
+      (r) => (r.querySelector(".device-row__name")?.textContent ?? "").trim() === name
+    );
+    return row instanceof HTMLElement ? (row.dataset.deviceId ?? null) : null;
+  }, histPeer.name) : null;
+  if (!histPeerId) {
+    fail("9c.history-peer", "no peer to drive ring buffer test");
+  } else {
+    const oldestMarker = "OLDEST-DROPPED";
+    await pageA.evaluate(async (owner, deviceId, marker) => {
+      const db = await new Promise((resolve, reject) => {
+        const r = indexedDB.open("sudo_local_state");
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+      const tx = db.transaction("backfill_state", "readwrite");
+      const existing = await new Promise((resolve) => {
+        const r = tx.objectStore("backfill_state").get([owner, deviceId]);
+        r.onsuccess = () => resolve(r.result ?? null);
+        r.onerror = () => resolve(null);
+      });
+      const row = existing ?? { owner_canonical_id: owner, target_device_id: deviceId, status: "complete", attempts: 1, last_attempt_at: new Date().toISOString() };
+      const now = Date.now();
+      row.attempt_history = [
+        { at: new Date(now - 60_000).toISOString(), ok: false, error: marker },
+        { at: new Date(now - 50_000).toISOString(), ok: false, error: "fake-2" },
+        { at: new Date(now - 40_000).toISOString(), ok: true, total_events: 3 },
+        { at: new Date(now - 30_000).toISOString(), ok: false, error: "fake-4" },
+        { at: new Date(now - 20_000).toISOString(), ok: true, total_events: 7 }
+      ];
+      tx.objectStore("backfill_state").put(row);
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    }, canonicalA, histPeerId, oldestMarker);
+    // Force a new backfill attempt (clicks retry on the row).
+    await pageA.evaluate((name) => {
+      const root = document.getElementById("device-list");
+      if (root === null) return;
+      const row = [...root.querySelectorAll(".device-row")].find(
+        (r) => (r.querySelector(".device-row__name")?.textContent ?? "").trim() === name
+      );
+      // The retry button isn't visible on a synced row. So we
+      // dispatch the backfill directly: open the row's advanced
+      // disclosure and check the rendered history list after a
+      // refresh. Then we drive a real attempt via the underlying
+      // function bound on window.
+    }, histPeer.name);
+    // Trigger backfill via dynamic import (cleanest path; same
+    // approach used by message-tombstone smoke).
+    await pageA.evaluate(async (owner, deviceId) => {
+      // backfillToNewDevice isn't exported; instead reach into the
+      // pairing-completion code path by calling the dialog's retry
+      // helper indirectly. We force a re-render then rely on the
+      // existing retry-on-pending behavior: write status=pending so
+      // the auto-retry's normal entry-points qualify.
+      const db = await new Promise((resolve, reject) => {
+        const r = indexedDB.open("sudo_local_state");
+        r.onsuccess = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+      });
+      // Mark the row as failed (attempts < max) so the retry button
+      // appears, then click it.
+      const tx = db.transaction("backfill_state", "readwrite");
+      const existing = await new Promise((resolve) => {
+        const r = tx.objectStore("backfill_state").get([owner, deviceId]);
+        r.onsuccess = () => resolve(r.result ?? null);
+        r.onerror = () => resolve(null);
+      });
+      if (existing) {
+        existing.status = "pending";
+        existing.last_attempt_at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        tx.objectStore("backfill_state").put(existing);
+      }
+      await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+    }, canonicalA, histPeerId);
+    // Wait for live-refresh to surface the pending row + retry button.
+    let retryClicked = false;
+    for (let i = 0; i < 16; i++) {
+      const clickedNow = await pageA.evaluate((name) => {
+        const root = document.getElementById("device-list");
+        if (root === null) return false;
+        const row = [...root.querySelectorAll(".device-row")].find(
+          (r) => (r.querySelector(".device-row__name")?.textContent ?? "").trim() === name
+        );
+        const btn = row?.querySelector('[data-device-action="retry-sync"]');
+        if (btn instanceof HTMLElement) { btn.click(); return true; }
+        return false;
+      }, histPeer.name);
+      if (clickedNow) { retryClicked = true; break; }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!retryClicked) fail("9c.retry-click", "could not find retry button to drive ring-buffer test");
+    // Wait for the new backfill to land in attempt_history.
+    let finalHistory = null;
+    for (let i = 0; i < 20; i++) {
+      finalHistory = await pageA.evaluate(async (owner, deviceId) => {
+        const db = await new Promise((resolve, reject) => {
+          const r = indexedDB.open("sudo_local_state");
+          r.onsuccess = () => resolve(r.result);
+          r.onerror = () => reject(r.error);
+        });
+        const tx = db.transaction("backfill_state", "readonly");
+        const r = tx.objectStore("backfill_state").get([owner, deviceId]);
+        return await new Promise((res) => {
+          r.onsuccess = () => res(r.result?.attempt_history ?? null);
+          r.onerror = () => res(null);
+        });
+      }, canonicalA, histPeerId);
+      if (Array.isArray(finalHistory) && finalHistory.length === 5 && !finalHistory.some((e) => e.error === oldestMarker)) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (!Array.isArray(finalHistory)) {
+      fail("9c.history-readback", "could not read attempt_history after retry");
+    } else if (finalHistory.length !== 5) {
+      fail("9c.history-cap", `ring buffer not capped at 5; got ${finalHistory.length} entries`);
+    } else if (finalHistory.some((e) => e.error === oldestMarker)) {
+      fail("9c.history-rotate", `oldest synthetic entry was not dropped; got ${JSON.stringify(finalHistory)}`);
+    } else {
+      ok(`9c. ring buffer capped at 5; oldest dropped after new attempt`);
     }
   }
 

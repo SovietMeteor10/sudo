@@ -14,6 +14,7 @@
 
 import { getBackfillState, getSetting } from "../local/local-store.js";
 import type { TrustedDevice } from "../../../protocol/types.js";
+import type { BackfillAttempt } from "../local/local-types.js";
 
 // Mirrored from main.ts so this module stays decoupled from the
 // device-pairing surface. If the values diverge, the user-visible
@@ -60,6 +61,9 @@ export type DeviceSyncHealth = {
     // never run for this device pair.
     recipientCursor?: number;
     originSequence?: number;
+    // Ring buffer of recent backfill attempts (newest first when
+    // rendered). Comes straight from backfill_state.attempt_history.
+    attemptHistory?: BackfillAttempt[];
   };
 };
 
@@ -127,6 +131,9 @@ export async function computeDeviceSyncHealth(
     if (typeof state.last_error === "string") advanced.lastError = state.last_error;
     if (typeof state.total_events === "number") advanced.totalEvents = state.total_events;
     if (state.slice_progress !== undefined) advanced.sliceProgress = state.slice_progress;
+    if (Array.isArray(state.attempt_history) && state.attempt_history.length > 0) {
+      advanced.attemptHistory = state.attempt_history;
+    }
   }
 
   if (state === null) {
@@ -141,9 +148,15 @@ export async function computeDeviceSyncHealth(
   }
 
   if (state.status === "running") {
+    // First-ever attempt → "syncing…" (fresh device coming online).
+    // Subsequent attempts → "retrying sync…" (the user clicked retry
+    // or the auto-retry fired). Distinguishing these gives the user
+    // accurate feedback about whether this is the initial backfill
+    // or a recovery attempt.
+    const isRetry = (state.attempts ?? 1) > 1;
     return {
       status: "syncing",
-      label: "syncing…",
+      label: isRetry ? "retrying sync…" : "syncing…",
       lastSeenLine,
       retryEligibleAt: null,
       canRetry: false,
@@ -162,11 +175,20 @@ export async function computeDeviceSyncHealth(
     };
   }
 
-  // pending or failed — attempts may be exhausted.
+  // pending or failed — attempts may be exhausted. We deliberately
+  // keep the user-facing copy short and non-alarming. The exact
+  // remaining-time and raw error live in the "advanced" disclosure
+  // (lastError + attempt history). Two cases:
+  //
+  //   1. Attempts exhausted (>= MAX_BACKFILL_ATTEMPTS):
+  //      "sync paused — retry available". The auto-loop has given up;
+  //      the user has to click retry. Status is `failed`.
+  //   2. Within the backoff window (auto-retry will fire later):
+  //      "sync will retry soon". Status is `retry_pending`.
   if (state.attempts >= MAX_BACKFILL_ATTEMPTS) {
     return {
       status: "failed",
-      label: "sync failed",
+      label: "sync paused — retry available",
       lastSeenLine,
       retryEligibleAt: null,
       canRetry: true,
@@ -177,20 +199,9 @@ export async function computeDeviceSyncHealth(
   const backoff = RETRY_BACKOFF_MS[backoffIdx] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
   const lastAttemptMs = Date.parse(state.last_attempt_at);
   const eligible = Number.isFinite(lastAttemptMs) ? lastAttemptMs + backoff : now;
-  const remaining = eligible - now;
-  if (remaining > 0) {
-    return {
-      status: "retry_pending",
-      label: `sync will retry in ${humanizeDuration(remaining)}`,
-      lastSeenLine,
-      retryEligibleAt: eligible,
-      canRetry: true,
-      advanced
-    };
-  }
   return {
     status: "retry_pending",
-    label: "sync failed — will retry",
+    label: "sync will retry soon",
     lastSeenLine,
     retryEligibleAt: eligible,
     canRetry: true,

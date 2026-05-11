@@ -113,11 +113,15 @@ the IndexedDB `backfill_state` store.
 | ------------------------------ | ------- |
 | `this device`                  | The current browser. Always synced with itself. |
 | `synced`                       | Backfill completed successfully. Live writes flow normally. |
-| `syncing…`                     | Backfill is in flight right now. |
-| `sync will retry in <n>m`      | Last attempt failed (likely a transient outage); the client is waiting out a backoff (30s → 2m → 10m) before the next auto-retry. |
-| `sync failed — will retry`     | Backoff has elapsed but the next attempt hasn't run yet (e.g. the user re-opened Settings). The auto-retry will fire on the next signin or the next Settings open. |
-| `sync failed`                  | Attempts hit `MAX_BACKFILL_ATTEMPTS` (5). The device has stopped auto-retrying; the user can click `retry sync` to bypass the cap. |
+| `syncing…`                     | First-ever backfill is in flight for this peer. |
+| `retrying sync…`               | A retry attempt is in flight (attempts > 1). |
+| `sync will retry soon`         | Last attempt failed (likely a transient outage); the client is waiting out a backoff (30s → 2m → 10m) before the next auto-retry. |
+| `sync paused — retry available`| Attempts hit `MAX_BACKFILL_ATTEMPTS` (5). The device has stopped auto-retrying; the user can click `retry sync` to bypass the cap. |
 | `revoked`                      | The peer was revoked. No sync traffic flows in either direction. |
+
+The dialog auto-refreshes every 5 seconds while open, so a transient
+`syncing…` should flip to `synced` without the user re-opening it.
+Closing the dialog tears the timer down.
 
 Each row carries an "advanced" disclosure with the technical fields
 operators may need when triaging:
@@ -129,12 +133,39 @@ operators may need when triaging:
 - `outgoing sequence` — `sync.origin_sequence:<owner>:<device>` setting
 - `last attempt` — ISO timestamp of the last backfill attempt
 - `last error` — raw error string (e.g. `contacts: 1 of 1 failed to post`, `rate_limited`)
+- `recent attempts` — ring buffer of the last 5 backfill attempts
+  (newest first), each rendered as `HH:MM ok, N events` or
+  `HH:MM failed, <error>`. Useful for spotting flapping vs.
+  one-off failures.
+
+### When to click `retry sync`
+
+The button appears on rows whose status is `sync will retry soon` or
+`sync paused — retry available`. Clicking it:
+
+- bypasses the auto-retry backoff (does not wait out the 30s/2m/10m
+  window),
+- still respects the per-device 5-attempt cap,
+- runs immediately and re-renders the row in place,
+- appends one entry to `recent attempts` regardless of outcome.
+
+Click it when:
+
+- the user is actively waiting for the peer to converge and
+  doesn't want to wait out the backoff,
+- the underlying network/relay issue has visibly cleared (e.g. a
+  page that was rate-limited is loading again),
+- the row has been stuck at `sync paused — retry available` for a
+  while and the operator has identified the root cause.
+
+Don't click it in a tight loop when `last error` is `rate_limited`
+— the cap will keep firing until the 60s sliding window clears.
 
 If a backfill is stuck:
 
 1. Open Settings → Linked devices. Confirm the status is
-   `sync will retry…` or `sync failed`, not `synced` (which means
-   there's nothing to fix).
+   `sync will retry soon` or `sync paused — retry available`, not
+   `synced` (which means there's nothing to fix).
 2. Expand the advanced disclosure on the stuck row. The `last error`
    line is the most useful signal:
    - `rate_limited` → the per-IP or per-owner sync cap fired (see

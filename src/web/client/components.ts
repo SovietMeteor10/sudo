@@ -221,6 +221,7 @@ export type DevicePanelHealth = {
     sliceProgress?: { [slice: string]: number };
     recipientCursor?: number;
     originSequence?: number;
+    attemptHistory?: Array<{ at: string; ok: boolean; error?: string; total_events?: number }>;
   };
 };
 
@@ -251,6 +252,7 @@ export function renderDevicePanel(
     const row = block("device-row", [
       line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name")
     ]);
+    row.dataset["deviceId"] = device.device_id;
     row.classList.add(`device-row--${health.status}`);
 
     const statusLine = document.createElement("div");
@@ -307,6 +309,23 @@ export function renderDevicePanel(
     }
     if (typeof health.advanced.lastError === "string" && health.advanced.lastError.length > 0) {
       advancedBody.append(line(`last error: ${health.advanced.lastError}`, "is-muted"));
+    }
+    if (Array.isArray(health.advanced.attemptHistory) && health.advanced.attemptHistory.length > 0) {
+      advancedBody.append(line("recent attempts:", "is-muted"));
+      const historyList = document.createElement("ul");
+      historyList.className = "device-row__history is-muted";
+      // Newest first — operators reading top-down want the most
+      // recent attempt before scrolling back through older ones.
+      for (const entry of [...health.advanced.attemptHistory].reverse()) {
+        const item = document.createElement("li");
+        const time = formatHistoryTime(entry.at);
+        const outcome = entry.ok
+          ? (typeof entry.total_events === "number" ? `ok, ${entry.total_events} events` : "ok")
+          : (typeof entry.error === "string" && entry.error.length > 0 ? `failed, ${entry.error}` : "failed");
+        item.textContent = `${time} ${outcome}`;
+        historyList.append(item);
+      }
+      advancedBody.append(historyList);
     }
     details.append(advancedBody);
     row.append(details);
@@ -1033,4 +1052,12 @@ function pad2(n: number): string {
 function shortCanonical(value: string): string {
   if (value.length <= 24) return value;
   return `${value.slice(0, 18)}...${value.slice(-6)}`;
+}
+
+function formatHistoryTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.valueOf())) return iso;
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
 }
