@@ -317,6 +317,30 @@ function findPeer(rows) {
   } else {
     ok(`5b. advanced disclosure carries id + attempts + events lines`);
   }
+  // Peer-progress lines should land once the live-refresh tick has
+  // fetched /sync/peer-progress for the peer. We poll briefly so this
+  // assertion is robust to the first-tick race.
+  let progressAdvanced = advanced ?? "";
+  for (let i = 0; i < 20; i++) {
+    if (/inbound behind:/i.test(progressAdvanced) && /progress refreshed:/i.test(progressAdvanced)) break;
+    await new Promise((r) => setTimeout(r, 500));
+    await pageA.evaluate(() => {
+      for (const det of document.querySelectorAll("#device-list .device-row__advanced")) det.open = true;
+    });
+    progressAdvanced = await pageA.evaluate(() => {
+      const peerRow = [...document.querySelectorAll("#device-list .device-row")].find(
+        (row) => !/\(current\)$/.test(row.querySelector(".device-row__name")?.textContent?.trim() ?? "")
+      );
+      if (peerRow === undefined) return "";
+      const body = peerRow.querySelector(".device-row__advanced-body");
+      return body ? (body.textContent ?? "").trim() : "";
+    });
+  }
+  if (!/inbound behind:/i.test(progressAdvanced) || !/progress refreshed:/i.test(progressAdvanced)) {
+    fail("5c.peer-progress-lines", `advanced disclosure missing peer-progress lines after 10s; got '${progressAdvanced.slice(0, 240)}'`);
+  } else {
+    ok(`5c. advanced disclosure carries peer-progress lines (inbound behind, progress refreshed)`);
+  }
 
   // ===== Trigger a failed backfill via the fetch patch =====
   // We re-pair (link a fresh C) with /sync POST blocked, so the

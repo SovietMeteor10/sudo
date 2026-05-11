@@ -165,6 +165,30 @@ export function getRecipientCursor(
   return row?.last_server_seq ?? 0;
 }
 
+// For (owner, origin), find the highest origin_device_seq among
+// events whose server_seq is <= the cap. Used by peer-progress to
+// translate the peer's global recipient cursor into "how many of MY
+// events the peer has applied", which is the only thing the calling
+// device actually cares about. Returns 0 when the peer has applied
+// nothing from this origin.
+export function getMaxOriginSequenceAtCursor(
+  ownerCanonicalId: string,
+  originDeviceId: string,
+  serverSeqCap: number
+): number {
+  if (!Number.isFinite(serverSeqCap) || serverSeqCap <= 0) return 0;
+  const row = db
+    .prepare(`
+      SELECT MAX(origin_device_seq) AS max_seq
+      FROM device_sync_log
+      WHERE owner_canonical_id = ?
+        AND origin_device_id = ?
+        AND server_seq <= ?
+    `)
+    .get(ownerCanonicalId, originDeviceId, serverSeqCap) as { max_seq: number | null };
+  return row.max_seq ?? 0;
+}
+
 // Operator/dev diagnostic: counts of stored sync events grouped by
 // (owner, slice, kind) plus the latest server_seq and the latest
 // server_received_at. This deliberately exposes ONLY plaintext

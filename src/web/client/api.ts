@@ -140,6 +140,40 @@ export async function listSyncEvents(
   };
 }
 
+export type PeerProgress = {
+  peer_recipient_cursor: number;
+  our_last_origin_sequence: number;
+  inbound_behind_by: number;
+  fresh_as_of_ms: number;
+};
+
+// Returns null on any error (cross-owner, revoked caller, network).
+// The UI treats "no progress info" the same way as "0 behind" — we
+// don't want a transient 4xx to push a peer into a scary state.
+export async function fetchPeerProgress(
+  ownerCanonicalId: string,
+  callerDeviceId: string,
+  peerDeviceId: string
+): Promise<PeerProgress | null> {
+  try {
+    const url = `/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/peer-progress`
+      + `?device_id=${encodeURIComponent(peerDeviceId)}`
+      + `&caller_device_id=${encodeURIComponent(callerDeviceId)}`;
+    const response = await fetchWithTimeout(url, { headers: { accept: "application/json" } });
+    if (!response.ok) return null;
+    const body = await response.json() as Partial<PeerProgress>;
+    if (typeof body.peer_recipient_cursor !== "number"
+      || typeof body.our_last_origin_sequence !== "number"
+      || typeof body.inbound_behind_by !== "number"
+      || typeof body.fresh_as_of_ms !== "number") {
+      return null;
+    }
+    return body as PeerProgress;
+  } catch {
+    return null;
+  }
+}
+
 export async function ackSyncCursor(
   ownerCanonicalId: string,
   recipientDeviceId: string,

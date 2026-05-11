@@ -222,6 +222,10 @@ export type DevicePanelHealth = {
     recipientCursor?: number;
     originSequence?: number;
     attemptHistory?: Array<{ at: string; ok: boolean; error?: string; total_events?: number }>;
+    ourLastOriginSequence?: number;
+    peerRecipientCursor?: number;
+    inboundBehindBy?: number;
+    peerProgressFreshAt?: number;
   };
 };
 
@@ -309,6 +313,18 @@ export function renderDevicePanel(
     }
     if (typeof health.advanced.lastError === "string" && health.advanced.lastError.length > 0) {
       advancedBody.append(line(`last error: ${health.advanced.lastError}`, "is-muted"));
+    }
+    if (typeof health.advanced.ourLastOriginSequence === "number") {
+      advancedBody.append(line(`our outgoing sequence: ${health.advanced.ourLastOriginSequence}`, "is-muted"));
+    }
+    if (typeof health.advanced.peerRecipientCursor === "number") {
+      advancedBody.append(line(`peer applied cursor: ${health.advanced.peerRecipientCursor}`, "is-muted"));
+    }
+    if (typeof health.advanced.inboundBehindBy === "number") {
+      advancedBody.append(line(`inbound behind: ${health.advanced.inboundBehindBy}`, "is-muted"));
+    }
+    if (typeof health.advanced.peerProgressFreshAt === "number") {
+      advancedBody.append(line(`progress refreshed: ${formatHistoryTime(new Date(health.advanced.peerProgressFreshAt).toISOString())}`, "is-muted"));
     }
     if (Array.isArray(health.advanced.attemptHistory) && health.advanced.attemptHistory.length > 0) {
       advancedBody.append(line("recent attempts:", "is-muted"));

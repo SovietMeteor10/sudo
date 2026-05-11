@@ -32,6 +32,7 @@ import {
   startDevicePairing,
   exchangeChallengeForSession,
   fetchIdentityChallenge,
+  fetchPeerProgress,
   restoreDevSession,
   searchHandles,
   upsertConnectionRelationship,
@@ -2164,9 +2165,22 @@ async function refreshDevicePanel(): Promise<void> {
     : `signed in as ${currentIdentityDocument.handle}`;
   const owner = currentIdentityDocument?.canonical_id ?? null;
   const rows = await Promise.all(devices.map(async (device) => {
-    const health: DevicePanelHealth = owner === null
-      ? { status: "unknown", label: "", lastSeenLine: "", canRetry: false, advanced: { deviceIdShort: device.device_id.slice(0, 8) } }
-      : await computeDeviceSyncHealth(owner, currentDeviceId, device);
+    if (owner === null) {
+      return {
+        device,
+        health: { status: "unknown" as const, label: "", lastSeenLine: "", canRetry: false, advanced: { deviceIdShort: device.device_id.slice(0, 8) } }
+      } satisfies DevicePanelRow;
+    }
+    // Fetch peer-progress for non-current, non-revoked peers only.
+    // The endpoint is cached on the server (3s TTL) so the dialog's
+    // 5s tick doesn't hammer SQL even with several peers.
+    let progress: import("./sync/sync-health.js").PeerProgressInput | null = null;
+    if (currentDeviceId !== null
+      && device.device_id !== currentDeviceId
+      && device.trust_state !== "revoked") {
+      progress = await fetchPeerProgress(owner, currentDeviceId, device.device_id);
+    }
+    const health = await computeDeviceSyncHealth(owner, currentDeviceId, device, Date.now(), progress);
     return { device, health } satisfies DevicePanelRow;
   }));
 
@@ -2178,18 +2192,26 @@ async function refreshDevicePanel(): Promise<void> {
   // tick every second so we round to whole minutes when comparing
   // (a "2m ago" line shouldn't force a re-render until it would
   // visibly change).
+  // Exclude `peerProgressFreshAt` from the signature: it ticks every
+  // poll but the rendered HH:MM only changes minute-by-minute, so
+  // including the raw ms would force a needless re-render every
+  // tick. The number is still rendered into the advanced view.
   const signature = JSON.stringify({
     pairing: activePairingCode,
-    rows: rows.map((r) => ({
-      id: r.device.device_id,
-      n: r.device.name,
-      t: r.device.trust_state,
-      s: r.health.status,
-      l: r.health.label,
-      ls: r.health.lastSeenLine,
-      cr: r.health.canRetry,
-      a: r.health.advanced
-    }))
+    rows: rows.map((r) => {
+      const advancedNoTimestamp: Record<string, unknown> = { ...r.health.advanced };
+      delete advancedNoTimestamp["peerProgressFreshAt"];
+      return {
+        id: r.device.device_id,
+        n: r.device.name,
+        t: r.device.trust_state,
+        s: r.health.status,
+        l: r.health.label,
+        ls: r.health.lastSeenLine,
+        cr: r.health.canRetry,
+        a: advancedNoTimestamp
+      };
+    })
   });
   if (signature === lastDevicePanelSignature) return;
   lastDevicePanelSignature = signature;

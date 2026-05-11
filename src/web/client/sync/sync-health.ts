@@ -64,18 +64,50 @@ export type DeviceSyncHealth = {
     // Ring buffer of recent backfill attempts (newest first when
     // rendered). Comes straight from backfill_state.attempt_history.
     attemptHistory?: BackfillAttempt[];
+    // Inbound peer-progress (caller's perspective). Populated when
+    // the dialog's poll has fetched /sync/peer-progress for this
+    // peer. null when the endpoint hasn't been hit yet, the peer is
+    // revoked (we skip the call), or the network errored. The
+    // numbers are pure metadata: max sequences and a freshness
+    // timestamp. No plaintext.
+    ourLastOriginSequence?: number;
+    peerRecipientCursor?: number;
+    inboundBehindBy?: number;
+    peerProgressFreshAt?: number;
   };
 };
+
+export type PeerProgressInput = {
+  peer_recipient_cursor: number;
+  our_last_origin_sequence: number;
+  inbound_behind_by: number;
+  fresh_as_of_ms: number;
+};
+
+// When inbound_behind_by exceeds this threshold, the user-facing
+// status label gains a non-alarming qualifier ("synced — peer is N
+// events behind"). Below it the row keeps the plain "synced" copy:
+// small drift is normal (the peer polls every ~5s and we may have
+// just emitted) and we don't want to nag.
+export const INBOUND_BEHIND_USER_THRESHOLD = 10;
 
 export async function computeDeviceSyncHealth(
   ownerCanonicalId: string,
   currentDeviceId: string | null,
   device: TrustedDevice,
-  now: number = Date.now()
+  now: number = Date.now(),
+  peerProgress: PeerProgressInput | null = null
 ): Promise<DeviceSyncHealth> {
   const advanced: DeviceSyncHealth["advanced"] = {
     deviceIdShort: device.device_id.slice(0, 8)
   };
+
+  if (peerProgress !== null) {
+    advanced.ourLastOriginSequence = peerProgress.our_last_origin_sequence;
+    advanced.peerRecipientCursor = peerProgress.peer_recipient_cursor;
+    advanced.inboundBehindBy = peerProgress.inbound_behind_by;
+    advanced.peerProgressFreshAt = peerProgress.fresh_as_of_ms;
+  }
 
   // Recipient cursor + origin sequence are best-effort. A revoked or
   // never-active device may not have them yet.
@@ -139,7 +171,7 @@ export async function computeDeviceSyncHealth(
   if (state === null) {
     return {
       status: "synced",
-      label: "synced",
+      label: syncedLabelWithInboundQualifier(peerProgress),
       lastSeenLine,
       retryEligibleAt: null,
       canRetry: false,
@@ -167,7 +199,7 @@ export async function computeDeviceSyncHealth(
   if (state.status === "complete") {
     return {
       status: "synced",
-      label: "synced",
+      label: syncedLabelWithInboundQualifier(peerProgress),
       lastSeenLine,
       retryEligibleAt: null,
       canRetry: false,
@@ -207,6 +239,15 @@ export async function computeDeviceSyncHealth(
     canRetry: true,
     advanced
   };
+}
+
+function syncedLabelWithInboundQualifier(progress: PeerProgressInput | null): string {
+  if (progress === null) return "synced";
+  if (progress.inbound_behind_by <= INBOUND_BEHIND_USER_THRESHOLD) return "synced";
+  // Calm, non-alarming qualifier. Pluralization is the common case
+  // ("12 events behind"); we don't bother with the singular edge
+  // because the threshold is 10.
+  return `synced — peer is ${progress.inbound_behind_by} events behind`;
 }
 
 function humanizeLastSeen(lastSeenAt: string, now: number): string {

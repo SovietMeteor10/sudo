@@ -26,6 +26,8 @@ import { checkPairHandoffRate } from "./pair-handoff-rate-limit.js";
 import { checkSyncRate } from "./sync-rate-limit.js";
 import {
   getRecipientCursor,
+  getMaxOriginSequence,
+  getMaxOriginSequenceAtCursor,
   insertSyncEvent,
   listSyncEventsSince,
   setRecipientCursor
@@ -513,6 +515,105 @@ devicesRouter.post("/:ownerCanonicalId/sync/ack", (request, response) => {
   }
   const stored = setRecipientCursor(ownerCanonicalId, body.recipient_device_id, body.last_server_seq);
   response.json({ ok: true, last_server_seq: stored });
+});
+
+// GET /api/devices/:ownerCanonicalId/sync/peer-progress
+//   ?device_id=<peerDeviceId>&caller_device_id=<selfDeviceId>
+//
+// Lets the calling device ask "how many of MY emitted events has
+// <peer> acked?". Returns:
+//
+//   {
+//     peer_recipient_cursor:      max origin_device_seq of MY events
+//                                  the peer has applied (origin = caller)
+//     our_last_origin_sequence:   max origin_device_seq I've emitted
+//     inbound_behind_by:          our_last - peer_recipient_cursor
+//     fresh_as_of_ms:             server clock at the moment of read
+//   }
+//
+// Auth is the same shape as /sync GET and /sync/ack: the caller
+// supplies caller_device_id and must hold an active membership for
+// :ownerCanonicalId. We deliberately use two separate query params
+// (rather than overloading `device_id`) so the calling and target
+// devices are distinguishable in logs.
+//
+// Cross-owner access leaks NO existence: any failure (caller not a
+// member, peer not in the owner's device list, owner unknown)
+// returns 404. Revoked CALLER → 403 (same as /sync GET). Revoked
+// PEER → 200 with the numbers, because the UI already knows the
+// peer is revoked and the cursor math is harmless metadata at that
+// point.
+//
+// Brief in-memory cache (3s per tuple) means the dialog's 5s
+// refresh doesn't hammer SQL. Cache lives in the route module; a
+// single droplet is the deploy unit, so process-local caching is
+// fine.
+const PEER_PROGRESS_CACHE_TTL_MS = 3000;
+type PeerProgressBody = {
+  peer_recipient_cursor: number;
+  our_last_origin_sequence: number;
+  inbound_behind_by: number;
+  fresh_as_of_ms: number;
+};
+const peerProgressCache = new Map<string, { expires_at: number; body: PeerProgressBody }>();
+function peerProgressCacheKey(owner: string, caller: string, peer: string): string {
+  return `${owner}|${caller}|${peer}`;
+}
+devicesRouter.get("/:ownerCanonicalId/sync/peer-progress", (request, response) => {
+  const ownerCanonicalId = request.params.ownerCanonicalId;
+  const peerDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
+  const callerDeviceId = typeof request.query.caller_device_id === "string" ? request.query.caller_device_id : null;
+  if (peerDeviceId === null || peerDeviceId.length === 0 || callerDeviceId === null || callerDeviceId.length === 0) {
+    response.status(400).json({ ok: false, error: "missing_device_id" });
+    return;
+  }
+  // Owner existence + caller membership in one combined 404/403
+  // shape: any failure to authorize the caller as a member of this
+  // owner returns 404 to avoid leaking the owner's existence to
+  // strangers. The one exception is a revoked caller-of-the-right-
+  // owner, which gets 403 (matching /sync GET's contract).
+  const ownerExists = getIdentityByCanonicalId(ownerCanonicalId) !== null;
+  if (!ownerExists) {
+    response.status(404).json({ ok: false, error: "owner_unknown" });
+    return;
+  }
+  const callerMembership = getLatestDeviceMembership(callerDeviceId);
+  if (callerMembership === null || callerMembership.owner_canonical_id !== ownerCanonicalId) {
+    response.status(404).json({ ok: false, error: "caller_not_in_owner" });
+    return;
+  }
+  if (callerMembership.trust_state !== "active") {
+    response.status(403).json({ ok: false, error: "caller_not_authorized" });
+    return;
+  }
+  // Peer existence must also be owner-scoped.
+  const peerMembership = getLatestDeviceMembership(peerDeviceId);
+  if (peerMembership === null || peerMembership.owner_canonical_id !== ownerCanonicalId) {
+    response.status(404).json({ ok: false, error: "peer_not_in_owner" });
+    return;
+  }
+
+  const key = peerProgressCacheKey(ownerCanonicalId, callerDeviceId, peerDeviceId);
+  const now = Date.now();
+  const cached = peerProgressCache.get(key);
+  if (cached !== undefined && cached.expires_at > now) {
+    response.json(cached.body);
+    return;
+  }
+
+  const ourLastOriginSequence = getMaxOriginSequence(ownerCanonicalId, callerDeviceId);
+  const peerGlobalCursor = getRecipientCursor(ownerCanonicalId, peerDeviceId);
+  const peerRecipientCursor = getMaxOriginSequenceAtCursor(ownerCanonicalId, callerDeviceId, peerGlobalCursor);
+  const inboundBehindBy = Math.max(0, ourLastOriginSequence - peerRecipientCursor);
+
+  const body: PeerProgressBody = {
+    peer_recipient_cursor: peerRecipientCursor,
+    our_last_origin_sequence: ourLastOriginSequence,
+    inbound_behind_by: inboundBehindBy,
+    fresh_as_of_ms: now
+  };
+  peerProgressCache.set(key, { expires_at: now + PEER_PROGRESS_CACHE_TTL_MS, body });
+  response.json(body);
 });
 
 // GET /api/devices/:ownerCanonicalId/sync/cursor?device_id=<recipient>
