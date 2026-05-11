@@ -23,11 +23,13 @@ type PairingTokenRow = {
   encrypted_account_bundle: string | null;
 };
 
-// Pairing TTL. Short on purpose: the user has the original device in
-// front of them; 5 minutes is plenty to cross the room and type the
-// code or scan the QR. Anything longer just widens the brute-force
-// window on the handoff endpoint.
-const PAIRING_TTL_MS = 5 * 60 * 1000;
+// Pairing TTL. The "temporary passcode" the user generates on their
+// trusted device is good for 60 seconds. The user has the original
+// device in front of them; a tighter window shrinks the brute-force
+// surface on the handoff relay and forces a fresh code if the user
+// gets distracted between dialogs. The previous 5-minute TTL was
+// loose enough that a stolen code stayed valuable too long.
+const PAIRING_TTL_MS = 60 * 1000;
 
 export function listTrustedDevices(ownerCanonicalId: string): TrustedDevice[] {
   const rows = db

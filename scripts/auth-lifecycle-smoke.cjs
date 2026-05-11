@@ -84,27 +84,29 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   page.on("pageerror", (e) => consoleErrors.push(e.message));
 
   // ===== 1. Landing page =====
-  // Post-step-9 (link-existing-account): landing exposes 4 primary
-  // options: create account / unlock this device / link existing
-  // account / restore from backup. Restore is no longer hidden
-  // behind the signin dialog because we've made cross-device the
-  // primary path and "restore from backup" the secondary fallback.
+  // Step 10 trimmed landing back to two buttons (sign in + sign up).
+  // The link/restore/reset entry points moved into the sign-in
+  // dialog so unauthenticated landing stays minimal.
   await page.goto(BASE + "/", { waitUntil: "networkidle0" });
   const landing = await page.evaluate(() => ({
     sudoText: /sudo/i.test(document.body.innerText),
     hasSignin: !!document.querySelector('.landing [data-auth-action="signin"]'),
     hasSignup: !!document.querySelector('.landing [data-auth-action="signup"]'),
-    hasLink: !!document.querySelector('.landing [data-auth-action="link"]'),
-    hasRestore: !!document.querySelector('.landing [data-auth-action="restore"]'),
-    allClickable: ["signin", "signup", "link", "restore"].every(
+    hasLandingLink: !!document.querySelector('.landing [data-auth-action="link"]'),
+    hasLandingRestore: !!document.querySelector('.landing [data-auth-action="restore"]'),
+    hasLandingReset: !!document.getElementById("landing-reset"),
+    hasYellowBanner: !!document.getElementById("recovery-reminder"),
+    bothClickable: ["signin", "signup"].every(
       (a) => !!document.querySelector(`.landing [data-auth-action="${a}"]:not([disabled])`)
     )
   }));
   if (!landing.sudoText) fail("landing", "page does not show 'sudo'");
-  else if (!landing.hasSignin || !landing.hasSignup || !landing.hasLink || !landing.hasRestore) {
-    fail("landing", `missing one of the four landing options: signin=${landing.hasSignin} signup=${landing.hasSignup} link=${landing.hasLink} restore=${landing.hasRestore}`);
-  } else if (!landing.allClickable) fail("landing", "one or more landing auth buttons not clickable");
-  else ok("1. landing shows the 4 primary options (create / unlock / link / restore)");
+  else if (!landing.hasSignin || !landing.hasSignup) fail("landing", "missing sign in or sign up");
+  else if (landing.hasLandingLink || landing.hasLandingRestore || landing.hasLandingReset) {
+    fail("landing", `landing has secondary CTAs: link=${landing.hasLandingLink} restore=${landing.hasLandingRestore} reset=${landing.hasLandingReset}`);
+  } else if (landing.hasYellowBanner) fail("landing", "#recovery-reminder still present");
+  else if (!landing.bothClickable) fail("landing", "one or more landing auth buttons not clickable");
+  else ok("1. landing shows only sudo + sign in + sign up; no link/restore/reset/banner");
 
   // ===== 2. Create account success =====
   const handle = "lifecycle" + Date.now().toString().slice(-7);

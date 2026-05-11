@@ -27,15 +27,10 @@
   <section class="landing" id="landing-screen" aria-label="sudo sign in">
     <div class="landing__inner">
       <button class="landing__brand" id="landing-brand" type="button" aria-label="sudo">sudo</button>
-      <p class="landing__hint">your account keys live on this device. sudo does not keep a copy. use another linked device or an encrypted backup if you switch devices.</p>
       <div class="landing__actions">
         <div class="landing__row">
-          <button class="auth-link" type="button" data-auth-action="signup">create account</button>
-          <button class="auth-link" type="button" data-auth-action="signin">unlock this device</button>
-        </div>
-        <div class="landing__row">
-          <button class="auth-link" type="button" data-auth-action="link">link existing account</button>
-          <button class="auth-link" type="button" data-auth-action="restore">restore from backup</button>
+          <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
+          <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
         </div>
       </div>
       <div class="landing__stale" id="landing-stale" role="status" aria-live="polite" hidden></div>
@@ -99,7 +94,6 @@
       </form>
       <div class="composer__state" id="feed-composer-state" aria-live="polite"></div>
       <div class="feed-pane" id="feed-pane-personal" data-feed-pane="personal">
-        <aside class="recovery-reminder" id="recovery-reminder" role="status" aria-live="polite" hidden></aside>
         <div class="stream-list" id="stream-list" aria-live="polite"></div>
       </div>
       <div class="feed-pane" id="feed-pane-discover" data-feed-pane="discover" hidden>
@@ -192,13 +186,15 @@
       </div>
 
       <section class="pairing-card" id="pairing-card" hidden aria-labelledby="pairing-card-title">
-        <div class="pairing-card__title" id="pairing-card-title">pairing code ready</div>
-        <p class="pairing-card__hint">on your other device choose <strong>link existing account</strong> on the landing screen and enter this code. only use this code with your own device.</p>
-        <div class="pairing-card__code" id="pairing-card-code" aria-label="pairing code"></div>
+        <div class="pairing-card__title" id="pairing-card-title">temporary passcode</div>
+        <p class="pairing-card__hint">use this code only on your own device. it expires in 60 seconds.</p>
+        <div class="pairing-card__qr" id="pairing-card-qr" aria-hidden="true"></div>
+        <div class="pairing-card__code" id="pairing-card-code" aria-label="temporary passcode"></div>
         <div class="pairing-card__url is-muted" id="pairing-card-url"></div>
         <div class="pairing-card__expires is-muted" id="pairing-card-expires" aria-live="polite"></div>
+        <div class="pairing-card__success is-muted" id="pairing-card-success" aria-live="polite" hidden>device linked</div>
         <div class="pairing-card__actions">
-          <button class="text-button" id="pairing-card-cancel" type="button">cancel pairing</button>
+          <button class="text-button" id="pairing-card-cancel" type="button">cancel</button>
         </div>
       </section>
 
@@ -212,21 +208,23 @@
 
   <dialog class="signup-dialog signup-dialog--link" id="link-device-dialog" aria-labelledby="link-device-title">
     <form class="signup-dialog__panel" id="link-device-form" method="dialog" autocomplete="off">
-      <div class="signup-dialog__title" id="link-device-title">link existing account</div>
-      <p class="signup-dialog__warning">on the device that already has your sudo account open <strong>account → settings → linked devices → link another device</strong>. enter the pairing code here.</p>
+      <div class="signup-dialog__title" id="link-device-title">collect account from another device</div>
+      <p class="signup-dialog__warning">open sudo on a device that already has this account, then go to <strong>account → settings → link another device</strong>. enter the temporary passcode and your account passphrase here.</p>
 
-      <label class="signup-dialog__label" for="link-device-code">pairing code</label>
+      <label class="signup-dialog__label" for="link-device-code">temporary passcode</label>
       <input id="link-device-code" class="lookup__input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDEF-123456">
 
       <label class="signup-dialog__label" for="link-device-passphrase">account passphrase</label>
       <input id="link-device-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false">
+
+      <button class="text-button signup-dialog__mode" id="link-device-scan" type="button" disabled aria-disabled="true" title="camera scanning is coming soon">scan QR (coming soon)</button>
 
       <div class="signup-dialog__hint" id="link-device-owner" aria-live="polite"></div>
       <div class="signup-dialog__state" id="link-device-state" aria-live="polite"></div>
 
       <div class="signup-dialog__actions">
         <button class="text-button" id="link-device-cancel" type="button">back</button>
-        <button class="text-button text-button--primary" id="link-device-submit" type="submit">link this device</button>
+        <button class="text-button text-button--primary" id="link-device-submit" type="submit">collect account</button>
       </div>
     </form>
   </dialog>
@@ -378,8 +376,11 @@
       >
       <div class="signup-dialog__hint" id="signin-passkey-support">device support: checking</div>
       <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
+      <div class="signup-dialog__secondary">
+        <button class="text-button signup-dialog__mode" type="button" data-auth-action="link">collect account from another device</button>
+        <button class="text-button signup-dialog__mode" type="button" data-auth-action="restore">restore from backup</button>
+      </div>
       <div class="signup-dialog__actions">
-        <button class="text-button signup-dialog__mode" type="button" data-auth-action="restore">restore account</button>
         <button class="text-button" id="signin-cancel" type="button">back</button>
         <button class="text-button text-button--primary" id="signin-submit" type="submit">sign in</button>
       </div>

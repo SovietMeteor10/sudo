@@ -83,6 +83,7 @@ import {
 } from "./localState.js";
 import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup } from "./local/backup.js";
 import { gridFromFingerprintHex } from "./local/fingerprint.js";
+import { encodeUrlToQrSvg } from "./local/qr-encoder.js";
 import { base64Url, base64UrlToBytes, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
@@ -149,7 +150,9 @@ const accountButtonHandle = getRequiredElement("account-button-handle");
 const accountMenu = getRequiredElement("account-menu");
 const accountMenuHandle = getRequiredElement("account-menu-handle");
 const accountMenuRecovery = getRequiredElement("account-menu-recovery");
-const recoveryReminder = getRequiredElement("recovery-reminder");
+// recovery reminder banner removed in the new-device-link UX pass —
+// it was the yellow strip the user objected to. See the no-op
+// stubs further down.
 const accountMenuAccount = getRequiredButton("account-menu-account");
 const accountMenuSettings = getRequiredButton("account-menu-settings");
 const accountMenuLogout = getRequiredButton("account-menu-logout");
@@ -216,6 +219,8 @@ const pairingCardCode = getRequiredElement("pairing-card-code");
 const pairingCardUrl = getRequiredElement("pairing-card-url");
 const pairingCardExpires = getRequiredElement("pairing-card-expires");
 const pairingCardCancel = getRequiredButton("pairing-card-cancel");
+const pairingCardQr = getRequiredElement("pairing-card-qr");
+const pairingCardSuccess = getRequiredElement("pairing-card-success");
 const linkDeviceDialog = getRequiredDialog("link-device-dialog");
 const linkDeviceForm = getRequiredForm("link-device-form");
 const linkDeviceCode = getRequiredInput("link-device-code");
@@ -287,25 +292,27 @@ void renderStreamWhenReady();
 void refreshDiscoveryPosts();
 void restoreStoredSession();
 
-// Auto-open the link-existing-account dialog if the page loaded with
-// ?pair=CODE in the URL. Lets the new device land directly on the
-// linking step from a QR scan or copied URL on the original device.
+// Auto-open the collect-account dialog if the page loaded with
+// ?collect=CODE (canonical) or ?pair=CODE (legacy) in the URL.
+// Lets a new device land directly on the linking step from a QR
+// scan on the trusted device.
 void (async () => {
   try {
     const params = new URLSearchParams(window.location.search);
-    const pair = params.get("pair");
-    if (pair && pair.length > 0) {
+    const code = params.get("collect") ?? params.get("pair");
+    if (code && code.length > 0) {
       // Don't pre-open if the user is already signed in on this
       // device — that suggests they accidentally re-loaded the
-      // pairing URL on the same browser. Show a clear note instead.
+      // collect URL on the same browser. Show a clear note instead.
       if (document.body.dataset.authState === "signed-in") {
         flashFeedback("you are already signed in on this device.");
       } else {
-        openLinkDeviceDialog(pair);
+        openLinkDeviceDialog(code);
       }
-      // Strip the pair= param so a reload doesn't keep popping the
-      // dialog after the user dismissed it.
+      // Strip both possible params so a reload doesn't keep popping
+      // the dialog after the user dismissed it.
       const url = new URL(window.location.href);
+      url.searchParams.delete("collect");
       url.searchParams.delete("pair");
       window.history.replaceState(null, "", url.toString());
     }
@@ -2211,6 +2218,8 @@ function renderPairingCard(): void {
     pairingCardCode.textContent = "";
     pairingCardUrl.textContent = "";
     pairingCardExpires.textContent = "";
+    pairingCardQr.replaceChildren();
+    pairingCardSuccess.hidden = true;
     if (pairingExpiresInterval !== null) {
       window.clearInterval(pairingExpiresInterval);
       pairingExpiresInterval = null;
@@ -2218,37 +2227,122 @@ function renderPairingCard(): void {
     return;
   }
   pairingCard.hidden = false;
+  pairingCardSuccess.hidden = true;
   pairingCardCode.textContent = activePairingCode;
-  const url = `${window.location.origin}/?pair=${encodeURIComponent(activePairingCode)}`;
+  // ?collect= is the canonical URL parameter for the new
+  // collect-account flow. ?pair= stayed as a legacy alias on the
+  // server side so older QR codes still work.
+  const url = `${window.location.origin}/?collect=${encodeURIComponent(activePairingCode)}`;
   pairingCardUrl.textContent = url;
+
+  // Render a real QR code as inline SVG. The encoder is hardcoded
+  // to QR version 3 / EC level L which holds 53 bytes — enough for
+  // our short collect URL. If encoding fails (data too long, etc.)
+  // we hide the QR slot rather than throw — the typed code stays.
+  try {
+    pairingCardQr.innerHTML = encodeUrlToQrSvg(url, 6, 4);
+  } catch {
+    pairingCardQr.replaceChildren();
+  }
+
   const tickExpiry = () => {
     if (activePairingExpiresAt === null) return;
     const ms = Date.parse(activePairingExpiresAt) - Date.now();
     if (ms <= 0) {
-      pairingCardExpires.textContent = "expired";
-      void cancelActivePairing();
+      pairingCardExpires.textContent = "code expired. generate a new one.";
+      void cancelActivePairing({ silent: true });
       return;
     }
     const seconds = Math.ceil(ms / 1000);
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    pairingCardExpires.textContent = `expires in ${m}:${String(s).padStart(2, "0")}`;
+    pairingCardExpires.textContent = `expires in ${seconds}s`;
   };
   tickExpiry();
   if (pairingExpiresInterval !== null) window.clearInterval(pairingExpiresInterval);
   pairingExpiresInterval = window.setInterval(tickExpiry, 1000);
+
+  // Background poll: when a new device shows up in our trusted-
+  // devices list (matching this owner, not equal to currentDeviceId),
+  // surface "device linked" and tear down the card after a beat.
+  // Polling the server is cheap and the card is short-lived (60s).
+  startPairingCompletionPoll();
 }
 
-async function cancelActivePairing(): Promise<void> {
+let pairingCompletionPoll: number | null = null;
+let pairingBaselineDeviceIds: Set<string> | null = null;
+function startPairingCompletionPoll(): void {
+  stopPairingCompletionPoll();
+  if (currentIdentityDocument === null) return;
+  const owner = currentIdentityDocument.canonical_id;
+  const initial = async () => {
+    try {
+      const devices = await listServerTrustedDevices(owner);
+      pairingBaselineDeviceIds = new Set(devices.filter((d) => d.trust_state === "active").map((d) => d.device_id));
+    } catch {
+      pairingBaselineDeviceIds = new Set();
+    }
+  };
+  void initial();
+  pairingCompletionPoll = window.setInterval(async () => {
+    if (activePairingCode === null) {
+      stopPairingCompletionPoll();
+      return;
+    }
+    try {
+      const devices = await listServerTrustedDevices(owner);
+      const fresh = devices.filter((d) => d.trust_state === "active" && d.device_id !== currentDeviceId);
+      const baseline = pairingBaselineDeviceIds ?? new Set();
+      const newDevice = fresh.find((d) => !baseline.has(d.device_id));
+      if (newDevice !== undefined) {
+        // A new device just paired with us. Clear the active
+        // passcode (so the timer/cancel UI tear down) and show a
+        // calm success message inside the card for a couple
+        // seconds before hiding it entirely.
+        activePairingCode = null;
+        activePairingToken = null;
+        activePairingExpiresAt = null;
+        pairingCardSuccess.hidden = false;
+        pairingCardSuccess.textContent = `device linked: ${newDevice.name || newDevice.device_id.slice(0, 8)}`;
+        pairingCardQr.replaceChildren();
+        pairingCardCode.textContent = "";
+        pairingCardUrl.textContent = "";
+        pairingCardExpires.textContent = "";
+        if (pairingExpiresInterval !== null) {
+          window.clearInterval(pairingExpiresInterval);
+          pairingExpiresInterval = null;
+        }
+        stopPairingCompletionPoll();
+        await refreshDevicePanel();
+        // Refresh the menu indicator immediately so the user sees
+        // their recovery posture flip from "unprotected" to
+        // "✓ linked device".
+        void refreshAccountMenuRecoveryIndicator();
+        window.setTimeout(() => {
+          if (activePairingCode === null) renderPairingCard();
+        }, 2500);
+      }
+    } catch { /* network blip — try again next tick */ }
+  }, 2000);
+}
+
+function stopPairingCompletionPoll(): void {
+  if (pairingCompletionPoll !== null) {
+    window.clearInterval(pairingCompletionPoll);
+    pairingCompletionPoll = null;
+  }
+  pairingBaselineDeviceIds = null;
+}
+
+async function cancelActivePairing(options: { silent?: boolean } = {}): Promise<void> {
   const token = activePairingToken;
   activePairingCode = null;
   activePairingToken = null;
   activePairingExpiresAt = null;
+  stopPairingCompletionPoll();
   renderPairingCard();
   if (token !== null) {
     await cancelPairing(token);
   }
-  devicePanelFeedback.textContent = "pairing cancelled";
+  if (!options.silent) devicePanelFeedback.textContent = "passcode cancelled";
   await refreshDevicePanel();
 }
 
@@ -2265,7 +2359,7 @@ async function runLinkExistingAccount(): Promise<void> {
   const pairingCode = linkDeviceCode.value.trim().toUpperCase();
   const passphrase = linkDevicePassphrase.value;
   if (pairingCode.length === 0 || passphrase.length === 0) {
-    linkDeviceState.textContent = "enter the pairing code and your account passphrase";
+    linkDeviceState.textContent = "enter the temporary passcode and your account passphrase";
     return;
   }
 
@@ -2278,7 +2372,7 @@ async function runLinkExistingAccount(): Promise<void> {
     return;
   }
   if (handoff === null) {
-    linkDeviceState.textContent = "pairing code not found, expired, or already used";
+    linkDeviceState.textContent = "this code expired or was already used. generate a new one on your other device.";
     return;
   }
 
@@ -3814,12 +3908,6 @@ function setSignedIn(handle: string): void {
   setAuthView("signed-in");
   setAccountButtonHandle(handle);
   closeChatPopup();
-  // Bump signin counters before the reminder check so the very
-  // first signin counts. Both fire-and-forget — they read/write
-  // local IndexedDB and shouldn't block UI.
-  if (currentIdentityDocument !== null) {
-    void bumpSigninSession(currentIdentityDocument.canonical_id).then(() => maybeShowRecoveryReminder());
-  }
   if (currentIdentityDocument !== null) {
     // Repaint chat + feed from the new owner's local state only. The previous
     // owner's in-memory state was already cleared in setSignedOut().
@@ -4077,148 +4165,17 @@ function profileSigninCountKey(canonicalId: string): string {
   return `profile.signinCount.${canonicalId}`;
 }
 
-// Recovery reminder banner. Lives above the personal feed and is the
-// only proactive prompt the user gets about their recovery posture.
-// Triggers when:
-//   - the user has no exported backup AND no other linked device, AND
-//   - they've signed in at least 3 times OR the account has been on
-//     this device at least 3 days
-//   - they have not already dismissed the banner in this browser
-//     session
-// Dismiss persists for the rest of the session (sessionStorage) but
-// not across reload windows. A successful backup export or device
-// pairing clears the banner immediately and unsets the dismiss flag
-// for that account, so the banner won't pop back the moment the
-// user undoes their fix.
+// Recovery reminder banner removed in the new-device-link UX pass.
+// The yellow strip above the personal feed was visually noisy and
+// the trigger logic was opaque to users. The same posture data still
+// drives the passive indicator inside the account dropdown, which is
+// the right surface for a calm, glanceable signal.
 //
-// Tone is calm: no red panic styling, no modal interruption, no
-// scare copy.
-
-const SIGNIN_THRESHOLD_FOR_REMINDER = 3;
-const FIRST_SEEN_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
-
-function reminderDismissedKey(canonicalId: string): string {
-  return `recovery-reminder-dismissed.${canonicalId}`;
-}
-
-function reminderCountedKey(canonicalId: string): string {
-  return `recovery-reminder-counted.${canonicalId}`;
-}
-
-async function bumpSigninSession(canonicalId: string): Promise<void> {
-  // Stamp first-seen-at on first successful signin (or carry it
-  // forward from crypto_account.created_at if the setting is empty
-  // — useful for accounts that existed before this code shipped).
-  try {
-    const existing = await getSetting(profileFirstSeenKey(canonicalId));
-    if (typeof existing !== "string" || existing.length === 0) {
-      await putSetting(profileFirstSeenKey(canonicalId), new Date().toISOString());
-    }
-  } catch { /* fail silent */ }
-
-  // Increment session counter at most once per browser session per
-  // account. Reload is a fresh "session" by intent — three reloads
-  // in a row counts as three sessions, mirroring how often the user
-  // actually returned to the app.
-  try {
-    const sentinel = reminderCountedKey(canonicalId);
-    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(sentinel) === "1") return;
-    const current = await getSetting(profileSigninCountKey(canonicalId));
-    const n = typeof current === "number" ? current : 0;
-    await putSetting(profileSigninCountKey(canonicalId), n + 1);
-    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(sentinel, "1");
-  } catch { /* fail silent */ }
-}
-
-async function maybeShowRecoveryReminder(): Promise<void> {
-  if (currentIdentityDocument === null) {
-    hideRecoveryReminder();
-    return;
-  }
-  const canonicalId = currentIdentityDocument.canonical_id;
-
-  // Per-session dismissal — sessionStorage clears on tab close, so
-  // the banner can come back next time the user opens the app. That
-  // matches the user's intent: nudge calmly + repeatedly until they
-  // either pull a recovery lever or wipe local state.
-  if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(reminderDismissedKey(canonicalId)) === "1") {
-    hideRecoveryReminder();
-    return;
-  }
-
-  const posture = await computeRecoveryPosture(canonicalId);
-  if (posture.backedUp || posture.pairedDeviceCount > 0) {
-    hideRecoveryReminder();
-    return;
-  }
-
-  let signinCount = 0;
-  let firstSeenMs: number | null = null;
-  try {
-    const value = await getSetting(profileSigninCountKey(canonicalId));
-    signinCount = typeof value === "number" ? value : 0;
-  } catch {}
-  try {
-    const value = await getSetting(profileFirstSeenKey(canonicalId));
-    if (typeof value === "string") {
-      const ms = Date.parse(value);
-      if (!Number.isNaN(ms)) firstSeenMs = ms;
-    }
-  } catch {}
-  const ageMs = firstSeenMs === null ? 0 : Date.now() - firstSeenMs;
-  if (signinCount < SIGNIN_THRESHOLD_FOR_REMINDER && ageMs < FIRST_SEEN_THRESHOLD_MS) {
-    hideRecoveryReminder();
-    return;
-  }
-  renderRecoveryReminder(canonicalId);
-}
-
-function renderRecoveryReminder(canonicalId: string): void {
-  const message = document.createElement("div");
-  message.className = "recovery-reminder__message";
-  message.textContent = "this account isn't backed up yet. if this browser is lost or wiped, you could permanently lose access.";
-
-  const actions = document.createElement("div");
-  actions.className = "recovery-reminder__actions";
-
-  const open = document.createElement("button");
-  open.type = "button";
-  open.className = "text-button recovery-reminder__cta";
-  open.textContent = "open settings to back up";
-  open.dataset["reminderAction"] = "open-settings";
-  open.addEventListener("click", () => openSettingsDialog());
-
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "recovery-reminder__dismiss";
-  dismiss.textContent = "dismiss";
-  dismiss.dataset["reminderAction"] = "dismiss";
-  dismiss.addEventListener("click", () => {
-    if (typeof sessionStorage !== "undefined") {
-      sessionStorage.setItem(reminderDismissedKey(canonicalId), "1");
-    }
-    hideRecoveryReminder();
-  });
-
-  actions.append(open, dismiss);
-  recoveryReminder.replaceChildren(message, actions);
-  recoveryReminder.hidden = false;
-}
-
-function hideRecoveryReminder(): void {
-  recoveryReminder.hidden = true;
-  recoveryReminder.replaceChildren();
-}
-
-// Called from the two events that change recovery posture toward
-// safety. Both unset the per-session dismiss flag so the user
-// won't see the banner pop back if they later undo the protection.
-function clearRecoveryReminderForCurrentAccount(): void {
-  if (currentIdentityDocument !== null && typeof sessionStorage !== "undefined") {
-    sessionStorage.removeItem(reminderDismissedKey(currentIdentityDocument.canonical_id));
-  }
-  hideRecoveryReminder();
-}
+// Stubs preserved so call sites in setSignedIn / exportEncryptedBackup
+// / completePairingFlow / setSignedOut don't need to be rewired in
+// every patch — just compile-time no-ops.
+function clearRecoveryReminderForCurrentAccount(): void { /* noop */ }
+function hideRecoveryReminder(): void { /* noop */ }
 
 function setSignedOut(): void {
   authSequence++;

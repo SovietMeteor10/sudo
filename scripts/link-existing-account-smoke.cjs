@@ -149,15 +149,44 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   if (!await waitFor(pageA, () => document.getElementById("pairing-card")?.hidden === false, 10000)) {
     fail("2.pair-card", "pairing card did not appear"); throw new Error();
   }
+  // Wait until the code text actually populates — the start flow
+  // is async (server pair/start + bundle wrap + handoff POST).
+  await waitFor(pageA, () => /^[0-9A-F]{6}-[0-9A-F]{6}$/.test(document.getElementById("pairing-card-code")?.textContent?.trim() ?? ""), 10000);
   const pairing = await pageA.evaluate(() => ({
     code: document.getElementById("pairing-card-code")?.textContent?.trim() ?? "",
     url: document.getElementById("pairing-card-url")?.textContent?.trim() ?? "",
-    expires: document.getElementById("pairing-card-expires")?.textContent?.trim() ?? ""
+    expires: document.getElementById("pairing-card-expires")?.textContent?.trim() ?? "",
+    qrCellCount: document.querySelectorAll("#pairing-card-qr svg rect").length
   }));
   if (!/^[0-9A-F]{6}-[0-9A-F]{6}$/.test(pairing.code)) {
     fail("2.code-shape", `pairing code shape unexpected: '${pairing.code}'`);
   } else {
-    ok(`2. A's pairing card shows code=${pairing.code}, url=${pairing.url.slice(0, 60)}, ${pairing.expires}`);
+    ok(`2. A's pairing card shows code=${pairing.code}`);
+  }
+  // URL must be the canonical ?collect= form, not the legacy ?pair=.
+  if (!pairing.url.includes("?collect=")) {
+    fail("2b.url-form", `expected ?collect=, got '${pairing.url}'`);
+  } else if (pairing.url.includes("?pair=")) {
+    fail("2b.url-form", `URL still uses ?pair=: '${pairing.url}'`);
+  } else {
+    ok(`2b. URL uses ?collect= form (${pairing.url.slice(0, 60)}...)`);
+  }
+  // Expiry copy mentions seconds and ≤60s budget.
+  const expiresSecondsMatch = /expires in (\d+)s/.exec(pairing.expires);
+  if (!expiresSecondsMatch) {
+    fail("2c.expiry", `expiry copy unexpected: '${pairing.expires}'`);
+  } else if (Number(expiresSecondsMatch[1]) > 65) {
+    fail("2c.expiry", `expiry > 65s suggests TTL was not reduced: '${pairing.expires}'`);
+  } else {
+    ok(`2c. passcode expires in ≤60s ('${pairing.expires}')`);
+  }
+  // QR is rendered as an inline <svg> with many <rect> cells. A v3
+  // QR has 29×29 modules; expect at least a few hundred rect cells
+  // (one per dark module) once the encoder runs.
+  if (pairing.qrCellCount < 50) {
+    fail("2d.qr-render", `expected QR <svg> to contain many <rect> cells, got ${pairing.qrCellCount}`);
+  } else {
+    ok(`2d. QR rendered as inline SVG (${pairing.qrCellCount} dark modules)`);
   }
 
   // ===== 3. Server has the bundle =====
@@ -202,31 +231,36 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   ok(`4c. A's device_id captured: ${deviceIdA.slice(0, 8)}`);
 
   // ===== B — fresh browser landing =====
+  // Landing is back to the minimal 2-button form (sign in + sign up).
+  // The "collect from another device" entry lives inside the
+  // sign-in dialog's secondary actions, not on landing.
   const ctxB = await browser.createBrowserContext();
   const pageB = await ctxB.newPage();
   await pageB.setViewport({ width: 980, height: 820 });
   await pageB.goto(BASE + "/", { waitUntil: "networkidle0" });
   const landingShape = await pageB.evaluate(() => ({
-    create: document.querySelector('.landing [data-auth-action="signup"]')?.textContent?.trim() ?? "",
-    unlock: document.querySelector('.landing [data-auth-action="signin"]')?.textContent?.trim() ?? "",
-    link: document.querySelector('.landing [data-auth-action="link"]')?.textContent?.trim() ?? "",
-    restore: document.querySelector('.landing [data-auth-action="restore"]')?.textContent?.trim() ?? "",
-    hint: document.querySelector(".landing__hint")?.textContent?.trim() ?? ""
+    signin: document.querySelector('.landing [data-auth-action="signin"]')?.textContent?.trim() ?? "",
+    signup: document.querySelector('.landing [data-auth-action="signup"]')?.textContent?.trim() ?? "",
+    hasLandingLink: !!document.querySelector('.landing [data-auth-action="link"]'),
+    hasLandingRestore: !!document.querySelector('.landing [data-auth-action="restore"]'),
+    hasLandingReset: !!document.getElementById("landing-reset"),
+    hasYellowBanner: !!document.getElementById("recovery-reminder"),
+    hasHintParagraph: !!document.querySelector(".landing__hint"),
+    bodyLower: document.body.textContent?.toLowerCase() ?? ""
   }));
-  if (!landingShape.create || !landingShape.unlock || !landingShape.link || !landingShape.restore) {
-    fail("5.landing-shape", `landing missing options: ${JSON.stringify(landingShape)}`);
-  } else if (!/this device/i.test(landingShape.unlock)) {
-    fail("5.landing-copy", `'unlock this device' copy missing: '${landingShape.unlock}'`);
+  if (!landingShape.signin || !landingShape.signup) {
+    fail("5.landing-shape", `landing missing sign in or sign up: ${JSON.stringify(landingShape)}`);
+  } else if (landingShape.hasLandingLink || landingShape.hasLandingRestore || landingShape.hasLandingReset) {
+    fail("5.landing-extras", `landing still has secondary CTAs: link=${landingShape.hasLandingLink} restore=${landingShape.hasLandingRestore} reset=${landingShape.hasLandingReset}`);
+  } else if (landingShape.hasHintParagraph) {
+    fail("5.landing-hint", "landing still has the .landing__hint paragraph; it should be removed");
+  } else if (landingShape.hasYellowBanner) {
+    fail("5.yellow-banner", "#recovery-reminder still rendered (the yellow strip)");
   } else {
-    ok(`5. B landing shows 4 options: '${landingShape.create}', '${landingShape.unlock}', '${landingShape.link}', '${landingShape.restore}'`);
-  }
-  if (/recover|password|recovery code/i.test(landingShape.hint)) {
-    fail("5.hint-copy", `landing hint mentions recovery/password: '${landingShape.hint}'`);
-  } else {
-    ok(`5b. landing hint does not imply password recovery: '${landingShape.hint.slice(0, 80)}...'`);
+    ok(`5. B landing is minimal (sign in + sign up; no link/restore/reset/hint/banner)`);
   }
 
-  // ===== 6. Open link dialog =====
+  // ===== 6. Open collect-from-signin =====
   // Watch outbound network so we can assert later that B never POSTs
   // to /api/identity/signin and DOES use the challenge flow.
   const linkPaths = new Set();
@@ -235,11 +269,48 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
     if (!u.startsWith(BASE)) return;
     linkPaths.add(`${req.method()} ${u.slice(BASE.length).split("?")[0]}`);
   });
-  await pageB.click('.landing [data-auth-action="link"]');
-  if (!await waitFor(pageB, () => document.getElementById("link-device-dialog")?.open === true)) {
-    fail("6.link-dialog", "link dialog did not open"); throw new Error();
+  await pageB.click('.landing [data-auth-action="signin"]');
+  if (!await waitFor(pageB, () => document.getElementById("signin-dialog")?.open === true)) {
+    fail("6.signin", "signin dialog did not open"); throw new Error();
   }
-  ok(`6. B's 'link existing account' opens #link-device-dialog`);
+  // The signin dialog must surface "collect account from another
+  // device" as a secondary action.
+  const signinSecondary = await pageB.evaluate(() => {
+    const buttons = [...document.querySelectorAll('#signin-dialog [data-auth-action="link"]')];
+    return buttons.map((b) => b.textContent?.trim() ?? "");
+  });
+  if (signinSecondary.length === 0) {
+    fail("6.collect-button", "signin dialog has no [data-auth-action=link] button");
+  } else if (!/collect|another device/i.test(signinSecondary[0])) {
+    fail("6.collect-copy", `signin secondary button copy unexpected: '${signinSecondary[0]}'`);
+  } else {
+    ok(`6. signin dialog surfaces '${signinSecondary[0]}'`);
+  }
+  await pageB.click('#signin-dialog [data-auth-action="link"]');
+  if (!await waitFor(pageB, () => document.getElementById("link-device-dialog")?.open === true)) {
+    fail("6b.link-dialog", "collect-account dialog did not open from signin"); throw new Error();
+  }
+  ok(`6b. signin → 'collect account' opens #link-device-dialog`);
+  // The dialog title and submit button must use "collect"/"passcode"
+  // wording, not "pairing" or "link this device".
+  const collectShape = await pageB.evaluate(() => ({
+    title: document.getElementById("link-device-title")?.textContent?.trim() ?? "",
+    submit: document.getElementById("link-device-submit")?.textContent?.trim() ?? "",
+    codeLabel: document.querySelector('label[for="link-device-code"]')?.textContent?.trim() ?? "",
+    scanQrPresent: !!document.getElementById("link-device-scan"),
+    scanQrDisabled: document.getElementById("link-device-scan")?.disabled ?? false
+  }));
+  if (!/collect/i.test(collectShape.title)) fail("6c.title", `dialog title not collect-flavored: '${collectShape.title}'`);
+  else ok(`6c. dialog title: '${collectShape.title}'`);
+  if (!/collect/i.test(collectShape.submit)) fail("6d.submit", `submit copy not collect-flavored: '${collectShape.submit}'`);
+  else ok(`6d. submit copy: '${collectShape.submit}'`);
+  if (!/temporary passcode/i.test(collectShape.codeLabel)) fail("6e.code-label", `code label unexpected: '${collectShape.codeLabel}'`);
+  else ok(`6e. code field labelled '${collectShape.codeLabel}'`);
+  if (!collectShape.scanQrPresent || !collectShape.scanQrDisabled) {
+    fail("6f.scan-qr", `'scan QR' placeholder missing or not disabled: present=${collectShape.scanQrPresent} disabled=${collectShape.scanQrDisabled}`);
+  } else {
+    ok(`6f. 'scan QR (coming soon)' placeholder present and disabled`);
+  }
 
   // ===== 7. Type code + passphrase, submit =====
   await pageB.type("#link-device-code", pairing.code);
@@ -286,6 +357,25 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   else if (deviceIdB === deviceIdA) fail("9.device-id-fresh", `B reused A's device_id ${deviceIdA}`);
   else ok(`9. B has a FRESH device_id ${deviceIdB.slice(0, 8)} (not A's ${deviceIdA.slice(0, 8)})`);
 
+  // ===== 9b. A's pairing card flips to "device linked" =====
+  // The trusted-devices poll on A's side detects B's new device and
+  // surfaces the success message inside the pairing card. Up to ~5s
+  // for the next poll tick to fire.
+  const successShown = await waitFor(pageA, () => {
+    const success = document.getElementById("pairing-card-success");
+    if (!success || success.hidden) return false;
+    return /device linked/i.test(success.textContent ?? "");
+  }, 8000);
+  if (!successShown) {
+    const observed = await pageA.evaluate(() => ({
+      hidden: document.getElementById("pairing-card-success")?.hidden,
+      text: document.getElementById("pairing-card-success")?.textContent ?? ""
+    }));
+    fail("9b.success", `A's pairing card never showed success: hidden=${observed.hidden} text='${observed.text}'`);
+  } else {
+    ok(`9b. A's pairing card flipped to 'device linked' after B paired`);
+  }
+
   // ===== 10. /api/devices listing has both records =====
   const listing = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}`).then((r) => r.json()).catch(() => ({}));
   const ids = new Set((listing.devices ?? []).map((d) => d.device_id));
@@ -321,12 +411,15 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
     throw new Error();
   }
 
-  // Open a third browser context for the wrong-pass attempt.
+  // Open a third browser context for the wrong-pass attempt. Land
+  // → sign in → collect-account (matches the new entry path).
   const ctxC = await browser.createBrowserContext();
   const pageC = await ctxC.newPage();
   await pageC.setViewport({ width: 980, height: 820 });
   await pageC.goto(BASE + "/", { waitUntil: "networkidle0" });
-  await pageC.click('.landing [data-auth-action="link"]');
+  await pageC.click('.landing [data-auth-action="signin"]');
+  await waitFor(pageC, () => document.getElementById("signin-dialog")?.open === true);
+  await pageC.click('#signin-dialog [data-auth-action="link"]');
   await waitFor(pageC, () => document.getElementById("link-device-dialog")?.open === true);
   await pageC.type("#link-device-code", pairing2);
   await pageC.type("#link-device-passphrase", "DefinitelyWrongPass1!");

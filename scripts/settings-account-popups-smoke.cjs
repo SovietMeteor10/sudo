@@ -98,7 +98,10 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
       hasResetButton: !!document.getElementById("landing-reset"),
       hasSignin: !!document.querySelector('.landing [data-auth-action="signin"]'),
       hasSignup: !!document.querySelector('.landing [data-auth-action="signup"]'),
-      hasHint: !!document.querySelector(".landing__hint"),
+      hasLandingLink: !!document.querySelector('.landing [data-auth-action="link"]'),
+      hasLandingRestore: !!document.querySelector('.landing [data-auth-action="restore"]'),
+      hasYellowBanner: !!document.getElementById("recovery-reminder"),
+      hasHintParagraph: !!document.querySelector(".landing__hint"),
       bodyText: (landing?.textContent ?? "").toLowerCase()
     };
   });
@@ -106,8 +109,15 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
   else ok(`1a. landing has no #landing-reset button`);
   if (!landingShape.hasSignin || !landingShape.hasSignup) fail("1b.signin-signup", "missing sign in or sign up");
   else ok(`1b. landing keeps sign in + sign up`);
-  if (!landingShape.hasHint) fail("1c.landing-hint", "landing missing the plain-language hint paragraph");
-  else ok(`1c. landing has plain-language hint about local keys`);
+  if (landingShape.hasLandingLink || landingShape.hasLandingRestore) {
+    fail("1c.landing-extras", `landing has secondary CTAs that should be in the signin dialog: link=${landingShape.hasLandingLink} restore=${landingShape.hasLandingRestore}`);
+  } else if (landingShape.hasHintParagraph) {
+    fail("1c.landing-hint", "landing still has .landing__hint paragraph; should be removed");
+  } else if (landingShape.hasYellowBanner) {
+    fail("1c.yellow-banner", "#recovery-reminder still rendered (the yellow strip)");
+  } else {
+    ok(`1c. landing is minimal (no link/restore/reset/hint/yellow-banner)`);
+  }
   const leakedOnLanding = FORBIDDEN_TERMS.filter((term) => landingShape.bodyText.includes(term));
   if (leakedOnLanding.length > 0) {
     fail("1d.landing-copy", `landing leaks technical terms: ${leakedOnLanding.join(", ")}`);
@@ -319,11 +329,12 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
     ok(`6a. account-menu indicator reads '${indicatorBefore}' for fresh account`);
   }
 
-  // ===== Part 7: recovery reminder banner =====
-  // Triggers when (no backup) AND (no linked device) AND
-  // (signin_count >= 3 OR account is >= 3 days old). The smoke is
-  // ephemeral, so we precondition the count by writing it to the
-  // settings IDB store directly.
+  // ===== Part 7: yellow recovery banner is gone =====
+  // Step 10 of the link-flow pass deleted the yellow strip the
+  // user objected to. Assert it never appears even when we
+  // precondition the trigger state (signin count high, no backup,
+  // no linked device). The passive indicator inside the account
+  // dropdown is now the only recovery surface.
   const canonicalForBanner = await page.evaluate(() => {
     return new Promise((resolve) => {
       const req = indexedDB.open("sudo_local_state");
@@ -354,42 +365,32 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
         updated_at: new Date().toISOString()
       });
       await new Promise((resolve) => { tx.oncomplete = resolve; });
-      // Also clear the per-session dismiss flag so reload re-evaluates
-      // freshly.
-      sessionStorage.removeItem(`recovery-reminder-dismissed.${canonical}`);
-      sessionStorage.removeItem(`recovery-reminder-counted.${canonical}`);
     }, canonicalForBanner);
     await page.reload({ waitUntil: "networkidle0" });
-    if (!await waitFor(page, () => document.body.dataset.authState === "signed-in", 10000)) {
-      fail("7a.reload", "reload did not stay signed in"); throw new Error();
-    }
-    if (!await waitFor(page, () => document.getElementById("recovery-reminder")?.hidden === false, 10000)) {
-      fail("7a.banner-shown", "reminder banner did not appear after preconditioning signin count");
-    } else {
-      const bannerText = await page.evaluate(() => document.getElementById("recovery-reminder")?.textContent ?? "");
-      if (!/back(ed)? up|backup/i.test(bannerText) || !/lost or wiped/i.test(bannerText)) {
-        fail("7a.banner-copy", `banner copy unexpected: '${bannerText}'`);
-      } else {
-        ok(`7a. reminder banner appears with calm warning copy`);
-      }
-      // Dismiss → banner hides; per-session flag stays so reload still
-      // shows it suppressed.
-      await page.evaluate(() => {
-        document.querySelector('#recovery-reminder [data-reminder-action="dismiss"]')?.click();
-      });
-      if (!await waitFor(page, () => document.getElementById("recovery-reminder")?.hidden === true, 5000)) {
-        fail("7b.dismiss", "banner did not hide after dismiss click");
-      } else {
-        ok(`7b. dismiss hides the banner`);
-      }
-      await page.reload({ waitUntil: "networkidle0" });
-      await waitFor(page, () => document.body.dataset.authState === "signed-in", 10000);
-      // Give the post-signin reminder check a moment to fire.
-      await new Promise((r) => setTimeout(r, 600));
-      const reappeared = await page.evaluate(() => document.getElementById("recovery-reminder")?.hidden === false);
-      if (reappeared) fail("7c.session-dismiss", "banner reappeared after dismiss within the same session");
-      else ok(`7c. dismiss persists across reload within the same session`);
-    }
+    await waitFor(page, () => document.body.dataset.authState === "signed-in", 10000);
+    await new Promise((r) => setTimeout(r, 600));
+    const yellow = await page.evaluate(() => ({
+      element: !!document.getElementById("recovery-reminder"),
+      visibleStrip: (() => {
+        // Anything yellow-ish near the top of the personal feed
+        // would be the strip. Check both for the element and for a
+        // suspicious computed background among feed-pane direct
+        // children.
+        const pane = document.getElementById("feed-pane-personal");
+        if (!pane) return false;
+        for (const child of pane.children) {
+          if (!(child instanceof HTMLElement)) continue;
+          if (child.id === "stream-list") continue;
+          const bg = window.getComputedStyle(child).backgroundColor;
+          // rgb(26, 22, 14) was the old recovery-reminder background.
+          if (/rgb\(2[0-9], 2[0-9], 1[0-9]\)/.test(bg)) return true;
+        }
+        return false;
+      })()
+    }));
+    if (yellow.element) fail("7.banner-element", "#recovery-reminder is still in the DOM");
+    else if (yellow.visibleStrip) fail("7.yellow-strip", "a yellow-ish strip is rendered above the feed");
+    else ok(`7. no yellow recovery banner appears even with banner trigger preconditioned`);
   }
 
   await browser.close();
