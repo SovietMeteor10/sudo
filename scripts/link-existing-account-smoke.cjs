@@ -110,11 +110,28 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   }
   ok(`1. A signed up @${handleA}`);
 
+  // Resolve canonical_id via the public registry instead of poking
+  // sqlite directly — the local DB isn't reachable when this smoke
+  // runs against a remote BASE.
   let canonicalA = "";
   try {
-    canonicalA = execFileSync("sqlite3", [DB_PATH, `SELECT canonical_id FROM identities WHERE handle = '@${handleA}' LIMIT 1`], { encoding: "utf-8" }).trim();
+    const resp = await fetch(`${BASE}/.well-known/handles/${encodeURIComponent(handleA)}`);
+    if (resp.ok) {
+      const body = await resp.json();
+      canonicalA = typeof body?.canonical_id === "string" ? body.canonical_id : "";
+    }
   } catch {}
-  if (!canonicalA) { fail("1b.canonical", "no canonical_id for @${handleA}"); throw new Error(); }
+  if (!canonicalA) {
+    // Fallback: handles route on the API surface.
+    try {
+      const resp = await fetch(`${BASE}/api/identity/handles/${encodeURIComponent(handleA)}`);
+      if (resp.ok) {
+        const body = await resp.json();
+        canonicalA = typeof body?.canonical_id === "string" ? body.canonical_id : "";
+      }
+    } catch {}
+  }
+  if (!canonicalA) { fail("1b.canonical", `no canonical_id for @${handleA} (registry lookup failed)`); throw new Error(); }
 
   // ===== A — open pairing flow =====
   await pageA.evaluate(() => {
