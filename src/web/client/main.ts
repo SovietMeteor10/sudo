@@ -1447,7 +1447,7 @@ async function withFlowTimeout<T>(work: () => Promise<T>): Promise<T> {
   }
 }
 
-const LOCAL_DB_USER_MESSAGE = "this browser's local sudo data is locked or needs a refresh. close other sudo tabs and refresh.";
+const LOCAL_DB_USER_MESSAGE = "this browser's local sudo data needs a moment. close other sudo tabs and refresh.";
 
 function describeAuthFailure(error: unknown): string {
   if (containsLocalDbError(error)) return LOCAL_DB_USER_MESSAGE;
@@ -2433,7 +2433,7 @@ function renderPairingCard(): void {
     if (activePairingExpiresAt === null) return;
     const ms = Date.parse(activePairingExpiresAt) - Date.now();
     if (ms <= 0) {
-      pairingCardExpires.textContent = "code expired. generate a new one.";
+      pairingCardExpires.textContent = "passcode expired. create a new one.";
       void cancelActivePairing({ silent: true });
       return;
     }
@@ -4621,7 +4621,11 @@ async function openAccountDialog(): Promise<void> {
   }
   const identity = currentIdentityDocument;
   const fingerprintHex = currentIdentityFingerprint;
+  // The element CSS-truncates at 16ch; preserve the full handle on
+  // the element so hover-tooltip + screen-readers still announce it.
   accountCardHandle.textContent = identity.handle;
+  accountCardHandle.title = identity.handle;
+  accountCardHandle.setAttribute("aria-label", identity.handle);
   accountCardCanonical.textContent = identity.canonical_id;
 
   // Visual fingerprint grid. Use the document's signed fingerprint if
@@ -4844,9 +4848,9 @@ function buildIdentityView(identity: IdentityDocument, fingerprint: string): Loc
   const relaySelection = selectRelayForRecipient(identity);
   return {
     handle: identity.handle,
-    bio: currentCryptoAccount === null ? "account on this device" : "account unlocked",
-    status: currentCryptoAccount === null ? "locked" : "unlocked",
-    privacyMode: currentCryptoAccount === null ? "account locked" : "account unlocked",
+    bio: currentCryptoAccount === null ? "account on this device" : "signed in",
+    status: "",
+    privacyMode: "",
     onionState: `relay: ${currentNodeDocument?.onion_base_url ?? "not advertised"}`,
     fingerprintSnippet: `${fingerprint.slice(0, 4)}...`,
     portalTransport: `portal: ${describePortalTransport(window.location.origin)}`,

@@ -728,16 +728,21 @@ function findPeer(rows) {
   }
 
   // ===== Server enforces revoke: revoked device sees 403 on /sync GET =====
-  // We don't have B's signed session token here, but the server's
-  // resolveActiveMembership gate returns 403 to any cursor read from
-  // a revoked device_id. We probe with an unauthenticated GET that
-  // names B's device_id; that path doesn't require B's keys for the
-  // 403 response, only the membership lookup.
+  // Server's resolveActiveMembership gate returns 403 for any
+  // /sync read against a revoked device_id. We grab the device_id
+  // from the row whose status is now "revoked" — name alone is
+  // ambiguous because both peer rows render as "This device" and
+  // after the new three-section layout the revoked row lives in a
+  // separate section than the still-active peer.
   const revokedDeviceId = await pageA.evaluate((name) => {
     const root = document.getElementById("device-list");
     if (root === null) return null;
     const target = [...root.querySelectorAll(".device-row")].find(
-      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+      (row) => {
+        const rowName = row.querySelector(".device-row__name")?.textContent?.trim() ?? "";
+        const status = row.querySelector(".device-row__status")?.getAttribute("data-device-status") ?? "";
+        return rowName === name && status === "revoked";
+      }
     );
     return target instanceof HTMLElement ? (target.dataset.deviceId ?? null) : null;
   }, revocable.name);
@@ -758,12 +763,22 @@ function findPeer(rows) {
   // browser context completes collect-account; the server stores a
   // new device row + active membership at sequence > the revoked
   // membership's sequence.
+  // Find the revoked row specifically (status=revoked), since name
+  // alone is ambiguous with other "This device" rows.
   await pageA.evaluate((name) => {
     const root = document.getElementById("device-list");
     if (root === null) return;
     const target = [...root.querySelectorAll(".device-row")].find(
-      (row) => (row.querySelector(".device-row__name")?.textContent?.trim() ?? "") === name
+      (row) => {
+        const rowName = row.querySelector(".device-row__name")?.textContent?.trim() ?? "";
+        const status = row.querySelector(".device-row__status")?.getAttribute("data-device-status") ?? "";
+        return rowName === name && status === "revoked";
+      }
     );
+    // The revoked section is wrapped in <details>; ensure it's open
+    // so a future scroll/visual check would see the row, then click.
+    const details = target?.closest("details");
+    if (details instanceof HTMLDetailsElement) details.open = true;
     target?.querySelector('[data-device-action="link-again"]')?.click();
   }, revocable.name);
   await waitFor(pageA, () => /^[0-9A-F]{6}-[0-9A-F]{6}$/.test(document.getElementById("pairing-card-code")?.textContent?.trim() ?? ""), 15000);

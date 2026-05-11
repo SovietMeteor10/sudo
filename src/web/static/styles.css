@@ -373,13 +373,33 @@ body[data-auth-state="auth-restore"] .landing {
   background: var(--panel);
 }
 
+.account-card__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+}
+
 .account-card__handle {
   font-size: 18px;
   color: var(--text);
+  min-width: 0;
+  flex: 1 1 auto;
+  /* Truncate long handles so they don't push the fingerprint icon
+     off-screen or wrap into multiple lines. The full handle still
+     lives in the element's title attribute (set in JS) and the
+     aria-label so screen readers and tooltips see it. The cap is
+     deliberately handle-shaped (16ch) — long enough for a normal
+     "@somelonghandle" but short enough that the icon stays
+     visible. */
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-card__fingerprint {
-  margin: 4px 0;
+  flex: 0 0 auto;
 }
 
 .account-card__fingerprint-text {
@@ -2254,10 +2274,30 @@ body[data-auth-state="auth-restore"] .landing {
   font-size: 12px;
 }
 
+.devices-panel__section {
+  margin-bottom: 14px;
+}
+
+.devices-panel__section-title {
+  font-size: 12px;
+  margin: 0 0 6px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.devices-panel__revoked-details summary {
+  cursor: pointer;
+}
+
 .device-row {
   padding: 8px 10px;
   border: 1px solid var(--line-soft);
   border-radius: 3px;
+  margin-bottom: 6px;
+}
+
+.device-row:last-child {
+  margin-bottom: 0;
 }
 
 .device-row__name {

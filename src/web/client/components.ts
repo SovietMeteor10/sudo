@@ -238,186 +238,221 @@ export function renderDevicePanel(
   root: HTMLElement,
   currentDeviceId: string | null,
   rows: DevicePanelRow[],
-  pairingCode: string | null
+  _pairingCode: string | null
 ): void {
+  // The dialog now organizes devices into three sections:
+  //   1. this device         — the current browser; no destructive action
+  //   2. linked devices      — other active peers; each has a revoke
+  //                            button and an advanced disclosure
+  //   3. revoked devices     — collapsed by default; rows offer
+  //                            "link again" to re-pair as a fresh
+  //                            device row (revoked record stays put)
+  //
+  // The temporary-passcode card is NOT rendered here — it lives in
+  // index.html (`<section id="pairing-card" hidden>`) and is shown
+  // only when the user clicks "link another device". The previous
+  // implementation prepended a debug-y "pairing code: X" line which
+  // duplicated that card; that line is gone.
   const fragment = document.createDocumentFragment();
 
-  if (pairingCode !== null) {
-    fragment.append(line(`pairing code: ${pairingCode}`, "is-muted"));
+  const currentRows = rows.filter((r) => r.device.device_id === currentDeviceId);
+  const peerRows = rows.filter((r) => r.device.device_id !== currentDeviceId && r.device.trust_state !== "revoked");
+  const revokedRows = rows.filter((r) => r.device.device_id !== currentDeviceId && r.device.trust_state === "revoked");
+
+  // Section 1: this device.
+  const thisSection = document.createElement("section");
+  thisSection.className = "devices-panel__section devices-panel__section--current";
+  const thisHeader = document.createElement("h3");
+  thisHeader.className = "devices-panel__section-title is-muted";
+  thisHeader.textContent = "this device";
+  thisSection.append(thisHeader);
+  if (currentRows.length === 0) {
+    thisSection.append(line("not signed in", "is-muted"));
+  } else {
+    for (const r of currentRows) thisSection.append(renderDeviceRow(r, currentDeviceId));
   }
+  fragment.append(thisSection);
 
-  if (rows.length === 0) {
-    fragment.append(line("no linked devices yet", "lookup__empty"));
-    root.replaceChildren(fragment);
-    return;
+  // Section 2: other active linked devices.
+  const peersSection = document.createElement("section");
+  peersSection.className = "devices-panel__section devices-panel__section--peers";
+  const peersHeader = document.createElement("h3");
+  peersHeader.className = "devices-panel__section-title is-muted";
+  peersHeader.textContent = "linked devices";
+  peersSection.append(peersHeader);
+  if (peerRows.length === 0) {
+    peersSection.append(line("no other devices linked yet", "is-muted"));
+  } else {
+    for (const r of peerRows) peersSection.append(renderDeviceRow(r, currentDeviceId));
   }
+  fragment.append(peersSection);
 
-  for (const { device, health } of rows) {
-    const row = block("device-row", [
-      line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name")
-    ]);
-    row.dataset["deviceId"] = device.device_id;
-    row.classList.add(`device-row--${health.status}`);
-
-    const statusLine = document.createElement("div");
-    statusLine.className = `device-row__status device-row__status--${health.status} is-muted`;
-    statusLine.dataset["deviceStatus"] = health.status;
-    statusLine.textContent = health.label;
-    row.append(statusLine);
-
-    if (health.lastSeenLine.length > 0) {
-      row.append(line(health.lastSeenLine, "is-muted"));
-    }
-
-    // Retry button: visible for retry_pending and failed. Clicking
-    // forces the backfill to run immediately, bypassing the auto-
-    // retry backoff. The handler lives in main.ts via
-    // data-device-action="retry-sync".
-    if (health.canRetry) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "lookup-card__button device-row__retry";
-      retry.dataset["deviceAction"] = "retry-sync";
-      retry.dataset["deviceId"] = device.device_id;
-      retry.textContent = "retry sync";
-      row.append(retry);
-    }
-
-    // Advanced disclosure. Hidden by default; expands per-row. Holds
-    // the only place where ids, attempt counts, sequences, and the
-    // raw last_error appear — so the default surface stays calm and
-    // free of relay/internal terminology.
+  // Section 3: revoked devices, collapsed by default. Rendered only
+  // when there's something to show so the dialog doesn't carry an
+  // empty header for the common "never revoked anyone" case.
+  if (revokedRows.length > 0) {
+    const revokedSection = document.createElement("section");
+    revokedSection.className = "devices-panel__section devices-panel__section--revoked";
     const details = document.createElement("details");
-    details.className = "device-row__advanced";
+    details.className = "devices-panel__revoked-details";
     const summary = document.createElement("summary");
-    summary.textContent = "advanced";
-    summary.className = "device-row__advanced-summary is-muted";
+    summary.className = "devices-panel__section-title is-muted";
+    summary.textContent = `revoked devices (${revokedRows.length})`;
     details.append(summary);
-    const advancedBody = document.createElement("div");
-    advancedBody.className = "device-row__advanced-body";
-    advancedBody.append(line(`id: ${health.advanced.deviceIdShort}`, "is-muted"));
-    if (typeof health.advanced.attempts === "number") {
-      advancedBody.append(line(`backfill attempts: ${health.advanced.attempts}`, "is-muted"));
-    }
-    if (typeof health.advanced.totalEvents === "number") {
-      advancedBody.append(line(`events sent: ${health.advanced.totalEvents}`, "is-muted"));
-    }
-    if (typeof health.advanced.recipientCursor === "number") {
-      advancedBody.append(line(`incoming cursor: ${health.advanced.recipientCursor}`, "is-muted"));
-    }
-    if (typeof health.advanced.originSequence === "number") {
-      advancedBody.append(line(`outgoing sequence: ${health.advanced.originSequence}`, "is-muted"));
-    }
-    if (typeof health.advanced.lastAttemptAt === "string") {
-      advancedBody.append(line(`last attempt: ${health.advanced.lastAttemptAt}`, "is-muted"));
-    }
-    if (typeof health.advanced.lastError === "string" && health.advanced.lastError.length > 0) {
-      advancedBody.append(line(`last error: ${health.advanced.lastError}`, "is-muted"));
-    }
-    if (typeof health.advanced.ourLastOriginSequence === "number") {
-      advancedBody.append(line(`our outgoing sequence: ${health.advanced.ourLastOriginSequence}`, "is-muted"));
-    }
-    if (typeof health.advanced.peerRecipientCursor === "number") {
-      advancedBody.append(line(`peer applied cursor: ${health.advanced.peerRecipientCursor}`, "is-muted"));
-    }
-    if (typeof health.advanced.inboundBehindBy === "number") {
-      advancedBody.append(line(`inbound behind: ${health.advanced.inboundBehindBy}`, "is-muted"));
-    }
-    if (typeof health.advanced.peerProgressFreshAt === "number") {
-      advancedBody.append(line(`progress refreshed: ${formatHistoryTime(new Date(health.advanced.peerProgressFreshAt).toISOString())}`, "is-muted"));
-    }
-    if (Array.isArray(health.advanced.attemptHistory) && health.advanced.attemptHistory.length > 0) {
-      advancedBody.append(line("recent attempts:", "is-muted"));
-      const historyList = document.createElement("ul");
-      historyList.className = "device-row__history is-muted";
-      // Newest first — operators reading top-down want the most
-      // recent attempt before scrolling back through older ones.
-      for (const entry of [...health.advanced.attemptHistory].reverse()) {
-        const item = document.createElement("li");
-        const time = formatHistoryTime(entry.at);
-        const outcome = entry.ok
-          ? (typeof entry.total_events === "number" ? `ok, ${entry.total_events} events` : "ok")
-          : (typeof entry.error === "string" && entry.error.length > 0 ? `failed, ${entry.error}` : "failed");
-        item.textContent = `${time} ${outcome}`;
-        historyList.append(item);
-      }
-      advancedBody.append(historyList);
-    }
-    details.append(advancedBody);
-    row.append(details);
-
-    // Action area. Three terminal cases:
-    //   - current device          → no destructive action
-    //   - revoked peer            → "link again" (re-pair flow), no
-    //                               revoke button (already revoked)
-    //   - active peer             → "revoke" with a two-step confirm
-    //                               pane that includes the device
-    //                               name so the user can't fat-finger
-    //                               the wrong row
-    const actions = document.createElement("div");
-    actions.className = "device-row__actions";
-    const isCurrent = device.device_id === currentDeviceId;
-    if (device.trust_state === "revoked" && !isCurrent) {
-      // "link again" surfaces the same temporary-passcode flow that
-      // the top-level "link another device" button uses. The revoked
-      // membership stays in place; the relinked browser comes in as
-      // a fresh active membership at a higher sequence.
-      const linkAgain = document.createElement("button");
-      linkAgain.type = "button";
-      linkAgain.className = "lookup-card__button device-row__link-again";
-      linkAgain.dataset["deviceAction"] = "link-again";
-      linkAgain.dataset["deviceId"] = device.device_id;
-      linkAgain.textContent = "link again";
-      actions.append(linkAgain);
-      const help = document.createElement("div");
-      help.className = "device-row__help is-muted";
-      help.textContent = "link this device again to restore access";
-      actions.append(help);
-    } else if (!isCurrent) {
-      // Active peer: two-step revoke confirmation. The confirm panel
-      // is inline (no modal) and rendered on first click; we keep it
-      // in the DOM but hidden so the second click swap is instant.
-      const revoke = document.createElement("button");
-      revoke.type = "button";
-      revoke.className = "lookup-card__button device-row__revoke";
-      revoke.dataset["deviceAction"] = "revoke-prompt";
-      revoke.dataset["deviceId"] = device.device_id;
-      revoke.textContent = "revoke";
-      actions.append(revoke);
-
-      const confirmPane = document.createElement("div");
-      confirmPane.className = "device-row__confirm";
-      confirmPane.hidden = true;
-      confirmPane.dataset["deviceConfirm"] = device.device_id;
-      const confirmTitle = document.createElement("div");
-      confirmTitle.className = "device-row__confirm-title";
-      confirmTitle.textContent = `revoke ${device.name}?`;
-      const confirmBody = document.createElement("div");
-      confirmBody.className = "device-row__confirm-body is-muted";
-      confirmBody.textContent = "this device will need to link again before it can sync this account.";
-      const confirmActions = document.createElement("div");
-      confirmActions.className = "device-row__confirm-actions";
-      const cancelBtn = document.createElement("button");
-      cancelBtn.type = "button";
-      cancelBtn.className = "lookup-card__button device-row__confirm-cancel";
-      cancelBtn.dataset["deviceAction"] = "revoke-cancel";
-      cancelBtn.dataset["deviceId"] = device.device_id;
-      cancelBtn.textContent = "cancel";
-      const confirmBtn = document.createElement("button");
-      confirmBtn.type = "button";
-      confirmBtn.className = "lookup-card__button device-row__confirm-go";
-      confirmBtn.dataset["deviceAction"] = "revoke-confirm";
-      confirmBtn.dataset["deviceId"] = device.device_id;
-      confirmBtn.textContent = "revoke device";
-      confirmActions.append(cancelBtn, confirmBtn);
-      confirmPane.append(confirmTitle, confirmBody, confirmActions);
-      actions.append(confirmPane);
-    }
-    row.append(actions);
-    fragment.append(row);
+    for (const r of revokedRows) details.append(renderDeviceRow(r, currentDeviceId));
+    revokedSection.append(details);
+    fragment.append(revokedSection);
   }
 
   root.replaceChildren(fragment);
+}
+
+function renderDeviceRow(
+  { device, health }: DevicePanelRow,
+  currentDeviceId: string | null
+): HTMLElement {
+  const row = block("device-row", [
+    line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name")
+  ]);
+  row.dataset["deviceId"] = device.device_id;
+  row.classList.add(`device-row--${health.status}`);
+
+  const statusLine = document.createElement("div");
+  statusLine.className = `device-row__status device-row__status--${health.status} is-muted`;
+  statusLine.dataset["deviceStatus"] = health.status;
+  statusLine.textContent = health.label;
+  row.append(statusLine);
+
+  if (health.lastSeenLine.length > 0) {
+    row.append(line(health.lastSeenLine, "is-muted"));
+  }
+
+  // Action area appears BEFORE the advanced disclosure so destructive
+  // actions are immediately visible — previously the revoke button
+  // was below a long advanced section and felt buried.
+  const actions = document.createElement("div");
+  actions.className = "device-row__actions";
+  const isCurrent = device.device_id === currentDeviceId;
+  if (health.canRetry) {
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "lookup-card__button device-row__retry";
+    retry.dataset["deviceAction"] = "retry-sync";
+    retry.dataset["deviceId"] = device.device_id;
+    retry.textContent = "retry sync";
+    actions.append(retry);
+  }
+  if (device.trust_state === "revoked" && !isCurrent) {
+    const linkAgain = document.createElement("button");
+    linkAgain.type = "button";
+    linkAgain.className = "lookup-card__button device-row__link-again";
+    linkAgain.dataset["deviceAction"] = "link-again";
+    linkAgain.dataset["deviceId"] = device.device_id;
+    linkAgain.textContent = "link again";
+    actions.append(linkAgain);
+    const help = document.createElement("div");
+    help.className = "device-row__help is-muted";
+    help.textContent = "link this device again to restore access";
+    actions.append(help);
+  } else if (!isCurrent) {
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "lookup-card__button device-row__revoke";
+    revoke.dataset["deviceAction"] = "revoke-prompt";
+    revoke.dataset["deviceId"] = device.device_id;
+    revoke.textContent = "revoke";
+    actions.append(revoke);
+
+    const confirmPane = document.createElement("div");
+    confirmPane.className = "device-row__confirm";
+    confirmPane.hidden = true;
+    confirmPane.dataset["deviceConfirm"] = device.device_id;
+    const confirmTitle = document.createElement("div");
+    confirmTitle.className = "device-row__confirm-title";
+    confirmTitle.textContent = `revoke ${device.name}?`;
+    const confirmBody = document.createElement("div");
+    confirmBody.className = "device-row__confirm-body is-muted";
+    confirmBody.textContent = "this device will need to link again before it can sync this account.";
+    const confirmActions = document.createElement("div");
+    confirmActions.className = "device-row__confirm-actions";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "lookup-card__button device-row__confirm-cancel";
+    cancelBtn.dataset["deviceAction"] = "revoke-cancel";
+    cancelBtn.dataset["deviceId"] = device.device_id;
+    cancelBtn.textContent = "cancel";
+    const confirmBtn = document.createElement("button");
+    confirmBtn.type = "button";
+    confirmBtn.className = "lookup-card__button device-row__confirm-go";
+    confirmBtn.dataset["deviceAction"] = "revoke-confirm";
+    confirmBtn.dataset["deviceId"] = device.device_id;
+    confirmBtn.textContent = "revoke device";
+    confirmActions.append(cancelBtn, confirmBtn);
+    confirmPane.append(confirmTitle, confirmBody, confirmActions);
+    actions.append(confirmPane);
+  }
+  row.append(actions);
+
+  // Advanced disclosure. Hidden by default; the only place where
+  // ids, attempt counts, cursors, and raw error strings appear.
+  const details = document.createElement("details");
+  details.className = "device-row__advanced";
+  const summary = document.createElement("summary");
+  summary.textContent = "advanced";
+  summary.className = "device-row__advanced-summary is-muted";
+  details.append(summary);
+  const advancedBody = document.createElement("div");
+  advancedBody.className = "device-row__advanced-body";
+  advancedBody.append(line(`id: ${health.advanced.deviceIdShort}`, "is-muted"));
+  if (typeof health.advanced.attempts === "number") {
+    advancedBody.append(line(`backfill attempts: ${health.advanced.attempts}`, "is-muted"));
+  }
+  if (typeof health.advanced.totalEvents === "number") {
+    advancedBody.append(line(`events sent: ${health.advanced.totalEvents}`, "is-muted"));
+  }
+  if (typeof health.advanced.recipientCursor === "number") {
+    advancedBody.append(line(`incoming cursor: ${health.advanced.recipientCursor}`, "is-muted"));
+  }
+  if (typeof health.advanced.originSequence === "number") {
+    advancedBody.append(line(`outgoing sequence: ${health.advanced.originSequence}`, "is-muted"));
+  }
+  if (typeof health.advanced.lastAttemptAt === "string") {
+    advancedBody.append(line(`last attempt: ${health.advanced.lastAttemptAt}`, "is-muted"));
+  }
+  if (typeof health.advanced.lastError === "string" && health.advanced.lastError.length > 0) {
+    advancedBody.append(line(`last error: ${health.advanced.lastError}`, "is-muted"));
+  }
+  if (typeof health.advanced.ourLastOriginSequence === "number") {
+    advancedBody.append(line(`our outgoing sequence: ${health.advanced.ourLastOriginSequence}`, "is-muted"));
+  }
+  if (typeof health.advanced.peerRecipientCursor === "number") {
+    advancedBody.append(line(`peer applied cursor: ${health.advanced.peerRecipientCursor}`, "is-muted"));
+  }
+  if (typeof health.advanced.inboundBehindBy === "number") {
+    advancedBody.append(line(`inbound behind: ${health.advanced.inboundBehindBy}`, "is-muted"));
+  }
+  if (typeof health.advanced.peerProgressFreshAt === "number") {
+    advancedBody.append(line(`progress refreshed: ${formatHistoryTime(new Date(health.advanced.peerProgressFreshAt).toISOString())}`, "is-muted"));
+  }
+  if (Array.isArray(health.advanced.attemptHistory) && health.advanced.attemptHistory.length > 0) {
+    advancedBody.append(line("recent attempts:", "is-muted"));
+    const historyList = document.createElement("ul");
+    historyList.className = "device-row__history is-muted";
+    for (const entry of [...health.advanced.attemptHistory].reverse()) {
+      const item = document.createElement("li");
+      const time = formatHistoryTime(entry.at);
+      const outcome = entry.ok
+        ? (typeof entry.total_events === "number" ? `ok, ${entry.total_events} events` : "ok")
+        : (typeof entry.error === "string" && entry.error.length > 0 ? `failed, ${entry.error}` : "failed");
+      item.textContent = `${time} ${outcome}`;
+      historyList.append(item);
+    }
+    advancedBody.append(historyList);
+  }
+  details.append(advancedBody);
+  row.append(details);
+
+  return row;
 }
 
 export function renderSignupState(root: HTMLElement, state: SignupState): void {
