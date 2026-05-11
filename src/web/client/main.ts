@@ -144,9 +144,10 @@ const accountButton = getRequiredButton("account-button");
 const accountButtonHandle = getRequiredElement("account-button-handle");
 const accountMenu = getRequiredElement("account-menu");
 const accountMenuHandle = getRequiredElement("account-menu-handle");
+const accountMenuRecovery = getRequiredElement("account-menu-recovery");
+const recoveryReminder = getRequiredElement("recovery-reminder");
 const accountMenuAccount = getRequiredButton("account-menu-account");
 const accountMenuSettings = getRequiredButton("account-menu-settings");
-const accountMenuLock = getRequiredButton("account-menu-lock");
 const accountMenuLogout = getRequiredButton("account-menu-logout");
 const devicesDialog = getRequiredDialog("devices-dialog");
 const devicesCancel = getRequiredButton("devices-cancel");
@@ -616,11 +617,6 @@ accountSaveBio.addEventListener("click", () => {
 
 accountCancel.addEventListener("click", () => {
   accountDialog.close();
-});
-
-accountMenuLock.addEventListener("click", () => {
-  setAccountMenuOpen(false);
-  void lockLocalKeysFlow();
 });
 
 accountMenuLogout.addEventListener("click", () => {
@@ -2144,6 +2140,11 @@ async function completePairingFlow(): Promise<void> {
     devicePairingCode.value = "";
     devicePanelFeedback.textContent = "device linked";
     await refreshDevicePanel();
+    // The user just gained a recovery option. Drop the reminder
+    // banner and refresh the menu indicator immediately so the UI
+    // reflects the new posture without waiting for the next signin.
+    clearRecoveryReminderForCurrentAccount();
+    void refreshAccountMenuRecoveryIndicator();
   } catch (error) {
     devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing complete failed";
   }
@@ -3144,15 +3145,12 @@ async function submitFeedPost(): Promise<void> {
   }
 }
 
-async function lockLocalKeysFlow(): Promise<void> {
-  lockBrowserCryptoAccount();
-  currentCryptoAccount = null;
-  clearActiveCoordinator();
-  flashFeedback("account locked");
-  if (currentIdentityDocument !== null && currentIdentityFingerprint !== null) {
-    setCurrentIdentity(currentIdentityDocument, currentIdentityFingerprint);
-  }
-}
+// lockLocalKeysFlow removed in the recovery-posture pass. The model
+// users now hold is: sign in unlocks this device, sign out ends the
+// session, reset browser deletes local data. A separate "lock"
+// action was redundant. Sign-out (which also calls
+// lockBrowserCryptoAccount) is the right way to step away from a
+// shared device.
 
 async function exportEncryptedBackup(): Promise<void> {
   if (currentIdentityDocument === null) {
@@ -3179,6 +3177,11 @@ async function exportEncryptedBackup(): Promise<void> {
     // to "backup file saved" so the user has visible feedback that
     // the lever they just pulled is the lever that protects them.
     void putSetting(profileLastBackupKey(currentIdentityDocument.canonical_id), backup.created_at).catch(() => {});
+    // Recovery posture just changed — clear the reminder banner and
+    // refresh the menu indicator so the user sees the lever pull
+    // land on the same render frame as the toast.
+    clearRecoveryReminderForCurrentAccount();
+    void refreshAccountMenuRecoveryIndicator();
     flashFeedback("encrypted backup exported");
   } catch (error) {
     flashFeedback(error instanceof Error ? error.message : "backup export failed");
@@ -3496,6 +3499,12 @@ function setSignedIn(handle: string): void {
   setAuthView("signed-in");
   setAccountButtonHandle(handle);
   closeChatPopup();
+  // Bump signin counters before the reminder check so the very
+  // first signin counts. Both fire-and-forget — they read/write
+  // local IndexedDB and shouldn't block UI.
+  if (currentIdentityDocument !== null) {
+    void bumpSigninSession(currentIdentityDocument.canonical_id).then(() => maybeShowRecoveryReminder());
+  }
   if (currentIdentityDocument !== null) {
     // Repaint chat + feed from the new owner's local state only. The previous
     // owner's in-memory state was already cleared in setSignedOut().
@@ -3559,6 +3568,7 @@ function refreshRelayStatusUi(): void {
 function setAccountMenuOpen(open: boolean): void {
   accountMenu.hidden = !open;
   accountButton.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open) void refreshAccountMenuRecoveryIndicator();
 }
 
 function openDevicesDialog(): void {
@@ -3656,10 +3666,20 @@ async function saveAccountBio(): Promise<void> {
   }
 }
 
-// Recovery posture: green light if the user has a usable recovery
-// path (an exported backup or a second paired device), yellow if
-// only one of those, red if neither. Plain language, no scare copy.
-async function refreshAccountRecoveryStatus(canonicalId: string): Promise<void> {
+// Recovery posture is computed in one place so the account dialog,
+// the passive account-menu indicator, and the recovery reminder
+// banner all derive their copy from the same signal. Two inputs
+// matter: did the user export a backup (profile.lastBackupAt
+// stamped on successful export), and is there at least one paired
+// device that is NOT this browser. From those we collapse to four
+// posture states.
+type RecoveryPosture = {
+  backedUp: boolean;
+  pairedDeviceCount: number;
+  level: "ok" | "warn" | "danger";
+};
+
+async function computeRecoveryPosture(canonicalId: string): Promise<RecoveryPosture> {
   let backedUp = false;
   let pairedDeviceCount = 0;
   try {
@@ -3669,38 +3689,61 @@ async function refreshAccountRecoveryStatus(canonicalId: string): Promise<void> 
     backedUp = false;
   }
   try {
-    // Active devices excluding the current one.
     const devices = await listTrustedDevices(canonicalId);
     pairedDeviceCount = devices.filter((d) => d.trust_state === "active" && d.device_id !== currentDeviceId).length;
   } catch {
     pairedDeviceCount = 0;
   }
-
-  const lines: string[] = [];
   let level: "ok" | "warn" | "danger";
-  if (backedUp && pairedDeviceCount > 0) {
-    level = "ok";
+  if (backedUp && pairedDeviceCount > 0) level = "ok";
+  else if (backedUp) level = "ok";
+  else if (pairedDeviceCount > 0) level = "warn";
+  else level = "danger";
+  return { backedUp, pairedDeviceCount, level };
+}
+
+async function refreshAccountRecoveryStatus(canonicalId: string): Promise<void> {
+  const posture = await computeRecoveryPosture(canonicalId);
+  const lines: string[] = [];
+  if (posture.backedUp && posture.pairedDeviceCount > 0) {
     lines.push("recovery: backup file + linked device");
-  } else if (backedUp) {
-    level = "ok";
+  } else if (posture.backedUp) {
     lines.push("recovery: backup file saved");
     lines.push("tip: pair a second device for a faster recovery path.");
-  } else if (pairedDeviceCount > 0) {
-    level = "warn";
-    lines.push(`recovery: ${pairedDeviceCount} linked device${pairedDeviceCount > 1 ? "s" : ""}`);
+  } else if (posture.pairedDeviceCount > 0) {
+    lines.push(`recovery: ${posture.pairedDeviceCount} linked device${posture.pairedDeviceCount > 1 ? "s" : ""}`);
     lines.push("tip: also export an encrypted backup file in case all devices are wiped.");
   } else {
-    level = "danger";
     lines.push("recovery: unprotected");
     lines.push("you have no backup file and no linked devices. if this browser is wiped, the account cannot be recovered.");
   }
   accountCardStatus.classList.remove("is-ok", "is-warn", "is-danger");
-  accountCardStatus.classList.add(`is-${level}`);
+  accountCardStatus.classList.add(`is-${posture.level}`);
   accountCardStatus.replaceChildren(...lines.map((text) => {
     const div = document.createElement("div");
     div.textContent = text;
     return div;
   }));
+}
+
+// Tiny passive line shown inside the account dropdown header. Subtle
+// by design — green checks for what the user has, "unprotected" if
+// neither. Nothing the user has to act on right now; the reminder
+// banner handles active prompting.
+async function refreshAccountMenuRecoveryIndicator(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    accountMenuRecovery.textContent = "";
+    accountMenuRecovery.classList.remove("is-ok", "is-warn", "is-danger");
+    return;
+  }
+  const posture = await computeRecoveryPosture(currentIdentityDocument.canonical_id);
+  const parts: string[] = [];
+  if (posture.backedUp) parts.push("✓ backup");
+  if (posture.pairedDeviceCount > 0) parts.push("✓ linked device");
+  const text = parts.length > 0 ? parts.join("  ") : "unprotected";
+  accountMenuRecovery.textContent = text;
+  accountMenuRecovery.classList.remove("is-ok", "is-warn", "is-danger");
+  accountMenuRecovery.classList.add(`is-${posture.level}`);
 }
 
 function profileBioKey(canonicalId: string): string {
@@ -3711,11 +3754,166 @@ function profileLastBackupKey(canonicalId: string): string {
   return `profile.lastBackupAt.${canonicalId}`;
 }
 
+function profileFirstSeenKey(canonicalId: string): string {
+  return `profile.firstSeenAt.${canonicalId}`;
+}
+
+function profileSigninCountKey(canonicalId: string): string {
+  return `profile.signinCount.${canonicalId}`;
+}
+
+// Recovery reminder banner. Lives above the personal feed and is the
+// only proactive prompt the user gets about their recovery posture.
+// Triggers when:
+//   - the user has no exported backup AND no other linked device, AND
+//   - they've signed in at least 3 times OR the account has been on
+//     this device at least 3 days
+//   - they have not already dismissed the banner in this browser
+//     session
+// Dismiss persists for the rest of the session (sessionStorage) but
+// not across reload windows. A successful backup export or device
+// pairing clears the banner immediately and unsets the dismiss flag
+// for that account, so the banner won't pop back the moment the
+// user undoes their fix.
+//
+// Tone is calm: no red panic styling, no modal interruption, no
+// scare copy.
+
+const SIGNIN_THRESHOLD_FOR_REMINDER = 3;
+const FIRST_SEEN_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
+
+function reminderDismissedKey(canonicalId: string): string {
+  return `recovery-reminder-dismissed.${canonicalId}`;
+}
+
+function reminderCountedKey(canonicalId: string): string {
+  return `recovery-reminder-counted.${canonicalId}`;
+}
+
+async function bumpSigninSession(canonicalId: string): Promise<void> {
+  // Stamp first-seen-at on first successful signin (or carry it
+  // forward from crypto_account.created_at if the setting is empty
+  // — useful for accounts that existed before this code shipped).
+  try {
+    const existing = await getSetting(profileFirstSeenKey(canonicalId));
+    if (typeof existing !== "string" || existing.length === 0) {
+      await putSetting(profileFirstSeenKey(canonicalId), new Date().toISOString());
+    }
+  } catch { /* fail silent */ }
+
+  // Increment session counter at most once per browser session per
+  // account. Reload is a fresh "session" by intent — three reloads
+  // in a row counts as three sessions, mirroring how often the user
+  // actually returned to the app.
+  try {
+    const sentinel = reminderCountedKey(canonicalId);
+    if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(sentinel) === "1") return;
+    const current = await getSetting(profileSigninCountKey(canonicalId));
+    const n = typeof current === "number" ? current : 0;
+    await putSetting(profileSigninCountKey(canonicalId), n + 1);
+    if (typeof sessionStorage !== "undefined") sessionStorage.setItem(sentinel, "1");
+  } catch { /* fail silent */ }
+}
+
+async function maybeShowRecoveryReminder(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    hideRecoveryReminder();
+    return;
+  }
+  const canonicalId = currentIdentityDocument.canonical_id;
+
+  // Per-session dismissal — sessionStorage clears on tab close, so
+  // the banner can come back next time the user opens the app. That
+  // matches the user's intent: nudge calmly + repeatedly until they
+  // either pull a recovery lever or wipe local state.
+  if (typeof sessionStorage !== "undefined" && sessionStorage.getItem(reminderDismissedKey(canonicalId)) === "1") {
+    hideRecoveryReminder();
+    return;
+  }
+
+  const posture = await computeRecoveryPosture(canonicalId);
+  if (posture.backedUp || posture.pairedDeviceCount > 0) {
+    hideRecoveryReminder();
+    return;
+  }
+
+  let signinCount = 0;
+  let firstSeenMs: number | null = null;
+  try {
+    const value = await getSetting(profileSigninCountKey(canonicalId));
+    signinCount = typeof value === "number" ? value : 0;
+  } catch {}
+  try {
+    const value = await getSetting(profileFirstSeenKey(canonicalId));
+    if (typeof value === "string") {
+      const ms = Date.parse(value);
+      if (!Number.isNaN(ms)) firstSeenMs = ms;
+    }
+  } catch {}
+  const ageMs = firstSeenMs === null ? 0 : Date.now() - firstSeenMs;
+  if (signinCount < SIGNIN_THRESHOLD_FOR_REMINDER && ageMs < FIRST_SEEN_THRESHOLD_MS) {
+    hideRecoveryReminder();
+    return;
+  }
+  renderRecoveryReminder(canonicalId);
+}
+
+function renderRecoveryReminder(canonicalId: string): void {
+  const message = document.createElement("div");
+  message.className = "recovery-reminder__message";
+  message.textContent = "this account isn't backed up yet. if this browser is lost or wiped, you could permanently lose access.";
+
+  const actions = document.createElement("div");
+  actions.className = "recovery-reminder__actions";
+
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "text-button recovery-reminder__cta";
+  open.textContent = "open settings to back up";
+  open.dataset["reminderAction"] = "open-settings";
+  open.addEventListener("click", () => openSettingsDialog());
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "recovery-reminder__dismiss";
+  dismiss.textContent = "dismiss";
+  dismiss.dataset["reminderAction"] = "dismiss";
+  dismiss.addEventListener("click", () => {
+    if (typeof sessionStorage !== "undefined") {
+      sessionStorage.setItem(reminderDismissedKey(canonicalId), "1");
+    }
+    hideRecoveryReminder();
+  });
+
+  actions.append(open, dismiss);
+  recoveryReminder.replaceChildren(message, actions);
+  recoveryReminder.hidden = false;
+}
+
+function hideRecoveryReminder(): void {
+  recoveryReminder.hidden = true;
+  recoveryReminder.replaceChildren();
+}
+
+// Called from the two events that change recovery posture toward
+// safety. Both unset the per-session dismiss flag so the user
+// won't see the banner pop back if they later undo the protection.
+function clearRecoveryReminderForCurrentAccount(): void {
+  if (currentIdentityDocument !== null && typeof sessionStorage !== "undefined") {
+    sessionStorage.removeItem(reminderDismissedKey(currentIdentityDocument.canonical_id));
+  }
+  hideRecoveryReminder();
+}
+
 function setSignedOut(): void {
   authSequence++;
   stopInboxPolling();
   stopFeedPolling();
   stopNotificationsPolling();
+  // Banner is per-identity; hide it the moment the user signs out
+  // so the next account (or anonymous landing) doesn't briefly
+  // inherit the prior user's recovery banner.
+  hideRecoveryReminder();
   currentIdentityDocument = null;
   currentIdentityFingerprint = null;
   currentCryptoAccount = null;

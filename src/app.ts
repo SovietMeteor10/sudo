@@ -20,6 +20,12 @@ export function createApp() {
   const app = express();
 
   app.disable("x-powered-by");
+  // nginx is the only public listener (DEPLOY_UBUNTU.md). Trusting
+  // the immediate loopback peer lets request.ip fall back to the
+  // X-Forwarded-For value nginx sets, which the per-IP rate limit
+  // on the challenge endpoints needs to differentiate real callers
+  // from "all traffic comes from 127.0.0.1".
+  app.set("trust proxy", "loopback");
   app.use((_request, response, next) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");

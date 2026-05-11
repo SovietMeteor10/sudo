@@ -18,10 +18,35 @@ import { verifyCanonicalSignature } from "../crypto/signatures.js";
 import { searchIdentityHandles } from "../discovery/discovery.service.js";
 import { getIdentityByCanonicalId } from "./identity.store.js";
 import { consumeChallenge, createChallenge } from "./identity-challenge.service.js";
+import { checkChallengeRate } from "./challenge-rate-limit.js";
 import {
   createDevSession,
   getIdentityForDevSession
 } from "../localState/accountAccess.js";
+
+// Resolve the remote IP we'll feed into the challenge rate limiter.
+// Express populates request.ip from X-Forwarded-For when trust-proxy
+// is on (set in app.ts), so this is a thin wrapper that prefers
+// X-Real-IP (which nginx sets unconditionally per DEPLOY_UBUNTU.md)
+// and falls back to request.ip / connection peer for safety.
+function resolveRemoteIp(request: Request): string {
+  const realIp = request.get("x-real-ip");
+  if (typeof realIp === "string" && realIp.length > 0) return realIp;
+  return request.ip ?? "";
+}
+
+function rejectIfRateLimited(request: Request, response: Response, canonicalId: string | null): boolean {
+  const result = checkChallengeRate(resolveRemoteIp(request), canonicalId);
+  if (result.ok) return false;
+  response.setHeader("Retry-After", String(result.retry_after_seconds));
+  response.status(429).json({
+    error: "rate_limited",
+    message: `too many challenge requests; retry in ${result.retry_after_seconds}s`,
+    scope: result.scope,
+    retry_after_seconds: result.retry_after_seconds
+  });
+  return true;
+}
 
 export function handleIdentitySession(request: Request, response: Response): void {
   const authorization = request.get("authorization") ?? "";
@@ -71,9 +96,13 @@ export function handleIdentitySearch(request: Request, response: Response): void
 export function handleIdentityChallenge(request: Request, response: Response): void {
   const canonicalId = request.params["canonicalId"];
   if (typeof canonicalId !== "string" || canonicalId.length === 0) {
+    // Bad request — count against the per-IP bucket only (no canonical
+    // id is known yet) so a noisy probe can't flood the endpoint.
+    if (rejectIfRateLimited(request, response, null)) return;
     response.status(400).json({ error: "invalid_canonical_id", message: "canonical_id is required" });
     return;
   }
+  if (rejectIfRateLimited(request, response, canonicalId)) return;
   if (getIdentityByCanonicalId(canonicalId) === null) {
     // Hide identity-existence vs. nonce details behind a single 404.
     // A challenge for an identity the registry doesn't know cannot
@@ -98,9 +127,16 @@ export function handleIdentitySessionFromChallenge(request: Request, response: R
     || typeof body.nonce !== "string"
     || typeof body.signature !== "string"
   ) {
+    if (rejectIfRateLimited(request, response, null)) return;
     response.status(400).json({ error: "invalid_payload", message: "canonical_id, nonce, and signature are required" });
     return;
   }
+
+  // Rate-limit BEFORE consumeChallenge so an attacker can't drain
+  // bucket budget by burning their own nonces. The consume-on-failure
+  // semantics in consumeChallenge stay intact below — once we get
+  // past the limiter, every attempt still costs the user a nonce.
+  if (rejectIfRateLimited(request, response, body.canonical_id)) return;
 
   const identity = getIdentityByCanonicalId(body.canonical_id);
   if (identity === null) {

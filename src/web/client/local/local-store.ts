@@ -425,6 +425,18 @@ export async function exportAccountSnapshot(ownerCanonicalId: string): Promise<L
 }
 
 export async function importLocalSnapshot(snapshot: LocalStateSnapshot): Promise<void> {
+  // Restored installs MUST mint a fresh device id. The previous
+  // device's metadata is stripped from the imported settings so
+  // ensureCurrentDeviceId() in main.ts allocates a new one for this
+  // browser when the user signs in. Trust derives from identity
+  // signatures (each device signs its own SignedDeviceMembership
+  // with the identity key), not from browser persistence — so a
+  // restored install pairs anew rather than impersonating the
+  // wiped device. The original device's record is preserved in
+  // trusted_devices so the user can revoke it from the linked-
+  // devices dialog.
+  const filteredSettings = snapshot.settings.filter((row) => row.key !== "device.metadata");
+
   await Promise.all([
     putMany("events", snapshot.events),
     putMany("messages", snapshot.messages),
@@ -434,7 +446,7 @@ export async function importLocalSnapshot(snapshot: LocalStateSnapshot): Promise
     putMany("crypto_accounts", snapshot.crypto_accounts),
     putMany("trusted_devices", snapshot.trusted_devices),
     putMany("identities", snapshot.identities),
-    putMany("settings", snapshot.settings),
+    putMany("settings", filteredSettings),
     putMany("pending_outbound", snapshot.pending_outbound),
     putMany("device_sync_events", snapshot.device_sync_events)
   ]);

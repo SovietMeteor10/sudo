@@ -419,6 +419,76 @@ body[data-auth-state="auth-restore"] .landing {
   letter-spacing: 0.02em;
 }
 
+/* Passive recovery indicator inside the account dropdown header.
+   Subtle by design — it sits under the handle, never grabs focus,
+   and just reflects current posture. The reminder banner above the
+   feed is the active prompt; this is an at-a-glance check. */
+.account-menu__recovery {
+  margin-top: 4px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+.account-menu__recovery.is-ok {
+  color: #6db872;
+}
+
+.account-menu__recovery.is-warn {
+  color: #c9a23a;
+}
+
+.account-menu__recovery.is-danger {
+  color: #c66766;
+}
+
+/* Recovery reminder banner above the personal feed. Calm warning
+   styling — soft border, muted background, no red panic colors.
+   Sits inline above the stream so it scrolls naturally. Hidden by
+   default (the [hidden] attribute handles display:none). */
+.recovery-reminder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid #c9a23a;
+  background: #1a160e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.recovery-reminder__message {
+  color: var(--text);
+}
+
+.recovery-reminder__actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.recovery-reminder__cta {
+  align-self: flex-start;
+}
+
+.recovery-reminder__dismiss {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.recovery-reminder__dismiss:hover,
+.recovery-reminder__dismiss:focus-visible {
+  color: var(--text);
+}
+
 /* ============================================================
  * Three-column shell
  * ============================================================ */

@@ -168,7 +168,7 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
       document.getElementById("account-button")?.click();
       return { items, text, hasRelayLine: !!document.getElementById("account-menu-relay") };
     });
-    const expectedItems = ["account-menu-account", "account-menu-settings", "account-menu-lock", "account-menu-logout"];
+    const expectedItems = ["account-menu-account", "account-menu-settings", "account-menu-logout"];
     const missingItems = expectedItems.filter((id) => !menuShape.items.includes(id));
     if (missingItems.length > 0) {
       fail("account-menu-shape", `missing menu items: ${missingItems.join(", ")} (saw=${menuShape.items.join(", ")})`);

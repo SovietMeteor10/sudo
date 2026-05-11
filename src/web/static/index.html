@@ -95,6 +95,7 @@
       </form>
       <div class="composer__state" id="feed-composer-state" aria-live="polite"></div>
       <div class="feed-pane" id="feed-pane-personal" data-feed-pane="personal">
+        <aside class="recovery-reminder" id="recovery-reminder" role="status" aria-live="polite" hidden></aside>
         <div class="stream-list" id="stream-list" aria-live="polite"></div>
       </div>
       <div class="feed-pane" id="feed-pane-discover" data-feed-pane="discover" hidden>
@@ -134,10 +135,10 @@
   <section class="account-menu" id="account-menu" hidden role="menu" aria-label="account">
     <div class="account-menu__head">
       <div class="account-menu__handle" id="account-menu-handle"></div>
+      <div class="account-menu__recovery" id="account-menu-recovery" aria-live="polite"></div>
     </div>
     <button class="account-menu__item" id="account-menu-account" type="button" role="menuitem">account</button>
     <button class="account-menu__item" id="account-menu-settings" type="button" role="menuitem">settings</button>
-    <button class="account-menu__item" id="account-menu-lock" type="button" role="menuitem">lock</button>
     <button class="account-menu__item account-menu__item--danger" id="account-menu-logout" type="button" role="menuitem">logout</button>
   </section>
 

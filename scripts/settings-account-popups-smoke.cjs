@@ -9,7 +9,7 @@
 //   - sign in + sign up are still the primary actions
 //
 // Account dropdown (Parts 2-3):
-//   - menu shows account + settings + lock + logout (slim shape)
+//   - menu shows account + settings + logout (slim shape)
 //   - no account-menu-backup, account-menu-restore,
 //     account-menu-devices, account-menu-fingerprint, or
 //     account-menu-relay items
@@ -137,14 +137,14 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
     document.getElementById("account-button")?.click();
     return { items, lower };
   });
-  const expected = ["account-menu-account", "account-menu-settings", "account-menu-lock", "account-menu-logout"];
-  const removed = ["account-menu-backup", "account-menu-restore", "account-menu-devices", "account-menu-fingerprint", "account-menu-relay"];
+  const expected = ["account-menu-account", "account-menu-settings", "account-menu-logout"];
+  const removed = ["account-menu-backup", "account-menu-restore", "account-menu-devices", "account-menu-fingerprint", "account-menu-relay", "account-menu-lock"];
   const missing = expected.filter((id) => !menuShape.items.includes(id));
   const lingering = removed.filter((id) => menuShape.items.includes(id));
   if (missing.length > 0) fail("2a.menu-shape", `missing items: ${missing.join(", ")}`);
-  else ok(`2a. account menu has slim shape (account/settings/lock/logout)`);
+  else ok(`2a. account menu has slim shape (account/settings/logout)`);
   if (lingering.length > 0) fail("2b.menu-shape", `removed items still present: ${lingering.join(", ")}`);
-  else ok(`2b. account menu does not surface backup/restore/devices/fingerprint/relay rows`);
+  else ok(`2b. account menu does not surface backup/restore/devices/fingerprint/relay/lock rows`);
   const leakedInMenu = FORBIDDEN_TERMS.filter((term) => menuShape.lower.includes(term));
   if (leakedInMenu.length > 0) fail("2c.menu-copy", `menu copy leaks: ${leakedInMenu.join(", ")}`);
   else ok(`2c. account menu copy is free of leaked technical terms`);
@@ -299,6 +299,97 @@ async function waitFor(page, predicate, timeoutMs = 10000, interval = 80) {
     else ok(`5d. bio persisted across reload (observed='${bioText}')`);
   } else {
     ok(`5d. bio persisted across reload (observed='${bioText}')`);
+  }
+  await page.evaluate(() => document.getElementById("account-cancel")?.click());
+
+  // ===== Part 6: passive recovery indicator in the account menu =====
+  // For a brand-new account with no backup and no linked device the
+  // indicator should display "unprotected".
+  const indicatorBefore = await page.evaluate(async () => {
+    document.getElementById("account-button")?.click();
+    // Indicator refresh is async; let it settle.
+    await new Promise((r) => setTimeout(r, 300));
+    const text = document.getElementById("account-menu-recovery")?.textContent ?? "";
+    document.getElementById("account-button")?.click();
+    return text.trim().toLowerCase();
+  });
+  if (!/unprotected/i.test(indicatorBefore)) {
+    fail("6a.indicator-unprotected", `expected 'unprotected', got '${indicatorBefore}'`);
+  } else {
+    ok(`6a. account-menu indicator reads '${indicatorBefore}' for fresh account`);
+  }
+
+  // ===== Part 7: recovery reminder banner =====
+  // Triggers when (no backup) AND (no linked device) AND
+  // (signin_count >= 3 OR account is >= 3 days old). The smoke is
+  // ephemeral, so we precondition the count by writing it to the
+  // settings IDB store directly.
+  const canonicalForBanner = await page.evaluate(() => {
+    return new Promise((resolve) => {
+      const req = indexedDB.open("sudo_local_state");
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction("crypto_accounts", "readonly");
+        const all = tx.objectStore("crypto_accounts").getAll();
+        all.onsuccess = () => resolve(all.result[0]?.canonical_id ?? null);
+        all.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  });
+  if (typeof canonicalForBanner !== "string") {
+    fail("7.precondition", "could not read canonical_id from local IDB");
+  } else {
+    await page.evaluate(async (canonical) => {
+      const open = () => new Promise((resolve, reject) => {
+        const req = indexedDB.open("sudo_local_state");
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      const db = await open();
+      const tx = db.transaction("settings", "readwrite");
+      tx.objectStore("settings").put({
+        key: `profile.signinCount.${canonical}`,
+        value: 5,
+        updated_at: new Date().toISOString()
+      });
+      await new Promise((resolve) => { tx.oncomplete = resolve; });
+      // Also clear the per-session dismiss flag so reload re-evaluates
+      // freshly.
+      sessionStorage.removeItem(`recovery-reminder-dismissed.${canonical}`);
+      sessionStorage.removeItem(`recovery-reminder-counted.${canonical}`);
+    }, canonicalForBanner);
+    await page.reload({ waitUntil: "networkidle0" });
+    if (!await waitFor(page, () => document.body.dataset.authState === "signed-in", 10000)) {
+      fail("7a.reload", "reload did not stay signed in"); throw new Error();
+    }
+    if (!await waitFor(page, () => document.getElementById("recovery-reminder")?.hidden === false, 10000)) {
+      fail("7a.banner-shown", "reminder banner did not appear after preconditioning signin count");
+    } else {
+      const bannerText = await page.evaluate(() => document.getElementById("recovery-reminder")?.textContent ?? "");
+      if (!/back(ed)? up|backup/i.test(bannerText) || !/lost or wiped/i.test(bannerText)) {
+        fail("7a.banner-copy", `banner copy unexpected: '${bannerText}'`);
+      } else {
+        ok(`7a. reminder banner appears with calm warning copy`);
+      }
+      // Dismiss → banner hides; per-session flag stays so reload still
+      // shows it suppressed.
+      await page.evaluate(() => {
+        document.querySelector('#recovery-reminder [data-reminder-action="dismiss"]')?.click();
+      });
+      if (!await waitFor(page, () => document.getElementById("recovery-reminder")?.hidden === true, 5000)) {
+        fail("7b.dismiss", "banner did not hide after dismiss click");
+      } else {
+        ok(`7b. dismiss hides the banner`);
+      }
+      await page.reload({ waitUntil: "networkidle0" });
+      await waitFor(page, () => document.body.dataset.authState === "signed-in", 10000);
+      // Give the post-signin reminder check a moment to fire.
+      await new Promise((r) => setTimeout(r, 600));
+      const reappeared = await page.evaluate(() => document.getElementById("recovery-reminder")?.hidden === false);
+      if (reappeared) fail("7c.session-dismiss", "banner reappeared after dismiss within the same session");
+      else ok(`7c. dismiss persists across reload within the same session`);
+    }
   }
 
   await browser.close();
