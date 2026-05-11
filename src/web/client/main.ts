@@ -53,6 +53,14 @@ import {
   startPolling as startContactSyncPolling
 } from "./sync/coordinator.js";
 import { notifyMessageUpsert } from "./sync/messageSync.js";
+// Side-effect import: registers the draft slice projector at module
+// load. The broadcast wrappers (applyDraftUpsertWithBroadcast,
+// applyDraftDeleteWithBroadcast) aren't called from main yet because
+// no UI flow writes drafts; without this import TypeScript elides the
+// module and the projector never registers, so peers can't apply
+// inbound draft events.
+import "./sync/draftSync.js";
+import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
 import {
   applyContactDeleteWithBroadcast,
   applyContactUpsertWithBroadcast
@@ -92,17 +100,21 @@ import {
   clearLocalDb,
   deleteCryptoAccount,
   deleteLocalContact,
+  getBackfillState,
   getLocalStorageStatus,
   getSetting,
   initializeLocalState,
   listContacts as listLocalContacts,
   listConversations,
   listCryptoAccounts,
+  listLocalDrafts,
   listLocalMessages,
   listLocalMessagesByConversation,
   listLocalSubscriptions,
+  listPendingBackfills,
   listTrustedDevices,
   getLocalDeviceMetadata,
+  putBackfillState,
   putSetting,
   revokeTrustedDevice,
   saveIdentitySeen,
@@ -2328,12 +2340,13 @@ function startPairingCompletionPoll(): void {
         void refreshAccountMenuRecoveryIndicator();
 
         // Run the backfill out-of-band so the user can keep using
-        // the app. The card success message updates to a final
-        // state when it's done.
-        void backfillToNewDevice(owner)
+        // the app. Pass the new device's id so the run gets
+        // recorded against the right row in backfill_state; partial
+        // runs are retried on next signin.
+        void backfillToNewDevice(owner, newDevice.device_id)
           .then((result) => {
             pairingCardSuccess.textContent = result.partial
-              ? "device linked. some local data may sync later."
+              ? "device linked. sync will retry on next signin."
               : `device linked${result.totalEvents > 0 ? ` (synced ${result.totalEvents} item${result.totalEvents === 1 ? "" : "s"})` : ""}`;
             window.setTimeout(() => {
               if (activePairingCode === null) renderPairingCard();
@@ -2369,21 +2382,48 @@ function stopPairingCompletionPoll(): void {
 // so the new device's coordinator picks them up on its next poll
 // cycle.
 //
-// Drafts and bio are not yet syncable: the slice projector map
-// only knows contact / subscription / message. They flow on the
-// user's next write or stay local until the slices land.
-async function backfillToNewDevice(ownerCanonicalId: string): Promise<{ totalEvents: number; partial: boolean }> {
+// Backoff schedule for retrying a failed/partial backfill on a
+// subsequent signin. Index by `attempts - 1`; past index 2 the
+// cap stays at 10 minutes. The caller checks
+// `last_attempt_at + RETRY_BACKOFF_MS[Math.min(attempts-1, 2)] <= now`
+// before re-running so a fast successful signin shortly after a
+// partial run doesn't immediately re-fire.
+const RETRY_BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
+const MAX_BACKFILL_ATTEMPTS = 5;
+
+// Iterate the owner's local state and publish each row as an
+// encrypted sync event. The target_device_id is recorded against
+// the row in `backfill_state` so a partial run (network blip, rate
+// limit) can be retried on the next signin. Returns a summary so
+// callers can update UI.
+async function backfillToNewDevice(
+  ownerCanonicalId: string,
+  targetDeviceId: string
+): Promise<{ totalEvents: number; partial: boolean }> {
   let totalEvents = 0;
   let partial = false;
+  const sliceProgress: { [slice: string]: number } = {};
+  const existing = await getBackfillState(ownerCanonicalId, targetDeviceId).catch(() => null);
+  const attempts = (existing?.attempts ?? 0) + 1;
 
-  // Contacts. listLocalContacts returns the projected local rows;
-  // we re-publish each as a contact.upsert so the new device
-  // receives them through the same projector that handles live
-  // writes.
+  await putBackfillState({
+    owner_canonical_id: ownerCanonicalId,
+    target_device_id: targetDeviceId,
+    status: "running",
+    attempts,
+    last_attempt_at: new Date().toISOString(),
+    slice_progress: existing?.slice_progress
+  });
+
+  let lastError = "";
+
+  // Contacts.
   try {
     const contacts = await listLocalContacts(ownerCanonicalId);
+    let count = 0;
+    let failed = 0;
     for (const contact of contacts) {
-      await buildAndPostSyncEvent("contact", "contact.upsert", {
+      const ok = await buildAndPostSyncEvent("contact", "contact.upsert", {
         canonical_id: contact.canonical_id,
         handle: contact.handle,
         tier: contact.tier,
@@ -2391,49 +2431,152 @@ async function backfillToNewDevice(ownerCanonicalId: string): Promise<{ totalEve
         updated_at: contact.updated_at,
         fingerprint: contact.fingerprint
       });
-      totalEvents++;
+      if (ok) count++; else failed++;
+    }
+    sliceProgress.contact = count;
+    totalEvents += count;
+    if (failed > 0) {
+      partial = true;
+      lastError = `contacts: ${failed} of ${contacts.length} failed to post`;
     }
   } catch (error) {
     console.warn("[backfill] contacts failed", error instanceof Error ? error.message : error);
     partial = true;
+    lastError = `contacts: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
-  // Subscriptions / follows.
+  // Subscriptions.
   try {
     const subs = await listLocalSubscriptions(ownerCanonicalId);
+    let count = 0;
+    let failed = 0;
     for (const sub of subs) {
-      await buildAndPostSyncEvent("subscription", "subscription.upsert", {
+      const ok = await buildAndPostSyncEvent("subscription", "subscription.upsert", {
         author_canonical_id: sub.author_canonical_id,
         include_public: sub.include_public,
         include_connections: sub.include_connections,
         include_close: sub.include_close,
         updated_at: sub.updated_at
       });
-      totalEvents++;
+      if (ok) count++; else failed++;
+    }
+    sliceProgress.subscription = count;
+    totalEvents += count;
+    if (failed > 0) {
+      partial = true;
+      lastError = `subscriptions: ${failed} of ${subs.length} failed to post`;
     }
   } catch (error) {
     console.warn("[backfill] subscriptions failed", error instanceof Error ? error.message : error);
     partial = true;
+    lastError = `subscriptions: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
-  // Messages — iterate every owner-scoped row in one pass.
-  // listLocalMessages returns the full set via the by_owner index;
-  // partitioning by conversation isn't needed because
-  // notifyMessageUpsert serializes each individually. Sidesteps the
-  // partner-canonical-vs-conversation-id key shape mismatch that
-  // tripped earlier iterations of this code.
+  // Messages.
   try {
     const messages = await listLocalMessages(ownerCanonicalId);
+    let count = 0;
+    let failed = 0;
     for (const msg of messages) {
-      await notifyMessageUpsert(ownerCanonicalId, msg);
-      totalEvents++;
+      const ok = await notifyMessageUpsert(ownerCanonicalId, msg);
+      if (ok) count++; else failed++;
+    }
+    sliceProgress.message = count;
+    totalEvents += count;
+    if (failed > 0) {
+      partial = true;
+      lastError = `messages: ${failed} of ${messages.length} failed to post`;
     }
   } catch (error) {
-    console.warn("[backfill] message enumeration failed", error instanceof Error ? error.message : error);
+    console.warn("[backfill] messages failed", error instanceof Error ? error.message : error);
     partial = true;
+    lastError = `messages: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
+  // Drafts (new slice).
+  try {
+    const drafts = await listLocalDrafts(ownerCanonicalId);
+    let count = 0;
+    let failed = 0;
+    for (const draft of drafts) {
+      const ok = await buildAndPostSyncEvent("draft", "draft.upsert", {
+        draft_id: draft.draft_id,
+        conversation_id: draft.conversation_id,
+        body: draft.body,
+        updated_at: draft.updated_at
+      });
+      if (ok) count++; else failed++;
+    }
+    sliceProgress.draft = count;
+    totalEvents += count;
+    if (failed > 0) {
+      partial = true;
+      lastError = `drafts: ${failed} of ${drafts.length} failed to post`;
+    }
+  } catch (error) {
+    console.warn("[backfill] drafts failed", error instanceof Error ? error.message : error);
+    partial = true;
+    lastError = `drafts: ${error instanceof Error ? error.message : "unknown"}`;
+  }
+
+  // Profile (bio + last_backup_at). One event captures the full
+  // current account-profile snapshot.
+  try {
+    const bio = await getSetting(profileBioKey(ownerCanonicalId));
+    const lastBackup = await getSetting(profileLastBackupKey(ownerCanonicalId));
+    const payload: { bio?: string; last_backup_at?: string } = {};
+    if (typeof bio === "string") payload.bio = bio;
+    if (typeof lastBackup === "string") payload.last_backup_at = lastBackup;
+    if (Object.keys(payload).length > 0) {
+      const ok = await buildAndPostSyncEvent("profile", "profile.upsert", payload);
+      sliceProgress.profile = ok ? 1 : 0;
+      if (ok) totalEvents += 1;
+      else { partial = true; lastError = "profile: post failed"; }
+    } else {
+      sliceProgress.profile = 0;
+    }
+  } catch (error) {
+    console.warn("[backfill] profile failed", error instanceof Error ? error.message : error);
+    partial = true;
+    lastError = `profile: ${error instanceof Error ? error.message : "unknown"}`;
+  }
+
+  await putBackfillState({
+    owner_canonical_id: ownerCanonicalId,
+    target_device_id: targetDeviceId,
+    status: partial ? "pending" : "complete",
+    attempts,
+    last_attempt_at: new Date().toISOString(),
+    last_error: partial ? lastError : undefined,
+    total_events: totalEvents,
+    slice_progress: sliceProgress
+  });
+
   return { totalEvents, partial };
+}
+
+// Re-run backfills that were left pending or failed by a previous
+// session. Called from setSignedIn so a partial run from an earlier
+// browser open resumes the moment the user signs in again, without
+// requiring them to re-pair the device.
+async function retryPendingBackfills(ownerCanonicalId: string): Promise<void> {
+  let pending: import("./local/local-types.js").LocalBackfillState[];
+  try {
+    pending = await listPendingBackfills(ownerCanonicalId);
+  } catch { return; }
+  if (pending.length === 0) return;
+  const now = Date.now();
+  for (const row of pending) {
+    if (row.attempts >= MAX_BACKFILL_ATTEMPTS) continue;
+    const backoff = RETRY_BACKOFF_MS[Math.min(row.attempts - 1, RETRY_BACKOFF_MS.length - 1)] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]!;
+    const earliestNextAt = Date.parse(row.last_attempt_at) + backoff;
+    if (now < earliestNextAt) continue;
+    // Don't block other retries on this one; each runs sequentially
+    // anyway because they share the same coordinator state.
+    await backfillToNewDevice(ownerCanonicalId, row.target_device_id).catch((error) => {
+      console.warn(`[backfill] retry for ${row.target_device_id.slice(0, 8)} failed`, error instanceof Error ? error.message : error);
+    });
+  }
 }
 
 async function cancelActivePairing(options: { silent?: boolean } = {}): Promise<void> {
@@ -3735,11 +3878,11 @@ async function exportEncryptedBackup(): Promise<void> {
     link.download = `sudo-backup-${backup.created_at.slice(0, 10)}.sudo-backup.json`;
     link.click();
     URL.revokeObjectURL(url);
-    // Stamp the moment a backup was actually exported. The account
-    // dialog reads this to flip recovery posture from "unprotected"
-    // to "backup file saved" so the user has visible feedback that
-    // the lever they just pulled is the lever that protects them.
-    void putSetting(profileLastBackupKey(currentIdentityDocument.canonical_id), backup.created_at).catch(() => {});
+    // Stamp the moment a backup was actually exported and broadcast
+    // it via the profile slice so any linked device flips its
+    // recovery posture too. applyProfileUpsertWithBroadcast handles
+    // both the local putSetting and the sync event publish.
+    void applyProfileUpsertWithBroadcast(currentIdentityDocument.canonical_id, { last_backup_at: backup.created_at }).catch(() => {});
     // Recovery posture just changed — clear the reminder banner and
     // refresh the menu indicator so the user sees the lever pull
     // land on the same render frame as the toast.
@@ -4063,6 +4206,11 @@ function setSignedIn(handle: string): void {
   setAccountButtonHandle(handle);
   closeChatPopup();
   if (currentIdentityDocument !== null) {
+    // Resume any backfill that was left pending or failed by a
+    // previous signed-in session. Fire-and-forget — the retry
+    // logic enforces a backoff so we don't hot-loop if the same
+    // failure recurs.
+    void retryPendingBackfills(currentIdentityDocument.canonical_id);
     // Repaint chat + feed from the new owner's local state only. The previous
     // owner's in-memory state was already cleared in setSignedOut().
     void refreshLocalChats();
@@ -4143,6 +4291,13 @@ function openSettingsDialog(): void {
   resetSettingsDangerZone();
   settingsState.textContent = "";
   if (!settingsDialog.open) settingsDialog.showModal();
+  // Opening Settings is a natural moment to retry any backfill that
+  // failed earlier — the user is actively engaged with their account
+  // surface and the device list, so a sync that converges now is more
+  // likely to be observed and trusted.
+  if (currentIdentityDocument !== null) {
+    void retryPendingBackfills(currentIdentityDocument.canonical_id);
+  }
 }
 
 function resetSettingsDangerZone(): void {
@@ -4213,7 +4368,10 @@ async function saveAccountBio(): Promise<void> {
   const next = accountBioInput.value.slice(0, 280);
   accountState.textContent = "saving…";
   try {
-    await putSetting(profileBioKey(currentIdentityDocument.canonical_id), next);
+    // applyProfileUpsertWithBroadcast writes the bio to the local
+    // settings store AND publishes a profile.upsert sync event so
+    // any linked device picks up the change on its next poll.
+    await applyProfileUpsertWithBroadcast(currentIdentityDocument.canonical_id, { bio: next });
     accountState.textContent = "saved";
     window.setTimeout(() => {
       if (accountState.textContent === "saved") accountState.textContent = "";

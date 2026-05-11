@@ -1,8 +1,12 @@
 export const LOCAL_DB_NAME = "sudo_local_state";
+// v5: backfill_state store. Tracks per-target-device replay progress
+// for initial-state backfill after a new device links, so a partial
+// run can resume on the next signin and the user isn't stranded with
+// a half-synced second device.
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-export const LOCAL_DB_VERSION = 4;
+export const LOCAL_DB_VERSION = 5;
 
 export const localStoreNames = [
   "events",
@@ -15,7 +19,8 @@ export const localStoreNames = [
   "trusted_devices",
   "settings",
   "pending_outbound",
-  "device_sync_events"
+  "device_sync_events",
+  "backfill_state"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -446,6 +451,18 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     store.createIndex("by_owner", "owner_canonical_id");
     store.createIndex("by_device", "device_id");
     store.createIndex("by_created_at", "created_at");
+  }
+
+  // v5: backfill_state. One row per (owner, target_device_id). Records
+  // whether the initial-state replay to a newly linked device has run
+  // to completion; partial / failed rows are retried on the next
+  // signin or settings-open.
+  if (!db.objectStoreNames.contains("backfill_state")) {
+    const store = db.createObjectStore("backfill_state", {
+      keyPath: ["owner_canonical_id", "target_device_id"]
+    });
+    store.createIndex("by_owner", "owner_canonical_id");
+    store.createIndex("by_status", "status");
   }
 
   // ---- v3 → v4: account isolation ----

@@ -85,6 +85,23 @@ export type LocalDraft = {
   updated_at: string;
 };
 
+// Per-target-device row recording how far the initial-state backfill
+// has gotten. Status drives the retry loop: `pending` and `failed`
+// are eligible for retry on the next signin / settings-open;
+// `running` is in-flight; `complete` is terminal. Backoff is encoded
+// implicitly via attempts (1 → 30s, 2 → 2m, 3+ → 10m) so the row
+// itself doesn't need to carry a scheduled-at timestamp.
+export type LocalBackfillState = {
+  owner_canonical_id: string;
+  target_device_id: string;
+  status: "pending" | "running" | "complete" | "failed";
+  attempts: number;
+  last_attempt_at: string;
+  last_error?: string;
+  total_events?: number;
+  slice_progress?: { [slice: string]: number };
+};
+
 export type LocalCryptoAccountRecord = {
   canonical_id: string;
   handle: string;

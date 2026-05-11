@@ -77,6 +77,7 @@ async function lookupCanonical(handle) {
   const ctxA = await browser.createBrowserContext();
   const pageA = await ctxA.newPage();
   await pageA.setViewport({ width: 980, height: 820 });
+  pageA.on("pageerror", (err) => console.log("PAGEA-ERR>", err.message));
   await pageA.goto(BASE + "/", { waitUntil: "networkidle0" });
   const handleA = `bfdesk${Date.now().toString().slice(-7)}`;
   await pageA.click('.landing [data-auth-action="signup"]');
@@ -103,15 +104,19 @@ async function lookupCanonical(handle) {
   const messageBody = `backfill-marker-${Date.now()}`;
   const messageId = `bf-${Date.now()}`;
   const conversationId = `${canonicalA}|${ghostCanonical}`.split("|").sort().join("|");
+  const draftBody = `draft-marker-${Date.now()}`;
+  const draftId = `bf-draft-${Date.now()}`;
+  const draftConversationId = `${canonicalA}|sudo:ed25519:${"d".repeat(64)}`.split("|").sort().join("|");
+  const bioMarker = `bio-marker-${Date.now()}`;
 
-  await pageA.evaluate(async (owner, ghostC, ghostH, subA, msgId, convId, body) => {
+  await pageA.evaluate(async (owner, ghostC, ghostH, subA, msgId, convId, body, dId, dConv, dBody, bio) => {
     const open = () => new Promise((res, rej) => {
       const r = indexedDB.open("sudo_local_state");
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
     });
     const db = await open();
-    const tx = db.transaction(["contacts", "subscriptions", "messages"], "readwrite");
+    const tx = db.transaction(["contacts", "subscriptions", "messages", "drafts", "settings"], "readwrite");
     const now = new Date().toISOString();
     tx.objectStore("contacts").put({
       owner_canonical_id: owner,
@@ -134,6 +139,20 @@ async function lookupCanonical(handle) {
       include_close: false,
       updated_at: now
     });
+    // Drafts (new slice).
+    tx.objectStore("drafts").put({
+      draft_id: dId,
+      owner_canonical_id: owner,
+      conversation_id: dConv,
+      body: dBody,
+      updated_at: now
+    });
+    // Profile bio (new slice carries this through `profile.upsert`).
+    tx.objectStore("settings").put({
+      key: `profile.bio.${owner}`,
+      value: bio,
+      updated_at: now
+    });
     tx.objectStore("messages").put({
       owner_canonical_id: owner,
       message_id: msgId,
@@ -149,8 +168,8 @@ async function lookupCanonical(handle) {
       status: "queued_local"
     });
     await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
-  }, canonicalA, ghostCanonical, ghostHandle, subAuthor, messageId, conversationId, messageBody);
-  ok(`2. A seeded a contact, a subscription, and a message (body marker '${messageBody}')`);
+  }, canonicalA, ghostCanonical, ghostHandle, subAuthor, messageId, conversationId, messageBody, draftId, draftConversationId, draftBody, bioMarker);
+  ok(`2. A seeded contact/subscription/message/draft/bio (body='${messageBody}' draft='${draftBody}' bio='${bioMarker}')`);
 
   // ===== A — open pairing =====
   await pageA.evaluate(() => {
@@ -198,45 +217,67 @@ async function lookupCanonical(handle) {
   // The sync coordinator on B polls every ~5s. Give the backfill
   // up to 30s to land.
   async function bSnapshot() {
-    return pageB.evaluate(() => {
+    return pageB.evaluate((bioK) => {
       return new Promise((resolve) => {
         const r = indexedDB.open("sudo_local_state");
         r.onsuccess = async () => {
           const db = r.result;
-          const read = (store, idx) => new Promise((res) => {
+          const read = (store) => new Promise((res) => {
             const tx = db.transaction(store, "readonly");
             const req = tx.objectStore(store).getAll();
             req.onsuccess = () => res(req.result);
             req.onerror = () => res([]);
           });
-          const [contacts, subs, messages] = await Promise.all([
+          const readOne = (store, key) => new Promise((res) => {
+            const tx = db.transaction(store, "readonly");
+            const req = tx.objectStore(store).get(key);
+            req.onsuccess = () => res(req.result);
+            req.onerror = () => res(null);
+          });
+          const [contacts, subs, messages, drafts, bioRow] = await Promise.all([
             read("contacts"),
             read("subscriptions"),
-            read("messages")
+            read("messages"),
+            read("drafts"),
+            readOne("settings", bioK)
           ]);
-          resolve({ contacts: contacts.length, subs: subs.length, messages: messages.length, contactHandles: contacts.map((c) => c.handle), bodies: messages.map((m) => m.body) });
+          resolve({
+            contacts: contacts.length,
+            subs: subs.length,
+            messages: messages.length,
+            drafts: drafts.length,
+            contactHandles: contacts.map((c) => c.handle),
+            bodies: messages.map((m) => m.body),
+            draftBodies: drafts.map((d) => d.body),
+            bio: typeof bioRow?.value === "string" ? bioRow.value : null
+          });
         };
         r.onerror = () => resolve(null);
       });
-    });
+    }, `profile.bio.${canonicalA}`);
   }
 
   let snap = null;
   for (let i = 0; i < 60; i++) {
     snap = await bSnapshot();
-    if (snap !== null && snap.contacts >= 1 && snap.subs >= 1 && snap.messages >= 1) break;
+    if (snap !== null && snap.contacts >= 1 && snap.subs >= 1 && snap.messages >= 1 && snap.drafts >= 1 && snap.bio === bioMarker) break;
     await new Promise((r) => setTimeout(r, 500));
   }
-  if (snap === null || snap.contacts < 1 || snap.subs < 1 || snap.messages < 1) {
+  if (snap === null || snap.contacts < 1 || snap.subs < 1 || snap.messages < 1 || snap.drafts < 1 || snap.bio !== bioMarker) {
     fail("6.backfill-arrival", `B did not receive seeded state in 30s: ${JSON.stringify(snap)}`);
   } else {
-    ok(`6. B received contact/subscription/message via sync log (${snap.contacts}c ${snap.subs}s ${snap.messages}m)`);
+    ok(`6. B received contact/subscription/message/draft/bio (${snap.contacts}c ${snap.subs}s ${snap.messages}m ${snap.drafts}d bio='${snap.bio}')`);
     const handleArrived = snap.contactHandles.includes(ghostHandle);
     if (!handleArrived) fail("6b.contact-handle", `seeded contact handle '${ghostHandle}' not in B (saw ${JSON.stringify(snap.contactHandles)})`);
     else ok(`6b. seeded contact handle '${ghostHandle}' arrived on B`);
     const bodyArrived = snap.bodies.includes(messageBody);
     if (!bodyArrived) fail("6c.message-body", `seeded message body not in B (saw ${JSON.stringify(snap.bodies)})`);
     else ok(`6c. seeded message body arrived on B`);
+    const draftArrived = snap.draftBodies.includes(draftBody);
+    if (!draftArrived) fail("6d.draft-body", `seeded draft body not in B (saw ${JSON.stringify(snap.draftBodies)})`);
+    else ok(`6d. seeded draft body arrived on B`);
+    if (snap.bio !== bioMarker) fail("6e.bio", `bio marker '${bioMarker}' not in B (saw '${snap.bio}')`);
+    else ok(`6e. seeded bio arrived on B via profile slice`);
   }
 
   // ===== B — reload, state persists =====
@@ -245,7 +286,7 @@ async function lookupCanonical(handle) {
     fail("7.reload-signed-in", "B did not stay signed in after reload"); throw new Error();
   }
   const reloadSnap = await bSnapshot();
-  if (reloadSnap === null || reloadSnap.contacts < 1 || reloadSnap.subs < 1 || reloadSnap.messages < 1) {
+  if (reloadSnap === null || reloadSnap.contacts < 1 || reloadSnap.subs < 1 || reloadSnap.messages < 1 || reloadSnap.drafts < 1 || reloadSnap.bio !== bioMarker) {
     fail("7.reload-state", `state did not persist on B after reload: ${JSON.stringify(reloadSnap)}`);
   } else {
     ok(`7. backfilled state persists on B after reload`);
@@ -256,15 +297,23 @@ async function lookupCanonical(handle) {
   // grepping the column for our marker proves we never relayed
   // plaintext. Skipped if the local DB isn't reachable (remote BASE).
   if (fs.existsSync(DB_PATH)) {
-    let leak = "";
-    try {
-      const out = execFileSync("sqlite3", [DB_PATH, `SELECT signed_event_json FROM device_sync_log WHERE owner_canonical_id='${canonicalA}' AND signed_event_json LIKE '%${messageBody}%' LIMIT 1`], { encoding: "utf-8" });
-      leak = out.trim();
-    } catch {}
-    if (leak.length > 0) {
-      fail("8.plaintext-leak", `device_sync_log contains the plaintext message body: ${leak.slice(0, 200)}...`);
+    const markers = [
+      { label: "message body", value: messageBody },
+      { label: "draft body", value: draftBody },
+      { label: "bio", value: bioMarker }
+    ];
+    let leakedLabel = "";
+    let leakSample = "";
+    for (const m of markers) {
+      try {
+        const out = execFileSync("sqlite3", [DB_PATH, `SELECT signed_event_json FROM device_sync_log WHERE owner_canonical_id='${canonicalA}' AND signed_event_json LIKE '%${m.value}%' LIMIT 1`], { encoding: "utf-8" });
+        if (out.trim().length > 0) { leakedLabel = m.label; leakSample = out.trim().slice(0, 200); break; }
+      } catch {}
+    }
+    if (leakedLabel.length > 0) {
+      fail("8.plaintext-leak", `device_sync_log contains plaintext ${leakedLabel}: ${leakSample}...`);
     } else {
-      ok(`8. server sync log carries no plaintext message body`);
+      ok(`8. server sync log carries no plaintext markers (message body, draft body, bio)`);
     }
   } else {
     ok(`8. plaintext-leak check skipped (DB_PATH '${DB_PATH}' not local)`);

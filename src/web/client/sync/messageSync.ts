@@ -22,14 +22,17 @@ import type { RelayEnvelopeStatus } from "../../../protocol/types.js";
 // that mutate the messages store (sent and received paths in
 // relay-local.ts) invoke this AFTER their durable saveLocalMessage
 // returns. Failure here must never roll back the local save.
+// Returns true on a successful POST, false otherwise; fire-and-forget
+// callers (relay-local.ts) ignore the return, but the initial-state
+// backfill checks it so a transient outage marks the slice partial.
 export async function notifyMessageUpsert(
   ownerCanonicalId: string,
   message: LocalMessage
-): Promise<void> {
+): Promise<boolean> {
   const payload = serializeMessageForSync(message);
-  if (payload === null) return;
-  if (payload.owner_canonical_id !== ownerCanonicalId) return;
-  void buildAndPostSyncEvent("message", "message.upsert", payload);
+  if (payload === null) return false;
+  if (payload.owner_canonical_id !== ownerCanonicalId) return false;
+  return buildAndPostSyncEvent("message", "message.upsert", payload);
 }
 
 type MessageSyncPayload = {

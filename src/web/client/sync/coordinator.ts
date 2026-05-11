@@ -79,11 +79,29 @@ function recipientCursorKey(ownerCanonicalId: string, deviceId: string): string 
   return `sync.recipient_cursor:${ownerCanonicalId}:${deviceId}`;
 }
 
+// Per-(owner, device) serialization for sequence reservation. The
+// read-then-write against the settings store is not atomic on its own:
+// if two callers race (e.g. notifyMessageUpsert fires a `void
+// buildAndPostSyncEvent` while a subsequent slice posts in parallel),
+// both can read the same N and write N+1, producing duplicate
+// sequences. The server rejects the duplicate as sequence_regression.
+// A promise-chain mutex keyed by (owner, device) is enough; reservations
+// are not high-throughput and we only need ordering within one origin.
+const sequenceChains = new Map<string, Promise<unknown>>();
 async function reserveOriginSequence(ownerCanonicalId: string, deviceId: string): Promise<number> {
   const key = originSeqKey(ownerCanonicalId, deviceId);
-  const current = (await getSetting(key)) as number | null;
-  const next = (typeof current === "number" ? current : 0) + 1;
-  await putSetting(key, next);
+  const chainKey = `${ownerCanonicalId}|${deviceId}`;
+  const prev = sequenceChains.get(chainKey) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    const current = (await getSetting(key)) as number | null;
+    const value = (typeof current === "number" ? current : 0) + 1;
+    await putSetting(key, value);
+    return value;
+  });
+  // Swallow rejection on the stored chain so a single failure doesn't
+  // poison every subsequent reservation; callers still see the real
+  // error via their own await.
+  sequenceChains.set(chainKey, next.catch(() => undefined));
   return next;
 }
 
@@ -125,17 +143,22 @@ async function buildSignedEvent(
 // Slice modules use this to build, sign, encrypt, and POST their
 // slice's sync event. Best-effort: errors are logged and swallowed
 // so user-driven local writes never block on relay failures.
+// Returns true if the POST landed, false if it failed; fire-and-forget
+// callers ignore the return, but backfill checks it to decide whether
+// to mark a slice as partial and retry later.
 export async function buildAndPostSyncEvent(
   slice: SignableSyncEvent["slice"],
   kind: SignableSyncEvent["kind"],
   plaintext: object
-): Promise<void> {
-  if (active === null) return;
+): Promise<boolean> {
+  if (active === null) return false;
   try {
     const event = await buildSignedEvent(active, slice, kind, plaintext);
     await postSyncEvent(active.account.canonical_id, event);
+    return true;
   } catch (error) {
     console.warn(`[sync] ${slice}/${kind} post failed`, error instanceof Error ? error.message : error);
+    return false;
   }
 }
 

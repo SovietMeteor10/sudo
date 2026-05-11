@@ -43,6 +43,8 @@
     "smoke:challenge-rate-limit": "node scripts/challenge-rate-limit-smoke.cjs",
     "smoke:link-existing-account": "node scripts/link-existing-account-smoke.cjs",
     "smoke:link-with-backfill": "node scripts/link-with-backfill-smoke.cjs",
+    "smoke:backfill-retry": "node scripts/backfill-retry-smoke.cjs",
+    "smoke:sync-rate-limit": "node scripts/sync-rate-limit-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

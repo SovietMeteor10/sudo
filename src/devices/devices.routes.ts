@@ -23,6 +23,7 @@ import {
   upsertTrustedDevice
 } from "./devices.store.js";
 import { checkPairHandoffRate } from "./pair-handoff-rate-limit.js";
+import { checkSyncRate } from "./sync-rate-limit.js";
 import {
   getRecipientCursor,
   insertSyncEvent,
@@ -401,6 +402,23 @@ function resolveActiveMembership(
 // Idempotent on event_id: a retry returns 200 with `created: false`.
 devicesRouter.post("/:ownerCanonicalId/sync", (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
+  // Per-IP + per-owner rate limit. Backfills are deliberately bursty
+  // (one event per contact/subscription/message/draft/profile) so the
+  // cap is generous; 600/min per IP gives a 1000-message account
+  // headroom to backfill at ~10 events/sec without tripping. Owner
+  // bucket prevents a single compromised account from flooding the
+  // relay across IPs.
+  const rateResult = checkSyncRate(resolveRemoteIpForPair(request), ownerCanonicalId);
+  if (!rateResult.ok) {
+    response.setHeader("Retry-After", String(rateResult.retry_after_seconds));
+    response.status(429).json({
+      ok: false,
+      error: "rate_limited",
+      scope: rateResult.scope,
+      retry_after_seconds: rateResult.retry_after_seconds
+    });
+    return;
+  }
   const body = request.body as { signed_event?: unknown };
   if (typeof body.signed_event !== "object" || body.signed_event === null) {
     response.status(400).json({ ok: false, error: "invalid_sync_event" });
@@ -524,6 +542,8 @@ function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "contact") return kind === "contact.upsert" || kind === "contact.delete";
   if (slice === "subscription") return kind === "subscription.upsert" || kind === "subscription.delete";
   if (slice === "message") return kind === "message.upsert";
+  if (slice === "draft") return kind === "draft.upsert" || kind === "draft.delete";
+  if (slice === "profile") return kind === "profile.upsert";
   return false;
 }
 

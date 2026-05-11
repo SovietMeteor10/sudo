@@ -1,5 +1,6 @@
 import { broadcastLocalStateChange, clearLocalDb, localStoreNames, openLocalDb, txDone, type LocalStoreName } from "./local-db.js";
 import type {
+  LocalBackfillState,
   LocalCryptoAccountRecord,
   LocalContact,
   LocalDraft,
@@ -208,6 +209,35 @@ export async function listTrustedDevices(ownerCanonicalId: string): Promise<Loca
   return getAllByIndex<LocalTrustedDevice>("trusted_devices", "by_owner", ownerCanonicalId);
 }
 
+// Initial-state backfill progress tracking. Keyed by
+// [owner_canonical_id, target_device_id] so each (account, linked
+// device) pair has at most one row. The retry loop reads `status` +
+// `attempts` to decide what to re-run on the next signin.
+export async function getBackfillState(
+  ownerCanonicalId: string,
+  targetDeviceId: string
+): Promise<LocalBackfillState | null> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("backfill_state", "readonly");
+    const req = tx.objectStore("backfill_state").get([ownerCanonicalId, targetDeviceId]);
+    req.onsuccess = () => resolve((req.result as LocalBackfillState) ?? null);
+    req.onerror = () => reject(req.error ?? new Error("backfill_state read failed"));
+  });
+}
+
+export async function putBackfillState(state: LocalBackfillState): Promise<void> {
+  const db = await openLocalDb();
+  const tx = db.transaction("backfill_state", "readwrite");
+  tx.objectStore("backfill_state").put(state);
+  await txDone(tx);
+}
+
+export async function listPendingBackfills(ownerCanonicalId: string): Promise<LocalBackfillState[]> {
+  const rows = await getAllByIndex<LocalBackfillState>("backfill_state", "by_owner", ownerCanonicalId);
+  return rows.filter((row) => row.status === "pending" || row.status === "failed");
+}
+
 export async function revokeTrustedDevice(deviceId: string): Promise<void> {
   const device = await getRecord<LocalTrustedDevice>("trusted_devices", deviceId);
   if (device === null) return;
@@ -377,6 +407,17 @@ export async function getProjectedSubscription(
 
 export async function listLocalDrafts(ownerCanonicalId: string): Promise<LocalDraft[]> {
   return getAllByIndex<LocalDraft>("drafts", "by_owner", ownerCanonicalId);
+}
+
+export async function upsertLocalDraft(draft: LocalDraft): Promise<void> {
+  await putRecord("drafts", draft);
+}
+
+export async function deleteLocalDraft(draftId: string): Promise<void> {
+  const db = await openLocalDb();
+  const transaction = db.transaction("drafts", "readwrite");
+  transaction.objectStore("drafts").delete(draftId);
+  await txDone(transaction);
 }
 
 export async function getSetting(key: string): Promise<unknown | null> {
