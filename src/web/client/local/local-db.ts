@@ -1,4 +1,8 @@
 export const LOCAL_DB_NAME = "sudo_local_state";
+// v6: read_state store. Per-conversation last-read timestamp + message
+// id, scoped by owner. Drives the unread badge on the chat list and
+// syncs across linked devices so opening a chat on desktop clears the
+// unread count on mobile.
 // v5: backfill_state store. Tracks per-target-device replay progress
 // for initial-state backfill after a new device links, so a partial
 // run can resume on the next signin and the user isn't stranded with
@@ -6,7 +10,7 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-export const LOCAL_DB_VERSION = 5;
+export const LOCAL_DB_VERSION = 6;
 
 export const localStoreNames = [
   "events",
@@ -20,7 +24,8 @@ export const localStoreNames = [
   "settings",
   "pending_outbound",
   "device_sync_events",
-  "backfill_state"
+  "backfill_state",
+  "read_state"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -54,7 +59,7 @@ const BROADCAST_CHANNEL_NAME = "sudo_local_db";
 // can refresh their UI without re-polling the server. The owner stamp
 // keeps account isolation intact: sibling tabs ignore changes from
 // owners they aren't currently signed into.
-export type LocalStateChangeKind = "messages" | "contacts" | "feed" | "auth";
+export type LocalStateChangeKind = "messages" | "contacts" | "feed" | "auth" | "read_state";
 
 type DbBroadcastMessage =
   | { type: "release-db"; reason?: string }
@@ -463,6 +468,16 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     });
     store.createIndex("by_owner", "owner_canonical_id");
     store.createIndex("by_status", "status");
+  }
+
+  // v6: read_state. One row per (owner, conversation_id). Carries
+  // last_read_at + optional last_read_message_id; monotonic merge
+  // means a later read on any device wins.
+  if (!db.objectStoreNames.contains("read_state")) {
+    const store = db.createObjectStore("read_state", {
+      keyPath: ["owner_canonical_id", "conversation_id"]
+    });
+    store.createIndex("by_owner", "owner_canonical_id");
   }
 
   // ---- v3 → v4: account isolation ----

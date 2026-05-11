@@ -61,6 +61,7 @@ import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/mes
 // inbound draft events.
 import "./sync/draftSync.js";
 import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
+import { notifyReadStateUpsert } from "./sync/readStateSync.js";
 import {
   applyContactDeleteWithBroadcast,
   applyContactUpsertWithBroadcast
@@ -108,6 +109,7 @@ import {
   listConversations,
   listCryptoAccounts,
   listLocalDrafts,
+  listReadStates,
   listLocalMessages,
   listLocalMessagesByConversation,
   listLocalSubscriptions,
@@ -361,6 +363,13 @@ async function onSiblingLocalStateChange(kind: LocalStateChangeKind): Promise<vo
   }
   if (kind === "feed") {
     await refreshFeedPosts();
+    return;
+  }
+  if (kind === "read_state") {
+    // A peer's read state landed (or our own write applied through
+    // the projector). Refresh the chat list so the unread badge
+    // reflects the new last_read_at without waiting for a page event.
+    await refreshLocalChats();
     return;
   }
 }
@@ -825,7 +834,8 @@ async function refreshLocalChats(): Promise<void> {
         : conversation.canonical,
       state: "draft" as const,
       lastLine: conversation.lastLine,
-      fingerprint: conversation.fingerprint
+      fingerprint: conversation.fingerprint,
+      unreadCount: conversation.unreadCount
     }));
   } catch {
     localChats = [];
@@ -2554,6 +2564,35 @@ async function backfillToNewDevice(
     console.warn("[backfill] profile failed", error instanceof Error ? error.message : error);
     partial = true;
     lastError = `profile: ${error instanceof Error ? error.message : "unknown"}`;
+  }
+
+  // Read state (one event per conversation with a read pointer). The
+  // payload is small and the count is bounded by the number of
+  // conversations the user has touched, so a flat replay is fine.
+  try {
+    const rows = await listReadStates(ownerCanonicalId);
+    let count = 0;
+    let failed = 0;
+    for (const row of rows) {
+      const payload: { conversation_id: string; last_read_at: string; last_read_message_id?: string; owner_canonical_id: string } = {
+        conversation_id: row.conversation_id,
+        last_read_at: row.last_read_at,
+        owner_canonical_id: ownerCanonicalId
+      };
+      if (typeof row.last_read_message_id === "string") payload.last_read_message_id = row.last_read_message_id;
+      const ok = await buildAndPostSyncEvent("read_state", "read_state.upsert", payload);
+      if (ok) count++; else failed++;
+    }
+    sliceProgress.read_state = count;
+    totalEvents += count;
+    if (failed > 0) {
+      partial = true;
+      lastError = `read_state: ${failed} of ${rows.length} failed to post`;
+    }
+  } catch (error) {
+    console.warn("[backfill] read_state failed", error instanceof Error ? error.message : error);
+    partial = true;
+    lastError = `read_state: ${error instanceof Error ? error.message : "unknown"}`;
   }
 
   await putBackfillState({
@@ -4785,7 +4824,49 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
     row.classList.toggle("is-selected", row.dataset["chatCanonical"] === target.canonical);
   }
   await renderChatPopupBody(target.canonical);
+  // Mark the conversation read up to its latest visible message. The
+  // chat popup currently renders the full message list on open (no
+  // virtualization), so "visible after open" effectively means the
+  // newest message in the conversation. If we ever add scroll-back
+  // virtualization, this should hook into the scroll handler instead.
+  void markConversationRead(target.canonical);
   chatPopupInput.focus();
+}
+
+async function markConversationRead(partnerCanonicalId: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const owner = currentIdentityDocument.canonical_id;
+  const conversationId = conversationKey(owner, partnerCanonicalId);
+  try {
+    const messages = await listLocalMessagesByConversation(owner, conversationId);
+    // Latest message wins. Tombstones count for the marker (so a
+    // conversation whose newest row is "message deleted" still gets
+    // marked read), but the message id we record is the most recent
+    // non-tombstone row when available.
+    let latestAt = "";
+    let latestNonTombstoneId: string | undefined;
+    for (const message of messages) {
+      const at = message.created_at;
+      if (at > latestAt) latestAt = at;
+      if (typeof message.deleted_at !== "string"
+        && (latestNonTombstoneId === undefined
+          || (messages.find((m) => m.message_id === latestNonTombstoneId)?.created_at ?? "") < at)) {
+        latestNonTombstoneId = message.message_id;
+      }
+    }
+    const lastReadAt = latestAt.length > 0 ? latestAt : new Date().toISOString();
+    await notifyReadStateUpsert(owner, {
+      conversation_id: conversationId,
+      last_read_message_id: latestNonTombstoneId,
+      last_read_at: lastReadAt
+    });
+  } catch (error) {
+    console.warn("[chat] mark-read failed", error instanceof Error ? error.message : error);
+    return;
+  }
+  // Refresh the chat list so the badge clears immediately on this
+  // device. The peer will catch up via the projector + listener.
+  void refreshLocalChats();
 }
 
 function closeChatPopup(): void {

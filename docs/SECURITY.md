@@ -109,10 +109,11 @@ routing, dedupe, and replay protection):
 - `event_id` — UUID
 - `owner_canonical_id` — which account this belongs to
 - `origin_device_id` — which paired device produced it
-- `slice` — `"contact"`, `"subscription"`, `"message"`, `"draft"`, or `"profile"`
+- `slice` — `"contact"`, `"subscription"`, `"message"`, `"draft"`,
+  `"profile"`, or `"read_state"`
 - `kind` — e.g. `"contact.upsert"`, `"subscription.delete"`,
   `"message.upsert"`, `"message.delete"`, `"draft.upsert"`,
-  `"draft.delete"`, `"profile.upsert"`
+  `"draft.delete"`, `"profile.upsert"`, `"read_state.upsert"`
 - `sequence` — per-(owner, origin_device) monotonic counter
 - `created_at`, `server_received_at`
 - `signature` — the origin device's device-key signature, used to

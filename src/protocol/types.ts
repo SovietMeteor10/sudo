@@ -326,10 +326,10 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // the account-shared sync key.
 //
 // Add new slices here as they come online. Shipped today: contact,
-// subscription, message, draft, profile. read-receipts are not
-// synced yet. Message deletion is now modeled by `message.delete`,
-// which writes a tombstone (deleted_at set, body/ciphertext cleared)
-// in the local store and on every linked device.
+// subscription, message, draft, profile, read_state. Message deletion
+// is modeled by `message.delete`, which writes a tombstone (deleted_at
+// set, body/ciphertext cleared) in the local store and on every linked
+// device. Per-conversation last-read pointers ride on `read_state`.
 //
 // Sync is explicit, not automatic. There is intentionally NO generic
 // "settings.upsert" slice that replicates the local settings store
@@ -343,7 +343,7 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // on the device that wrote it. The rationale (sync loops, accidental
 // secret propagation, cross-device UX confusion) is documented in
 // docs/SECURITY.md → "Sync is explicit, not automatic".
-export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile";
+export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile" | "read_state";
 export type SyncEventKind =
   | "contact.upsert"
   | "contact.delete"
@@ -353,7 +353,8 @@ export type SyncEventKind =
   | "message.delete"
   | "draft.upsert"
   | "draft.delete"
-  | "profile.upsert";
+  | "profile.upsert"
+  | "read_state.upsert";
 
 export type SignableSyncEvent = {
   type: "sudo_sync_event";
@@ -428,4 +429,11 @@ export type ChatSummary = {
   state: "quiet" | "draft" | "sealed";
   lastLine: string;
   fingerprint?: string;
+  // Count of messages in this conversation strictly newer than the
+  // local read_state.last_read_at, excluding tombstoned rows and
+  // own-sent messages. 0 means there is a read pointer and no
+  // unread peer messages; undefined means we haven't computed it
+  // (e.g. caller didn't ask) and should be treated the same as 0
+  // for rendering purposes.
+  unreadCount?: number;
 };

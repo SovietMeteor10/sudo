@@ -7,6 +7,7 @@ import type {
   LocalEvent,
   LocalIdentityRecord,
   LocalMessage,
+  LocalReadState,
   LocalSetting,
   LocalStateSnapshot,
   LocalStorageStatus,
@@ -171,6 +172,11 @@ export type ConversationSummary = {
   lastLine: string;
   lastAt: string;
   fingerprint?: string;
+  // Number of incoming, non-tombstoned messages strictly newer than
+  // the per-conversation last_read_at. Own sent messages and
+  // tombstones never count. If no read_state row exists yet, every
+  // incoming non-tombstone message in that conversation is unread.
+  unreadCount: number;
 };
 
 // Build a chat list keyed by conversation partner using only the signed-in
@@ -178,8 +184,14 @@ export type ConversationSummary = {
 export async function listConversations(ownerCanonicalId: string): Promise<ConversationSummary[]> {
   const messages = await listLocalMessages(ownerCanonicalId);
   const contacts = await listContacts(ownerCanonicalId);
+  const readStates = await listReadStates(ownerCanonicalId);
+  const lastReadByConversation = new Map<string, number>();
+  for (const row of readStates) {
+    const t = Date.parse(row.last_read_at);
+    if (Number.isFinite(t)) lastReadByConversation.set(row.conversation_id, t);
+  }
 
-  type Acc = { canonical: string; handle: string; lastLine: string; lastAt: string; fingerprint?: string };
+  type Acc = { canonical: string; handle: string; lastLine: string; lastAt: string; fingerprint?: string; unreadCount: number };
   const byPartner = new Map<string, Acc>();
 
   for (const message of messages) {
@@ -192,10 +204,26 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
       canonical: partner,
       handle: existing?.handle ?? "(unknown)",
       lastLine: typeof message.deleted_at === "string" ? "message deleted" : previewLine(message.body),
-      lastAt: message.updated_at || message.created_at
+      lastAt: message.updated_at || message.created_at,
+      unreadCount: existing?.unreadCount ?? 0
     };
+    // Unread count: count incoming, non-tombstoned messages strictly
+    // newer than last_read_at. We compute this per-message so the
+    // count survives no matter how the messages were iterated.
+    const isIncoming = message.sender_canonical_id !== ownerCanonicalId;
+    if (isIncoming && typeof message.deleted_at !== "string") {
+      const lastRead = lastReadByConversation.get(message.conversation_id);
+      const msgAt = Date.parse(message.created_at);
+      if (Number.isFinite(msgAt) && (lastRead === undefined || msgAt > lastRead)) {
+        candidate.unreadCount = (existing?.unreadCount ?? 0) + 1;
+      }
+    }
     if (existing === undefined || existing.lastAt < candidate.lastAt) {
       byPartner.set(partner, { ...existing, ...candidate, handle: existing?.handle ?? candidate.handle });
+    } else if (candidate.unreadCount > (existing.unreadCount ?? 0)) {
+      // We're not promoting the row (an older message), but we still
+      // need to bump the unread count if this is an unread incoming.
+      existing.unreadCount = candidate.unreadCount;
     }
   }
 
@@ -210,7 +238,8 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
         handle: contact.handle,
         lastLine: "",
         lastAt: contact.updated_at ?? contact.added_at ?? "",
-        fingerprint: contact.fingerprint
+        fingerprint: contact.fingerprint,
+        unreadCount: 0
       });
     } else {
       existing.handle = contact.handle || existing.handle;
@@ -301,6 +330,60 @@ export async function putBackfillState(state: LocalBackfillState): Promise<void>
 export async function listPendingBackfills(ownerCanonicalId: string): Promise<LocalBackfillState[]> {
   const rows = await getAllByIndex<LocalBackfillState>("backfill_state", "by_owner", ownerCanonicalId);
   return rows.filter((row) => row.status === "pending" || row.status === "failed");
+}
+
+// ---- read_state helpers ----
+
+export async function getReadState(
+  ownerCanonicalId: string,
+  conversationId: string
+): Promise<LocalReadState | null> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("read_state", "readonly");
+    const req = tx.objectStore("read_state").get([ownerCanonicalId, conversationId]);
+    req.onsuccess = () => resolve((req.result as LocalReadState) ?? null);
+    req.onerror = () => reject(req.error ?? new Error("read_state read failed"));
+  });
+}
+
+export async function listReadStates(ownerCanonicalId: string): Promise<LocalReadState[]> {
+  return getAllByIndex<LocalReadState>("read_state", "by_owner", ownerCanonicalId);
+}
+
+// Monotonic merge: newer last_read_at wins, identical or older is a
+// no-op. Returns the row that was ultimately stored (existing or new)
+// so callers can branch on whether anything changed (used by the
+// broadcast wrapper to skip a redundant sync POST on idempotent
+// replays). Owner stamping is enforced so a cross-account event can
+// never bleed into another user's row.
+export async function upsertReadStateMonotonic(
+  ownerCanonicalId: string,
+  patch: { conversation_id: string; last_read_message_id?: string; last_read_at: string }
+): Promise<{ row: LocalReadState; written: boolean }> {
+  const existing = await getReadState(ownerCanonicalId, patch.conversation_id);
+  if (existing !== null && Date.parse(existing.last_read_at) >= Date.parse(patch.last_read_at)) {
+    return { row: existing, written: false };
+  }
+  const next: LocalReadState = {
+    owner_canonical_id: ownerCanonicalId,
+    conversation_id: patch.conversation_id,
+    last_read_at: patch.last_read_at,
+    updated_at: patch.last_read_at
+  };
+  if (typeof patch.last_read_message_id === "string" && patch.last_read_message_id.length > 0) {
+    next.last_read_message_id = patch.last_read_message_id;
+  } else if (typeof existing?.last_read_message_id === "string") {
+    // Preserve the pointer from a prior write that did have one — the
+    // current patch may have been by timestamp only.
+    next.last_read_message_id = existing.last_read_message_id;
+  }
+  const db = await openLocalDb();
+  const tx = db.transaction("read_state", "readwrite");
+  tx.objectStore("read_state").put(next);
+  await txDone(tx);
+  broadcastLocalStateChange("read_state", ownerCanonicalId);
+  return { row: next, written: true };
 }
 
 export async function revokeTrustedDevice(deviceId: string): Promise<void> {

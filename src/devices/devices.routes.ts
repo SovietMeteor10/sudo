@@ -544,6 +544,7 @@ function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "message") return kind === "message.upsert" || kind === "message.delete";
   if (slice === "draft") return kind === "draft.upsert" || kind === "draft.delete";
   if (slice === "profile") return kind === "profile.upsert";
+  if (slice === "read_state") return kind === "read_state.upsert";
   return false;
 }
 

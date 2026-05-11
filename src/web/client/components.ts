@@ -852,12 +852,22 @@ function renderChat(chat: ChatSummary): HTMLElement {
   row.dataset["chatCanonical"] = canonical;
   row.dataset["chatHandle"] = chat.handle;
   if (chat.fingerprint !== undefined) row.dataset["chatFingerprint"] = chat.fingerprint;
+  const unread = typeof chat.unreadCount === "number" && chat.unreadCount > 0 ? chat.unreadCount : 0;
+  if (unread > 0) row.classList.add("chat-row--unread");
 
   const handle = document.createElement("div");
   handle.className = "chat-row__handle";
   handle.textContent = chat.handle;
-
   row.append(handle);
+
+  if (unread > 0) {
+    const badge = document.createElement("span");
+    badge.className = "chat-row__unread";
+    badge.dataset["unreadCount"] = String(unread);
+    badge.setAttribute("aria-label", `${unread} unread message${unread === 1 ? "" : "s"}`);
+    badge.textContent = unread > 99 ? "99+" : String(unread);
+    row.append(badge);
+  }
 
   if (chat.lastLine && chat.lastLine.length > 0) {
     const preview = document.createElement("div");

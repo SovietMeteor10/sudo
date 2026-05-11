@@ -109,6 +109,21 @@ export type LocalBackfillState = {
   slice_progress?: { [slice: string]: number };
 };
 
+// Per-conversation read marker, scoped by owner so two accounts in
+// the same browser don't share unread state. last_read_at is the
+// authoritative monotonic clock: a newer read on any device wins,
+// older replays are dropped. last_read_message_id is a nice-to-have
+// pointer for stable ordering when two messages share a timestamp.
+// updated_at mirrors last_read_at for symmetry with other slices'
+// merge-by-updated_at logic.
+export type LocalReadState = {
+  owner_canonical_id: string;
+  conversation_id: string;
+  last_read_message_id?: string;
+  last_read_at: string;
+  updated_at: string;
+};
+
 export type LocalCryptoAccountRecord = {
   canonical_id: string;
   handle: string;
