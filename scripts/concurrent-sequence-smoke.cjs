@@ -244,7 +244,13 @@ async function blastEvents(page, owner, count) {
   // but we still verify no inserts were silently dropped. The count
   // of distinct origin_device_seq for our device should equal the
   // count of successful events fired plus the baseline.
-  if (fs.existsSync(DB_PATH) && baselineSeq.deviceId) {
+  // Skip the on-disk density check when running against a remote
+  // BASE — DB_PATH points at the local dev sqlite, which doesn't
+  // see prod's writes and would report a false "sparse sequence"
+  // fail. Phase 4 (zero sequence_regression) is the meaningful
+  // assertion either way.
+  const isLocalBase = /^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(BASE);
+  if (isLocalBase && fs.existsSync(DB_PATH) && baselineSeq.deviceId) {
     try {
       const raw = execFileSync("sqlite3", [DB_PATH, `SELECT origin_device_seq FROM device_sync_log WHERE owner_canonical_id='${canonical}' AND origin_device_id='${baselineSeq.deviceId}' ORDER BY origin_device_seq ASC`], { encoding: "utf8" });
       const seqs = raw.trim().split("\n").map((s) => Number(s)).filter((n) => Number.isFinite(n));
@@ -268,7 +274,7 @@ async function blastEvents(page, owner, count) {
       console.warn("could not inspect device_sync_log:", error instanceof Error ? error.message : error);
     }
   } else {
-    ok(`5. skipped server-side check (no local sqlite or missing device id)`);
+    ok(`5. skipped server-side density check (remote BASE or no local sqlite)`);
   }
 
   await browser.close();
