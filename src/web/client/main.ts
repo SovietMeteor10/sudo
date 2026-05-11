@@ -246,6 +246,12 @@ const pairingCardExpires = getRequiredElement("pairing-card-expires");
 const pairingCardCancel = getRequiredButton("pairing-card-cancel");
 const pairingCardQr = getRequiredElement("pairing-card-qr");
 const pairingCardSuccess = getRequiredElement("pairing-card-success");
+const devicePassphrasePrompt = getRequiredElement("device-passphrase-prompt");
+const devicePassphraseHint = getRequiredElement("device-passphrase-prompt-hint");
+const devicePassphraseInput = getRequiredInput("device-passphrase-input");
+const devicePassphraseFeedback = getRequiredElement("device-passphrase-prompt-feedback");
+const devicePassphraseCancel = getRequiredButton("device-passphrase-cancel");
+const devicePassphraseSubmit = getRequiredButton("device-passphrase-submit");
 const linkDeviceDialog = getRequiredDialog("link-device-dialog");
 const linkDeviceForm = getRequiredForm("link-device-form");
 const linkDeviceCode = getRequiredInput("link-device-code");
@@ -285,6 +291,12 @@ let activePairingCode: string | null = null;
 let activePairingToken: string | null = null;
 let activePairingExpiresAt: string | null = null;
 let pairingExpiresInterval: number | null = null;
+// When the user clicks a device action (link / revoke) while the
+// in-memory crypto account is locked, we stash the action here and
+// show the inline passphrase prompt. On successful unlock the action
+// is replayed so the user doesn't have to click twice.
+type PendingDeviceAction = { type: "link" } | { type: "revoke"; deviceId: string };
+let pendingDeviceAction: PendingDeviceAction | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -653,6 +665,21 @@ deviceLinkStart.addEventListener("click", () => {
   void startPairingFlow();
 });
 
+devicePassphraseCancel.addEventListener("click", () => {
+  hideDevicePassphrasePrompt();
+});
+
+devicePassphraseSubmit.addEventListener("click", () => {
+  void submitDevicePassphrase();
+});
+
+devicePassphraseInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void submitDevicePassphrase();
+  }
+});
+
 pairingCardCancel.addEventListener("click", () => {
   void cancelActivePairing();
 });
@@ -777,9 +804,13 @@ devicesCancel.addEventListener("click", () => {
 
 // Native <dialog> "close" fires for both the cancel button and Esc.
 // Tear down the live-refresh interval here so any close path
-// (cancel, Esc, programmatic close) drops the timer.
+// (cancel, Esc, programmatic close) drops the timer. Also reset
+// the inline panels so reopening the dialog never reveals a stale
+// pairing code or a half-typed passphrase.
 devicesDialog.addEventListener("close", () => {
   stopDevicePanelLivePoll();
+  hideDevicePassphrasePrompt();
+  void cancelActivePairing({ silent: true });
 });
 
 // ----- feed tabs -----
@@ -2335,14 +2366,68 @@ async function unlockBrowserCryptoAccountByHandle(handle: string, passphrase: st
   return unlockBrowserCryptoAccount(selected.canonical_id, passphrase);
 }
 
+// Inline passphrase prompt inside the devices dialog. The user is
+// already signed in (identity restored from the session token) but
+// the in-memory crypto account is locked — typically after a page
+// reload. We collect the passphrase here, unlock in place, and
+// replay whichever device action they originally clicked.
+function showDevicePassphrasePrompt(reason: string): void {
+  devicePassphraseHint.textContent = `enter your passphrase to ${reason}.`;
+  devicePassphraseFeedback.textContent = "";
+  devicePassphraseInput.value = "";
+  devicePassphrasePrompt.hidden = false;
+  // Defer focus so a click on the triggering button doesn't steal it.
+  window.setTimeout(() => devicePassphraseInput.focus(), 0);
+  devicePanelFeedback.textContent = "";
+}
+
+function hideDevicePassphrasePrompt(): void {
+  devicePassphrasePrompt.hidden = true;
+  devicePassphraseInput.value = "";
+  devicePassphraseFeedback.textContent = "";
+  pendingDeviceAction = null;
+}
+
+async function submitDevicePassphrase(): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const passphrase = devicePassphraseInput.value;
+  if (passphrase.length === 0) {
+    devicePassphraseFeedback.textContent = "enter your passphrase";
+    return;
+  }
+  devicePassphraseSubmit.disabled = true;
+  devicePassphraseFeedback.textContent = "unlocking…";
+  try {
+    const account = await unlockBrowserCryptoAccountByHandle(
+      currentIdentityDocument.canonical_id,
+      passphrase
+    );
+    currentCryptoAccount = account;
+    const pending = pendingDeviceAction;
+    hideDevicePassphrasePrompt();
+    if (pending?.type === "link") {
+      await startPairingFlow();
+    } else if (pending?.type === "revoke") {
+      await revokeDevice(pending.deviceId);
+    }
+  } catch (error) {
+    devicePassphraseFeedback.textContent =
+      error instanceof Error ? error.message : "could not unlock account";
+  } finally {
+    devicePassphraseSubmit.disabled = false;
+  }
+}
+
 // Existing-device side of link-existing-account. Generates a pairing
 // code, posts the user's encrypted account bundle into the pairing
 // channel (wrapped with PBKDF2(pairing_code) so the server only ever
 // sees opaque ciphertext), and renders the visible pairing card with
 // code, URL, expiry countdown, and cancel.
 async function startPairingFlow(): Promise<void> {
-  if (currentIdentityDocument === null || currentCryptoAccount === null) {
-    devicePanelFeedback.textContent = "unlock your account first";
+  if (currentIdentityDocument === null) return;
+  if (currentCryptoAccount === null) {
+    pendingDeviceAction = { type: "link" };
+    showDevicePassphrasePrompt("link another device");
     return;
   }
   // Pull the current crypto_account record (the one already stored
@@ -3067,7 +3152,8 @@ async function revokeDevice(deviceId: string): Promise<void> {
   // previous one. resolveActiveMembership on the server then
   // returns null and /sync GETs return 403.
   if (currentCryptoAccount === null) {
-    devicePanelFeedback.textContent = "unlock your account first";
+    pendingDeviceAction = { type: "revoke", deviceId };
+    showDevicePassphrasePrompt("revoke this device");
     return;
   }
 
@@ -4535,8 +4621,13 @@ function setAccountMenuOpen(open: boolean): void {
 function openDevicesDialog(): void {
   // Force a fresh render on open: the cached signature might be
   // stale if the user reloaded or signed in as a different account
-  // since the last open.
+  // since the last open. Also reset the inline passphrase + pairing
+  // panels — neither should ever be visible by default; both surface
+  // only after the user takes an action that requires them.
   lastDevicePanelSignature = null;
+  hideDevicePassphrasePrompt();
+  void cancelActivePairing({ silent: true });
+  devicePanelFeedback.textContent = "";
   void refreshDevicePanel();
   if (!devicesDialog.open) devicesDialog.showModal();
   startDevicePanelLivePoll();
@@ -4630,11 +4721,24 @@ async function openAccountDialog(): Promise<void> {
 
   // Visual fingerprint grid. Use the document's signed fingerprint if
   // it carries one, otherwise derive from the fingerprint hex we
-  // already have. Either way the user sees a deterministic glyph
-  // unique to their public key.
-  const grid = identity.visual_fingerprint ?? gridFromFingerprintHex(fingerprintHex);
-  accountCardFingerprintGrid.replaceChildren(renderFingerprintGrid(grid));
-  accountCardFingerprintText.textContent = `${fingerprintHex.slice(0, 4)}-${fingerprintHex.slice(4, 8)}-${fingerprintHex.slice(8, 12)}-${fingerprintHex.slice(12, 16)}`;
+  // already have. If neither is available (defensive — the dialog
+  // shouldn't open without a fingerprint), hide both the icon slot
+  // and the text line rather than show an empty/garbled glyph.
+  let grid = identity.visual_fingerprint ?? null;
+  if (grid === null && fingerprintHex.length >= 32) {
+    try { grid = gridFromFingerprintHex(fingerprintHex); } catch { grid = null; }
+  }
+  if (grid !== null) {
+    accountCardFingerprintGrid.replaceChildren(renderFingerprintGrid(grid));
+    accountCardFingerprintGrid.hidden = false;
+    accountCardFingerprintText.hidden = false;
+    accountCardFingerprintText.textContent = `${fingerprintHex.slice(0, 4)}-${fingerprintHex.slice(4, 8)}-${fingerprintHex.slice(8, 12)}-${fingerprintHex.slice(12, 16)}`;
+  } else {
+    accountCardFingerprintGrid.replaceChildren();
+    accountCardFingerprintGrid.hidden = true;
+    accountCardFingerprintText.hidden = true;
+    accountCardFingerprintText.textContent = "";
+  }
 
   await Promise.all([
     refreshAccountBio(identity.canonical_id),

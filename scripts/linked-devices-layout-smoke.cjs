@@ -179,6 +179,20 @@ async function collectAccountOnPage(page, code) {
     ok(`5. default surface free of "locked" / internal terminology`);
   }
 
+  // ===== Whole dialog (including feedback row) must never carry
+  //       "unlock your account first" copy. The product no longer has
+  //       a user-facing lock concept; this string blocked devices
+  //       management for signed-in users on prod. =====
+  const dialogText = await pageA.evaluate(() => {
+    const dlg = document.getElementById("devices-dialog");
+    return (dlg?.textContent ?? "").toLowerCase();
+  });
+  if (dialogText.includes("unlock your account first")) {
+    fail("5b.unlock-copy", `devices dialog still contains 'unlock your account first'`);
+  } else {
+    ok(`5b. devices dialog free of 'unlock your account first' copy`);
+  }
+
   // ===== Click "link another device" — pairing card appears =====
   await pageA.evaluate(() => {
     document.getElementById("device-link-start")?.click();
@@ -200,7 +214,38 @@ async function collectAccountOnPage(page, code) {
   } else {
     ok(`6. 'link another device' reveals pairing card with code ${afterClick.codeText}`);
   }
-  const pairingCode = afterClick.codeText;
+
+  // ===== Close + reopen: pairing card must NOT persist across opens =====
+  // Visible passcode panel reserving space (or showing a stale code)
+  // every time devices dialog opened was the live regression. Verify
+  // the panel hides on close and stays hidden on the next open.
+  await pageA.evaluate(() => document.getElementById("devices-cancel")?.click());
+  await waitFor(pageA, () => document.getElementById("devices-dialog")?.open !== true);
+  await openDevicesDialog(pageA);
+  const reopened = await pageA.evaluate(() => {
+    const card = document.getElementById("pairing-card");
+    return {
+      hidden: card instanceof HTMLElement ? card.hidden : null,
+      codeText: document.getElementById("pairing-card-code")?.textContent?.trim() ?? ""
+    };
+  });
+  if (reopened.hidden !== true || reopened.codeText.length > 0) {
+    fail("6b.reopen-hidden", `pairing card persisted after reopen: ${JSON.stringify(reopened)}`);
+  } else {
+    ok(`6b. pairing card hidden after close + reopen`);
+  }
+  // Re-create a code for the rest of the flow.
+  await pageA.evaluate(() => document.getElementById("device-link-start")?.click());
+  if (!await waitFor(pageA, () => {
+    const card = document.getElementById("pairing-card");
+    const code = document.getElementById("pairing-card-code")?.textContent?.trim() ?? "";
+    return card instanceof HTMLElement && !card.hidden && /^[0-9A-F]{6}-[0-9A-F]{6}$/.test(code);
+  }, 15000)) {
+    fail("6c.regen", "could not regenerate pairing code after reopen"); throw new Error();
+  }
+  const refreshedCode = await pageA.evaluate(() => document.getElementById("pairing-card-code")?.textContent?.trim() ?? "");
+  ok(`6c. fresh pairing code after reopen: ${refreshedCode}`);
+  const pairingCodeForPair = refreshedCode;
 
   // ===== Pair a second device =====
   const ctxB = await browser.createBrowserContext();
@@ -208,7 +253,7 @@ async function collectAccountOnPage(page, code) {
   await pageB.setViewport({ width: 980, height: 820 });
   pageB.on("pageerror", (err) => console.log("PAGEB-ERR>", err.message));
   await pageB.goto(BASE + "/", { waitUntil: "networkidle0" });
-  if (!await collectAccountOnPage(pageB, pairingCode)) {
+  if (!await collectAccountOnPage(pageB, pairingCodeForPair)) {
     fail("7.b-signed-in", "second device did not reach signed-in"); throw new Error();
   }
   ok(`7. second device linked + signed in`);

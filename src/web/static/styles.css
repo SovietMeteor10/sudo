@@ -462,6 +462,35 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
+/* Inline passphrase prompt shown inside the linked-devices dialog
+   when the user is signed in (identity restored) but the in-memory
+   crypto account is locked — typically after a page reload. Replaces
+   the legacy "unlock your account first" copy. */
+.device-passphrase-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #101211;
+}
+
+.device-passphrase-prompt__hint {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.device-passphrase-prompt__feedback {
+  font-size: 12px;
+}
+
+.device-passphrase-prompt__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* Pairing card shown inside the linked-devices dialog after the
    user creates a pairing code. Holds the code, the URL the new
    device can navigate to, an expiry countdown, and a cancel button.
@@ -1451,11 +1480,13 @@ body[data-auth-state="auth-restore"] .landing {
   gap: 6px;
 }
 
-/* Fingerprint grid */
+/* Fingerprint grid. Default layout is inline (flex/grid sibling)
+   so it sits where its parent places it. The lookup/search rows
+   below position theirs absolutely against their relative parent
+   (.lookup-card / .search-result both have position: relative)
+   to keep the historical "icon hugs the left rail" look. Anywhere
+   else (e.g. the account dialog) the grid renders inline. */
 .identity-fingerprint-grid {
-  position: absolute;
-  top: 11px;
-  left: 14px;
   width: 20px;
   height: 20px;
   display: grid;
@@ -1463,6 +1494,13 @@ body[data-auth-state="auth-restore"] .landing {
   grid-template-rows: repeat(8, 1fr);
   border: 1px solid var(--line);
   background: #050605;
+}
+
+.lookup-card > .identity-fingerprint-grid,
+.search-result > .identity-fingerprint-grid {
+  position: absolute;
+  top: 11px;
+  left: 14px;
 }
 
 .identity-fingerprint-grid__cell {

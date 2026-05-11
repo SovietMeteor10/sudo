@@ -114,6 +114,39 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   if (!layout.fpRightOfHandle) fail("3c.fp-position", "fingerprint icon is not to the right of the handle");
   else ok(`3c. fingerprint icon is positioned to the right of the handle`);
 
+  // ===== Header must contain no fingerprint/icon child =====
+  // Regression guard for the absolute-positioned grid escaping into
+  // the dialog title (top:11px,left:14px overlap). Both the title
+  // element AND every ancestor up to the dialog must have no
+  // .identity-fingerprint-grid descendant other than the one inside
+  // .account-card__header.
+  const headerCheck = await page.evaluate(() => {
+    const title = document.getElementById("account-title");
+    if (title === null) return { ok: false, reason: "no title" };
+    if (title.querySelector(".identity-fingerprint-grid")) {
+      return { ok: false, reason: "title contains identity-fingerprint-grid" };
+    }
+    // Geometric check: fingerprint must NOT overlap the dialog title
+    // rect. Pre-fix the absolute grid sat at top:11/left:14 which
+    // overlaps the title.
+    const titleRect = title.getBoundingClientRect();
+    const fp = document.getElementById("account-card-fingerprint-grid");
+    if (fp === null) return { ok: false, reason: "no fp grid" };
+    const fpRect = fp.getBoundingClientRect();
+    const overlap = !(fpRect.right <= titleRect.left
+      || fpRect.left >= titleRect.right
+      || fpRect.bottom <= titleRect.top
+      || fpRect.top >= titleRect.bottom);
+    return { ok: true, overlap, titleRect, fpRect };
+  });
+  if (!headerCheck.ok) {
+    fail("3d.header-children", headerCheck.reason);
+  } else if (headerCheck.overlap) {
+    fail("3d.header-overlap", `fingerprint icon overlaps the dialog title rect (title=${JSON.stringify(headerCheck.titleRect)} fp=${JSON.stringify(headerCheck.fpRect)})`);
+  } else {
+    ok(`3d. header contains no fingerprint child and does not overlap the title rect`);
+  }
+
   // ===== Long handle truncates visually but preserves full value =====
   const fullHandle = `@${handle}`;
   if (layout.handleDisplayedText !== fullHandle) {

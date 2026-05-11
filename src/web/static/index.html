@@ -185,6 +185,23 @@
         <button class="text-button" id="device-link-start" type="button">link another device</button>
       </div>
 
+      <section class="device-passphrase-prompt" id="device-passphrase-prompt" hidden aria-labelledby="device-passphrase-prompt-hint">
+        <div class="device-passphrase-prompt__hint" id="device-passphrase-prompt-hint">enter your passphrase to manage devices.</div>
+        <label class="sr-only" for="device-passphrase-input">account passphrase</label>
+        <input
+          id="device-passphrase-input"
+          class="lookup__input"
+          type="password"
+          autocomplete="current-password"
+          spellcheck="false"
+        >
+        <div class="device-passphrase-prompt__feedback is-muted" id="device-passphrase-prompt-feedback" aria-live="polite"></div>
+        <div class="device-passphrase-prompt__actions">
+          <button class="text-button" id="device-passphrase-cancel" type="button">cancel</button>
+          <button class="text-button text-button--primary" id="device-passphrase-submit" type="button">unlock</button>
+        </div>
+      </section>
+
       <section class="pairing-card" id="pairing-card" hidden aria-labelledby="pairing-card-title">
         <div class="pairing-card__title" id="pairing-card-title">temporary passcode</div>
         <p class="pairing-card__hint">use this code only on your own device. it expires in 60 seconds.</p>
