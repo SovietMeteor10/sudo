@@ -20,7 +20,14 @@ type PairingTokenRow = {
   created_at: string;
   expires_at: string;
   consumed_at: string | null;
+  encrypted_account_bundle: string | null;
 };
+
+// Pairing TTL. Short on purpose: the user has the original device in
+// front of them; 5 minutes is plenty to cross the room and type the
+// code or scan the QR. Anything longer just widens the brute-force
+// window on the handoff endpoint.
+const PAIRING_TTL_MS = 5 * 60 * 1000;
 
 export function listTrustedDevices(ownerCanonicalId: string): TrustedDevice[] {
   const rows = db
@@ -85,7 +92,7 @@ export function getTrustedDevice(deviceId: string): TrustedDevice | null {
 
 export function createPairingToken(ownerCanonicalId: string): { pairing_code: string; pairing_token: string; expires_at: string } {
   const createdAt = new Date();
-  const expiresAt = new Date(createdAt.valueOf() + 15 * 60 * 1000);
+  const expiresAt = new Date(createdAt.valueOf() + PAIRING_TTL_MS);
   const pairingCode = createPairingCode();
   const pairingToken = randomUUID();
 
@@ -118,6 +125,64 @@ export function consumePairingCode(pairingCode: string): PairingTokenRow | null 
 
   db.prepare("UPDATE device_pairing_tokens SET consumed_at = ? WHERE pairing_token = ?").run(new Date().toISOString(), row.pairing_token);
   return row;
+}
+
+// Existing device deposits its encrypted account bundle on the
+// pairing row. The bundle is opaque ciphertext: the existing device
+// wraps its already-passphrase-encrypted crypto_account.encrypted_bundle_json
+// once more with PBKDF2(pairing_code) so the server can't read it
+// even with the row in hand. Returns false if the row is missing,
+// expired, or already consumed; the caller surfaces the appropriate
+// HTTP status.
+export function setPairingHandoffBundle(
+  pairingCode: string,
+  encryptedAccountBundle: string
+): { ok: true } | { ok: false; reason: "not_found" | "consumed" | "expired" } {
+  const row = db
+    .prepare("SELECT * FROM device_pairing_tokens WHERE pairing_code = ?")
+    .get(pairingCode) as PairingTokenRow | undefined;
+  if (!row) return { ok: false, reason: "not_found" };
+  if (row.consumed_at !== null) return { ok: false, reason: "consumed" };
+  if (Date.parse(row.expires_at) <= Date.now()) return { ok: false, reason: "expired" };
+  db.prepare("UPDATE device_pairing_tokens SET encrypted_account_bundle = ? WHERE pairing_token = ?")
+    .run(encryptedAccountBundle, row.pairing_token);
+  return { ok: true };
+}
+
+// Read-only fetch by pairing code. Does NOT consume — pair/complete
+// is what consumes. Returns null on any failure mode (missing,
+// expired, consumed, or no bundle deposited yet) so an attacker
+// brute-forcing the endpoint can't distinguish "wrong code" from
+// "code right but bundle not ready" from "code right but
+// already consumed".
+export function getPairingHandoffBundle(pairingCode: string): { encrypted_account_bundle: string; owner_canonical_id: string } | null {
+  const row = db
+    .prepare("SELECT * FROM device_pairing_tokens WHERE pairing_code = ?")
+    .get(pairingCode) as PairingTokenRow | undefined;
+  if (!row) return null;
+  if (row.consumed_at !== null) return null;
+  if (Date.parse(row.expires_at) <= Date.now()) return null;
+  if (row.encrypted_account_bundle === null) return null;
+  return {
+    encrypted_account_bundle: row.encrypted_account_bundle,
+    owner_canonical_id: row.owner_canonical_id
+  };
+}
+
+// Existing device cancels a pending pair before the new device picks
+// it up. Authenticated by the long pairing_token (only the existing
+// device knows it; pairing_code alone won't cancel). Idempotent —
+// already-consumed/missing rows return ok so the UI can call this
+// freely on dialog close.
+export function cancelPairingToken(pairingToken: string): boolean {
+  const row = db
+    .prepare("SELECT * FROM device_pairing_tokens WHERE pairing_token = ?")
+    .get(pairingToken) as PairingTokenRow | undefined;
+  if (!row) return false;
+  if (row.consumed_at !== null) return true;
+  db.prepare("UPDATE device_pairing_tokens SET consumed_at = ? WHERE pairing_token = ?")
+    .run(new Date().toISOString(), pairingToken);
+  return true;
 }
 
 type DeviceMembershipRow = {

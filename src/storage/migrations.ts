@@ -70,6 +70,12 @@ export function runMigrations(db: Database.Database): void {
   // table on first restart after this build lands; new installs
   // never create it (schema.ts no longer declares it).
   db.exec("DROP TABLE IF EXISTS dev_account_access");
+
+  // Step 8: link-existing-account flow adds an encrypted_account_bundle
+  // column on device_pairing_tokens so the existing device can hand
+  // its encrypted crypto_account through the pairing channel without
+  // the server ever seeing the plaintext keys.
+  addColumnIfMissing(db, "device_pairing_tokens", "encrypted_account_bundle", "TEXT");
 }
 
 function addColumnIfMissing(

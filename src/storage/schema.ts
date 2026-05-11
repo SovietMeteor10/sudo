@@ -144,8 +144,12 @@ export const schemaSql = `
     pairing_code TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    consumed_at TEXT
+    consumed_at TEXT,
+    encrypted_account_bundle TEXT
   );
+
+  CREATE INDEX IF NOT EXISTS device_pairing_tokens_code_idx
+    ON device_pairing_tokens(pairing_code);
 
   -- Canonical trust object for trusted devices: the SignedDeviceMembership
   -- doc, signed by the owner's identity key. trusted_devices above is an

@@ -27,11 +27,15 @@
   <section class="landing" id="landing-screen" aria-label="sudo sign in">
     <div class="landing__inner">
       <button class="landing__brand" id="landing-brand" type="button" aria-label="sudo">sudo</button>
-      <p class="landing__hint">your account keys live on this device. sign up creates them, sign in unlocks them.</p>
+      <p class="landing__hint">your account keys live on this device. sudo does not keep a copy. use another linked device or an encrypted backup if you switch devices.</p>
       <div class="landing__actions">
         <div class="landing__row">
-          <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
-          <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
+          <button class="auth-link" type="button" data-auth-action="signup">create account</button>
+          <button class="auth-link" type="button" data-auth-action="signin">unlock this device</button>
+        </div>
+        <div class="landing__row">
+          <button class="auth-link" type="button" data-auth-action="link">link existing account</button>
+          <button class="auth-link" type="button" data-auth-action="restore">restore from backup</button>
         </div>
       </div>
       <div class="landing__stale" id="landing-stale" role="status" aria-live="polite" hidden></div>
@@ -184,14 +188,45 @@
       <div class="signup-dialog__hint" id="local-storage-status">checking…</div>
       <div class="devices-panel__list" id="device-list"></div>
       <div class="devices-panel__actions">
-        <button class="text-button" id="device-link-start" type="button">create pairing code</button>
-        <input id="device-pairing-code" class="lookup__input" placeholder="enter pairing code">
-        <button class="text-button" id="device-link-complete" type="button">link device</button>
+        <button class="text-button" id="device-link-start" type="button">link another device</button>
       </div>
+
+      <section class="pairing-card" id="pairing-card" hidden aria-labelledby="pairing-card-title">
+        <div class="pairing-card__title" id="pairing-card-title">pairing code ready</div>
+        <p class="pairing-card__hint">on your other device choose <strong>link existing account</strong> on the landing screen and enter this code. only use this code with your own device.</p>
+        <div class="pairing-card__code" id="pairing-card-code" aria-label="pairing code"></div>
+        <div class="pairing-card__url is-muted" id="pairing-card-url"></div>
+        <div class="pairing-card__expires is-muted" id="pairing-card-expires" aria-live="polite"></div>
+        <div class="pairing-card__actions">
+          <button class="text-button" id="pairing-card-cancel" type="button">cancel pairing</button>
+        </div>
+      </section>
+
       <div class="devices-panel__feedback" id="device-panel-feedback" aria-live="polite"></div>
       <input id="backup-import-file" type="file" accept=".json,.sudo-backup.json,application/json" hidden>
       <div class="signup-dialog__actions">
         <button class="text-button" id="devices-cancel" type="button">close</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog signup-dialog--link" id="link-device-dialog" aria-labelledby="link-device-title">
+    <form class="signup-dialog__panel" id="link-device-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="link-device-title">link existing account</div>
+      <p class="signup-dialog__warning">on the device that already has your sudo account open <strong>account → settings → linked devices → link another device</strong>. enter the pairing code here.</p>
+
+      <label class="signup-dialog__label" for="link-device-code">pairing code</label>
+      <input id="link-device-code" class="lookup__input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDEF-123456">
+
+      <label class="signup-dialog__label" for="link-device-passphrase">account passphrase</label>
+      <input id="link-device-passphrase" class="lookup__input" type="password" autocomplete="new-password" spellcheck="false">
+
+      <div class="signup-dialog__hint" id="link-device-owner" aria-live="polite"></div>
+      <div class="signup-dialog__state" id="link-device-state" aria-live="polite"></div>
+
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="link-device-cancel" type="button">back</button>
+        <button class="text-button text-button--primary" id="link-device-submit" type="submit">link this device</button>
       </div>
     </form>
   </dialog>

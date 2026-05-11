@@ -9,16 +9,20 @@ import type {
   TrustedDevice
 } from "../protocol/types.js";
 import {
+  cancelPairingToken,
   consumePairingCode,
   createPairingToken,
   getLatestDeviceMembership,
+  getPairingHandoffBundle,
   insertDeviceSyncEvent,
   listDeviceMemberships,
   listTrustedDevices,
   revokeTrustedDevice,
+  setPairingHandoffBundle,
   upsertDeviceMembership,
   upsertTrustedDevice
 } from "./devices.store.js";
+import { checkPairHandoffRate } from "./pair-handoff-rate-limit.js";
 import {
   getRecipientCursor,
   insertSyncEvent,
@@ -142,6 +146,118 @@ devicesRouter.post("/pair/start", (request, response) => {
 
   const token = createPairingToken(body.owner_canonical_id);
   response.status(201).json({ ok: true, ...token });
+});
+
+// Resolve the remote IP we'll feed into the pair-handoff rate
+// limiter. Mirrors the pattern in identity-auth.handlers.ts —
+// trust X-Real-IP from nginx, fall back to request.ip / connection
+// peer for safety.
+function resolveRemoteIpForPair(request: import("express").Request): string {
+  const realIp = request.get("x-real-ip");
+  if (typeof realIp === "string" && realIp.length > 0) return realIp;
+  return request.ip ?? "";
+}
+
+function rejectIfPairRateLimited(
+  request: import("express").Request,
+  response: import("express").Response,
+  pairingCode: string | null
+): boolean {
+  const result = checkPairHandoffRate(resolveRemoteIpForPair(request), pairingCode);
+  if (result.ok) return false;
+  response.setHeader("Retry-After", String(result.retry_after_seconds));
+  response.status(429).json({
+    ok: false,
+    error: "rate_limited",
+    message: `too many pair-handoff requests; retry in ${result.retry_after_seconds}s`,
+    scope: result.scope,
+    retry_after_seconds: result.retry_after_seconds
+  });
+  return true;
+}
+
+// POST /api/devices/pair/handoff
+// Body: { pairing_code, encrypted_account_bundle }
+//
+// Existing device pushes its encrypted crypto_account bundle into
+// the pairing channel. The bundle is opaque to the server: the
+// existing device wraps the already-passphrase-encrypted bundle
+// once more with PBKDF2(pairing_code) before posting. The server's
+// only role is relay + rate-limit + TTL.
+devicesRouter.post("/pair/handoff", (request, response) => {
+  const body = request.body as { pairing_code?: unknown; encrypted_account_bundle?: unknown };
+  if (typeof body.pairing_code !== "string" || typeof body.encrypted_account_bundle !== "string") {
+    if (rejectIfPairRateLimited(request, response, null)) return;
+    response.status(400).json({ ok: false, error: "invalid_handoff_payload" });
+    return;
+  }
+  if (rejectIfPairRateLimited(request, response, body.pairing_code)) return;
+  if (body.encrypted_account_bundle.length > 65536) {
+    // Belt-and-braces cap. The express body limit is 64kb; this
+    // mirrors it so a borderline body doesn't slip through and
+    // bloat the row indefinitely.
+    response.status(413).json({ ok: false, error: "bundle_too_large" });
+    return;
+  }
+  const result = setPairingHandoffBundle(body.pairing_code, body.encrypted_account_bundle);
+  if (!result.ok) {
+    if (result.reason === "not_found") response.status(404).json({ ok: false, error: "pairing_code_not_found" });
+    else if (result.reason === "consumed") response.status(410).json({ ok: false, error: "pairing_code_consumed" });
+    else response.status(410).json({ ok: false, error: "pairing_code_expired" });
+    return;
+  }
+  response.status(201).json({ ok: true });
+});
+
+// GET /api/devices/pair/handoff/:pairing_code
+//
+// New device fetches the encrypted bundle. Does NOT consume the
+// pairing code — pair/complete is what consumes. The 404-on-anything
+// behavior is intentional: an attacker brute-forcing this endpoint
+// can't tell "wrong code" from "code right but bundle not deposited
+// yet" from "code right but already consumed".
+devicesRouter.get("/pair/handoff/:pairing_code", (request, response) => {
+  const code = request.params.pairing_code;
+  if (typeof code !== "string" || code.length === 0) {
+    if (rejectIfPairRateLimited(request, response, null)) return;
+    response.status(400).json({ ok: false, error: "invalid_pairing_code" });
+    return;
+  }
+  if (rejectIfPairRateLimited(request, response, code)) return;
+  const handoff = getPairingHandoffBundle(code);
+  if (handoff === null) {
+    response.status(404).json({ ok: false, error: "pairing_handoff_not_found" });
+    return;
+  }
+  // Echo back the owner's canonical id and (if known to the registry)
+  // the handle, so the new device can show "linking @alice's account"
+  // before the user types the passphrase. Both are derivable from a
+  // valid pairing code anyway; no additional info leakage.
+  const identity = getIdentityByCanonicalId(handoff.owner_canonical_id);
+  response.json({
+    ok: true,
+    encrypted_account_bundle: handoff.encrypted_account_bundle,
+    owner_canonical_id: handoff.owner_canonical_id,
+    owner_handle: identity?.document.handle ?? null
+  });
+});
+
+// POST /api/devices/pair/cancel
+// Body: { pairing_token }
+//
+// Existing device cancels a pending pair before the new device picks
+// it up. Authenticated by the long pairing_token (only the existing
+// device knows it; pairing_code alone won't cancel). Idempotent — a
+// missing or already-consumed row returns ok: true so the UI can
+// fire-and-forget on dialog close.
+devicesRouter.post("/pair/cancel", (request, response) => {
+  const body = request.body as { pairing_token?: unknown };
+  if (typeof body.pairing_token !== "string" || body.pairing_token.length === 0) {
+    response.status(400).json({ ok: false, error: "invalid_pairing_token" });
+    return;
+  }
+  cancelPairingToken(body.pairing_token);
+  response.json({ ok: true });
 });
 
 devicesRouter.post("/pair/complete", (request, response) => {

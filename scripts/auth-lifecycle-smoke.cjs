@@ -84,20 +84,27 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   page.on("pageerror", (e) => consoleErrors.push(e.message));
 
   // ===== 1. Landing page =====
+  // Post-step-9 (link-existing-account): landing exposes 4 primary
+  // options: create account / unlock this device / link existing
+  // account / restore from backup. Restore is no longer hidden
+  // behind the signin dialog because we've made cross-device the
+  // primary path and "restore from backup" the secondary fallback.
   await page.goto(BASE + "/", { waitUntil: "networkidle0" });
   const landing = await page.evaluate(() => ({
     sudoText: /sudo/i.test(document.body.innerText),
     hasSignin: !!document.querySelector('.landing [data-auth-action="signin"]'),
     hasSignup: !!document.querySelector('.landing [data-auth-action="signup"]'),
-    hasRestoreOnLanding: !!document.querySelector('.landing [data-auth-action="restore"]'),
-    signinClickable: !!document.querySelector('.landing [data-auth-action="signin"]:not([disabled])'),
-    signupClickable: !!document.querySelector('.landing [data-auth-action="signup"]:not([disabled])')
+    hasLink: !!document.querySelector('.landing [data-auth-action="link"]'),
+    hasRestore: !!document.querySelector('.landing [data-auth-action="restore"]'),
+    allClickable: ["signin", "signup", "link", "restore"].every(
+      (a) => !!document.querySelector(`.landing [data-auth-action="${a}"]:not([disabled])`)
+    )
   }));
   if (!landing.sudoText) fail("landing", "page does not show 'sudo'");
-  else if (!landing.hasSignin || !landing.hasSignup) fail("landing", "missing sign in or sign up");
-  else if (landing.hasRestoreOnLanding) fail("landing", "restore button must not be on landing");
-  else if (!landing.signinClickable || !landing.signupClickable) fail("landing", "auth buttons not clickable");
-  else ok("1. landing shows sudo + sign in + sign up; no restore on landing");
+  else if (!landing.hasSignin || !landing.hasSignup || !landing.hasLink || !landing.hasRestore) {
+    fail("landing", `missing one of the four landing options: signin=${landing.hasSignin} signup=${landing.hasSignup} link=${landing.hasLink} restore=${landing.hasRestore}`);
+  } else if (!landing.allClickable) fail("landing", "one or more landing auth buttons not clickable");
+  else ok("1. landing shows the 4 primary options (create / unlock / link / restore)");
 
   // ===== 2. Create account success =====
   const handle = "lifecycle" + Date.now().toString().slice(-7);
@@ -530,27 +537,33 @@ const isHanging = (text) => /creating account|signing in|working\.\.\.|loading|r
   const linkResult = await page.evaluate(async () => {
     const startBtn = document.getElementById("device-link-start");
     if (!startBtn) return { ok: false, reason: "device-link-start button missing" };
-    // Clear any stale feedback (e.g. "device saved" from background sync)
-    // before pressing so we observe the new pairing-flow result only.
-    const codeInput = document.getElementById("device-pairing-code");
+    // Step 9 (link-existing-account) replaced the inline pairing-code
+    // input + manual link button with a self-contained pairing card.
+    // Clicking start opens the card; assert that the card surfaces
+    // a fresh pairing code within the 8s budget. The flow is async
+    // (server pair/start + bundle wrap + handoff POST) so we have
+    // to wait for the code to appear, not just the click to fire.
+    const codeNode = document.getElementById("pairing-card-code");
+    if (codeNode) codeNode.textContent = "";
     const feedback = document.getElementById("device-panel-feedback");
-    if (codeInput) codeInput.value = "";
     if (feedback) feedback.textContent = "";
     startBtn.click();
     const start = Date.now();
     while (Date.now() - start < 8000) {
-      const code = codeInput?.value ?? "";
+      const code = document.getElementById("pairing-card-code")?.textContent?.trim() ?? "";
       const fbText = feedback?.textContent ?? "";
-      if (code) return { ok: true, code, feedback: fbText };
-      if (/pairing code ready|pairing start failed|sign in first/i.test(fbText)) {
-        return { ok: !!code, feedback: fbText, code };
+      if (/^[0-9A-F]{6}-[0-9A-F]{6}$/.test(code)) {
+        return { ok: true, code, feedback: fbText };
+      }
+      if (/pairing start failed|sign in first|unlock your account first/i.test(fbText)) {
+        return { ok: false, feedback: fbText, code };
       }
       await new Promise((r) => setTimeout(r, 100));
     }
-    return { ok: false, reason: "device link did not respond within 8s" };
+    return { ok: false, reason: "pairing card did not surface a code within 8s" };
   });
   if (!linkResult.ok) fail("device-link", linkResult.reason || `no clear feedback: '${linkResult.feedback}'`);
-  else ok(`10. device link returned a pairing code: '${linkResult.code.slice(0, 16)}...'`);
+  else ok(`10. device link returned a pairing code: '${linkResult.code}'`);
 
   // ===== 11. Network timeout simulation: hang /api/devices/register =====
   await page.close();

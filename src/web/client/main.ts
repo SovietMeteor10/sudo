@@ -2,11 +2,15 @@ import { localIdentity } from "./data.js";
 import { BrowserPasskeyAccessProvider } from "./accessProviders.js";
 import {
   registerIdentityDocument,
+  cancelPairing,
   clearDiscoveryVote,
   createDiscoveryReaction,
   completeDevicePairing,
   deleteConnectionRelationship,
   createFeedPost,
+  fetchIdentityProfile,
+  fetchPairHandoffBundle,
+  postPairHandoffBundle,
   FeedPostError,
   getDiscoveryPost,
   getFeedThread,
@@ -79,7 +83,7 @@ import {
 } from "./localState.js";
 import { createEncryptedBackup, importEncryptedBackup, type EncryptedSudoBackup } from "./local/backup.js";
 import { gridFromFingerprintHex } from "./local/fingerprint.js";
-import { base64Url, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
+import { base64Url, base64UrlToBytes, randomBytes, deriveBackupKey, toBufferSource } from "./local/crypto.js";
 import {
   clearLocalDb,
   deleteLocalContact,
@@ -206,9 +210,20 @@ const localStateStatus = getRequiredElement("local-storage-status");
 const deviceCurrentStatus = getRequiredElement("device-current-status");
 const deviceList = getRequiredElement("device-list");
 const deviceLinkStart = getRequiredButton("device-link-start");
-const deviceLinkComplete = getRequiredButton("device-link-complete");
-const devicePairingCode = getRequiredInput("device-pairing-code");
 const devicePanelFeedback = getRequiredElement("device-panel-feedback");
+const pairingCard = getRequiredElement("pairing-card");
+const pairingCardCode = getRequiredElement("pairing-card-code");
+const pairingCardUrl = getRequiredElement("pairing-card-url");
+const pairingCardExpires = getRequiredElement("pairing-card-expires");
+const pairingCardCancel = getRequiredButton("pairing-card-cancel");
+const linkDeviceDialog = getRequiredDialog("link-device-dialog");
+const linkDeviceForm = getRequiredForm("link-device-form");
+const linkDeviceCode = getRequiredInput("link-device-code");
+const linkDevicePassphrase = getRequiredInput("link-device-passphrase");
+const linkDeviceOwner = getRequiredElement("link-device-owner");
+const linkDeviceState = getRequiredElement("link-device-state");
+const linkDeviceCancel = getRequiredButton("link-device-cancel");
+const linkDeviceSubmit = getRequiredButton("link-device-submit");
 const localMaintenanceFeedback = getRequiredElement("local-maintenance-feedback");
 const authActionButtons = [...document.querySelectorAll("[data-auth-action]")];
 const landingBrand = getRequiredButton("landing-brand");
@@ -237,6 +252,9 @@ let currentLookupSubscription: FeedSubscription | null = null;
 let currentNodeDocument: NodeCapabilityDocument | null = null;
 let currentDeviceId: string | null = null;
 let activePairingCode: string | null = null;
+let activePairingToken: string | null = null;
+let activePairingExpiresAt: string | null = null;
+let pairingExpiresInterval: number | null = null;
 let localChats: ChatSummary[] = [];
 const pendingAddedCanonicals = new Set<string>();
 const pendingAddedTimers = new Map<string, number>();
@@ -268,6 +286,31 @@ void refreshNodeDocument();
 void renderStreamWhenReady();
 void refreshDiscoveryPosts();
 void restoreStoredSession();
+
+// Auto-open the link-existing-account dialog if the page loaded with
+// ?pair=CODE in the URL. Lets the new device land directly on the
+// linking step from a QR scan or copied URL on the original device.
+void (async () => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const pair = params.get("pair");
+    if (pair && pair.length > 0) {
+      // Don't pre-open if the user is already signed in on this
+      // device — that suggests they accidentally re-loaded the
+      // pairing URL on the same browser. Show a clear note instead.
+      if (document.body.dataset.authState === "signed-in") {
+        flashFeedback("you are already signed in on this device.");
+      } else {
+        openLinkDeviceDialog(pair);
+      }
+      // Strip the pair= param so a reload doesn't keep popping the
+      // dialog after the user dismissed it.
+      const url = new URL(window.location.href);
+      url.searchParams.delete("pair");
+      window.history.replaceState(null, "", url.toString());
+    }
+  } catch { /* ignore */ }
+})();
 
 // Listen for sibling tabs (same owner) signalling local-state changes.
 // Cross-tab updates keep two open tabs of the same account in sync
@@ -513,20 +556,27 @@ deviceLinkStart.addEventListener("click", () => {
   void startPairingFlow();
 });
 
-deviceLinkComplete.addEventListener("click", () => {
-  void completePairingFlow();
+pairingCardCancel.addEventListener("click", () => {
+  void cancelActivePairing();
+});
+
+linkDeviceCancel.addEventListener("click", () => {
+  linkDeviceDialog.close();
+});
+
+linkDeviceForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void runLinkExistingAccount();
 });
 
 for (const button of authActionButtons) {
   if (!(button instanceof HTMLButtonElement)) continue;
   button.addEventListener("click", () => {
-    if (button.dataset["authAction"] === "signup") {
-      openSignupDialog();
-    } else if (button.dataset["authAction"] === "restore") {
-      openRestoreDialog();
-    } else {
-      openSigninDialog();
-    }
+    const action = button.dataset["authAction"];
+    if (action === "signup") openSignupDialog();
+    else if (action === "restore") openRestoreDialog();
+    else if (action === "link") openLinkDeviceDialog();
+    else openSigninDialog();
   });
 }
 
@@ -2094,60 +2144,325 @@ async function unlockBrowserCryptoAccountByHandle(handle: string, passphrase: st
   return unlockBrowserCryptoAccount(selected.canonical_id, passphrase);
 }
 
+// Existing-device side of link-existing-account. Generates a pairing
+// code, posts the user's encrypted account bundle into the pairing
+// channel (wrapped with PBKDF2(pairing_code) so the server only ever
+// sees opaque ciphertext), and renders the visible pairing card with
+// code, URL, expiry countdown, and cancel.
 async function startPairingFlow(): Promise<void> {
-  if (currentIdentityDocument === null) {
-    devicePanelFeedback.textContent = "sign in first";
-    return;
-  }
-
-  try {
-    const result = await startDevicePairing(currentIdentityDocument.canonical_id);
-    activePairingCode = result.pairing_code;
-    devicePairingCode.value = result.pairing_code;
-    devicePanelFeedback.textContent = `pairing code ready: ${result.pairing_code}`;
-    await refreshDevicePanel();
-  } catch (error) {
-    devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing start failed";
-  }
-}
-
-async function completePairingFlow(): Promise<void> {
   if (currentIdentityDocument === null || currentCryptoAccount === null) {
     devicePanelFeedback.textContent = "unlock your account first";
     return;
   }
+  // Pull the current crypto_account record (the one already stored
+  // in IndexedDB) so we can hand its encrypted_bundle_json to the
+  // pairing channel. The bundle is already encrypted under the
+  // user's account passphrase; we wrap it once more under the
+  // pairing code for transit.
+  let record;
+  try {
+    const accounts = await listCryptoAccounts();
+    record = accounts.find((account) => account.canonical_id === currentIdentityDocument!.canonical_id);
+  } catch {
+    record = undefined;
+  }
+  if (!record) {
+    devicePanelFeedback.textContent = "could not read local account; reload and try again";
+    return;
+  }
 
-  const pairingCode = devicePairingCode.value.trim() || (activePairingCode ?? "");
-  if (pairingCode.length === 0) {
-    devicePanelFeedback.textContent = "enter a pairing code";
+  let started;
+  try {
+    started = await startDevicePairing(currentIdentityDocument.canonical_id);
+  } catch (error) {
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing start failed";
+    return;
+  }
+
+  // Encrypt the inner (passphrase-encrypted) bundle once more with
+  // PBKDF2(pairing_code) so even an attacker who guesses the
+  // pairing code still has to crack the user's passphrase.
+  let outerCiphertext;
+  try {
+    outerCiphertext = await wrapBundleWithPairingCode(record.encrypted_bundle_json, started.pairing_code);
+  } catch (error) {
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "could not prepare bundle";
     return;
   }
 
   try {
-    const deviceId = await ensureCurrentDeviceId();
-    const device = buildTrustedDeviceRecord(currentIdentityDocument, currentCryptoAccount, deviceId);
-    const payload = await createEncryptedBootstrapPayload(device, pairingCode);
-    const result = await completeDevicePairing({
-      pairing_code: pairingCode,
-      device_id: device.device_id,
-      name: device.name,
-      device_public_key: device.device_public_key,
-      encrypted_bootstrap_payload: payload
-    });
-    await saveTrustedDevice(result.device);
-    await registerTrustedDevice(result.device);
-    activePairingCode = null;
-    devicePairingCode.value = "";
-    devicePanelFeedback.textContent = "device linked";
-    await refreshDevicePanel();
-    // The user just gained a recovery option. Drop the reminder
-    // banner and refresh the menu indicator immediately so the UI
-    // reflects the new posture without waiting for the next signin.
-    clearRecoveryReminderForCurrentAccount();
-    void refreshAccountMenuRecoveryIndicator();
+    await postPairHandoffBundle(started.pairing_code, outerCiphertext);
   } catch (error) {
-    devicePanelFeedback.textContent = error instanceof Error ? error.message : "pairing complete failed";
+    devicePanelFeedback.textContent = error instanceof Error ? error.message : "could not deposit bundle";
+    return;
   }
+
+  activePairingCode = started.pairing_code;
+  activePairingToken = started.pairing_token;
+  activePairingExpiresAt = started.expires_at;
+  renderPairingCard();
+  devicePanelFeedback.textContent = "";
+  await refreshDevicePanel();
+}
+
+function renderPairingCard(): void {
+  if (activePairingCode === null) {
+    pairingCard.hidden = true;
+    pairingCardCode.textContent = "";
+    pairingCardUrl.textContent = "";
+    pairingCardExpires.textContent = "";
+    if (pairingExpiresInterval !== null) {
+      window.clearInterval(pairingExpiresInterval);
+      pairingExpiresInterval = null;
+    }
+    return;
+  }
+  pairingCard.hidden = false;
+  pairingCardCode.textContent = activePairingCode;
+  const url = `${window.location.origin}/?pair=${encodeURIComponent(activePairingCode)}`;
+  pairingCardUrl.textContent = url;
+  const tickExpiry = () => {
+    if (activePairingExpiresAt === null) return;
+    const ms = Date.parse(activePairingExpiresAt) - Date.now();
+    if (ms <= 0) {
+      pairingCardExpires.textContent = "expired";
+      void cancelActivePairing();
+      return;
+    }
+    const seconds = Math.ceil(ms / 1000);
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    pairingCardExpires.textContent = `expires in ${m}:${String(s).padStart(2, "0")}`;
+  };
+  tickExpiry();
+  if (pairingExpiresInterval !== null) window.clearInterval(pairingExpiresInterval);
+  pairingExpiresInterval = window.setInterval(tickExpiry, 1000);
+}
+
+async function cancelActivePairing(): Promise<void> {
+  const token = activePairingToken;
+  activePairingCode = null;
+  activePairingToken = null;
+  activePairingExpiresAt = null;
+  renderPairingCard();
+  if (token !== null) {
+    await cancelPairing(token);
+  }
+  devicePanelFeedback.textContent = "pairing cancelled";
+  await refreshDevicePanel();
+}
+
+// New-device side. The user opens "link existing account" on the
+// landing screen, types the pairing code from their original device,
+// and enters the same passphrase that protects their crypto account.
+// We fetch the bundle, peel the outer (pairing-code) layer, store
+// the inner (passphrase-encrypted) bundle into IndexedDB, then run
+// the same unlock + challenge-flow signin path as a normal "unlock
+// this device". On success we sign a fresh SignedDeviceMembership
+// for THIS device's brand-new device id and complete the pairing on
+// the server so the original device's linked-devices list shows us.
+async function runLinkExistingAccount(): Promise<void> {
+  const pairingCode = linkDeviceCode.value.trim().toUpperCase();
+  const passphrase = linkDevicePassphrase.value;
+  if (pairingCode.length === 0 || passphrase.length === 0) {
+    linkDeviceState.textContent = "enter the pairing code and your account passphrase";
+    return;
+  }
+
+  linkDeviceState.textContent = "fetching encrypted account…";
+  let handoff;
+  try {
+    handoff = await fetchPairHandoffBundle(pairingCode);
+  } catch (error) {
+    linkDeviceState.textContent = error instanceof Error ? error.message : "fetch failed";
+    return;
+  }
+  if (handoff === null) {
+    linkDeviceState.textContent = "pairing code not found, expired, or already used";
+    return;
+  }
+
+  // Echo the resolved owner so the user can sanity-check before
+  // committing to the local store.
+  if (handoff.owner_handle) linkDeviceOwner.textContent = `linking ${handoff.owner_handle}`;
+
+  // Peel the outer (pairing-code) layer.
+  let innerEncryptedBundleJson: string;
+  try {
+    innerEncryptedBundleJson = await unwrapBundleWithPairingCode(handoff.encrypted_account_bundle, pairingCode);
+  } catch {
+    linkDeviceState.textContent = "could not decrypt the pairing payload (wrong code?)";
+    return;
+  }
+
+  // Fetch the signed identity document so the LocalCryptoAccountRecord
+  // carries the same identity_document_json a fresh signup would.
+  let identityDocument;
+  try {
+    identityDocument = await fetchIdentityProfile(handoff.owner_canonical_id);
+  } catch (error) {
+    linkDeviceState.textContent = error instanceof Error ? error.message : "could not fetch identity profile";
+    return;
+  }
+
+  // Verify the bundle decrypts with the passphrase BEFORE persisting
+  // so a wrong passphrase doesn't leave a broken record on this
+  // device. We do this by storing then attempting to unlock; on
+  // failure we delete what we wrote.
+  const now = new Date().toISOString();
+  const homeNode = identityDocument.home_node ?? window.location.origin;
+  const handle = identityDocument.handle;
+  const record = {
+    canonical_id: identityDocument.canonical_id,
+    handle,
+    home_node: homeNode,
+    identity_document_json: JSON.stringify(identityDocument),
+    encrypted_bundle_json: innerEncryptedBundleJson,
+    created_at: now,
+    updated_at: now
+  };
+  await storeBrowserCryptoAccount(record);
+  linkDeviceState.textContent = "verifying passphrase…";
+  let account;
+  try {
+    account = await unlockBrowserCryptoAccountByHandle(handle, passphrase);
+  } catch (error) {
+    // Wipe the half-written record so the user doesn't end up with
+    // a stuck account row that will never unlock with the
+    // passphrase they remember.
+    try {
+      const accounts = await listCryptoAccounts();
+      const stale = accounts.find((a) => a.canonical_id === identityDocument.canonical_id);
+      if (stale) {
+        // best-effort delete via direct IDB access — no helper exists
+        await new Promise<void>((resolve) => {
+          const req = indexedDB.open("sudo_local_state");
+          req.onsuccess = () => {
+            const db = req.result;
+            const tx = db.transaction("crypto_accounts", "readwrite");
+            tx.objectStore("crypto_accounts").delete(identityDocument.canonical_id);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          };
+          req.onerror = () => resolve();
+        });
+      }
+    } catch { /* ignore cleanup failure */ }
+    // Bad-passphrase from AES-GCM throws an OperationError with an
+    // empty message, so falling back on error.message would surface
+    // nothing useful. Treat any unlock failure as a passphrase
+    // problem unless it's a known specific error code.
+    const message = error instanceof Error ? error.message : "";
+    if (/stored account not found/i.test(message)) {
+      linkDeviceState.textContent = "linking failed: account record went missing on this device";
+    } else {
+      linkDeviceState.textContent = "wrong passphrase. enter the same passphrase your other device uses.";
+    }
+    return;
+  }
+
+  // Mint a server session via the challenge flow so the new device
+  // is properly signed in. mintServerSessionFromUnlockedAccount
+  // reuses the same path normal signin uses; it handles writing the
+  // bearer token to localStorage.
+  linkDeviceState.textContent = "minting session…";
+  try {
+    await mintServerSessionFromUnlockedAccount(account, identityDocument);
+  } catch (error) {
+    linkDeviceState.textContent = error instanceof Error ? error.message : "session mint failed";
+    return;
+  }
+
+  // Generate a fresh device id for THIS browser, sign a
+  // SignedDeviceMembership with the just-unlocked identity key, and
+  // complete the pairing on the server. The original device's linked-
+  // devices dialog now sees us; we now have an active device id we
+  // can use for trusted-device sync.
+  const deviceId = await ensureCurrentDeviceId();
+  const trustedDevice = buildTrustedDeviceRecord(identityDocument, account, deviceId);
+  const membership = await buildSelfSignedDeviceMembership(identityDocument, account, trustedDevice);
+  const bootstrap = await createEncryptedBootstrapPayload(trustedDevice, pairingCode);
+  try {
+    await completeDevicePairing({
+      pairing_code: pairingCode,
+      device_id: trustedDevice.device_id,
+      name: trustedDevice.name,
+      device_public_key: trustedDevice.device_public_key,
+      encrypted_bootstrap_payload: bootstrap,
+      ...(membership ? { signed_membership: membership } : {})
+    });
+  } catch (error) {
+    linkDeviceState.textContent = error instanceof Error ? error.message : "pair complete failed";
+    return;
+  }
+
+  await saveTrustedDevice(trustedDevice);
+  // Best-effort: register on server (the existing post-signin path
+  // also does this; failure here doesn't block sign-in).
+  try { await registerTrustedDevice(trustedDevice); } catch { /* ignore */ }
+
+  currentCryptoAccount = account;
+  currentDeviceId = deviceId;
+  const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identityDocument));
+  setCurrentIdentity(identityDocument, fingerprint);
+  setSigninState({ status: "signed_in", identity: identityDocument });
+  setSignedIn(handle);
+  setActiveCoordinator(account, deviceId);
+  startContactSyncPolling();
+
+  linkDeviceState.textContent = "";
+  linkDeviceCode.value = "";
+  linkDevicePassphrase.value = "";
+  linkDeviceOwner.textContent = "";
+  linkDeviceDialog.close();
+  flashFeedback("device linked. syncing…");
+}
+
+// PBKDF2(pairing_code) + AES-GCM wrapper around the (already
+// passphrase-encrypted) crypto_account bundle JSON. Mirrors the
+// envelope shape of createEncryptedBootstrapPayload so the new
+// device can decrypt with the same KDF parameters.
+async function wrapBundleWithPairingCode(innerJson: string, pairingCode: string): Promise<string> {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = await deriveBackupKey(pairingCode, salt, 120000);
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    new TextEncoder().encode(innerJson)
+  );
+  return JSON.stringify({
+    salt: base64Url(salt),
+    iv: base64Url(iv),
+    ciphertext: base64Url(ciphertext)
+  });
+}
+
+async function unwrapBundleWithPairingCode(envelopeJson: string, pairingCode: string): Promise<string> {
+  const envelope = JSON.parse(envelopeJson) as { salt: string; iv: string; ciphertext: string };
+  const salt = base64UrlToBytes(envelope.salt);
+  const iv = base64UrlToBytes(envelope.iv);
+  const ciphertext = base64UrlToBytes(envelope.ciphertext);
+  const key = await deriveBackupKey(pairingCode, salt, 120000);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: toBufferSource(iv) },
+    key,
+    toBufferSource(ciphertext)
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
+function openLinkDeviceDialog(prefilledCode?: string): void {
+  if (signupDialog.open) signupDialog.close();
+  if (signinDialog.open) signinDialog.close();
+  if (restoreDialog.open) restoreDialog.close();
+  linkDeviceCode.value = prefilledCode ? prefilledCode.toUpperCase() : "";
+  linkDevicePassphrase.value = "";
+  linkDeviceState.textContent = "";
+  linkDeviceOwner.textContent = "";
+  if (!linkDeviceDialog.open) linkDeviceDialog.showModal();
+  if (prefilledCode && prefilledCode.length > 0) linkDevicePassphrase.focus();
+  else linkDeviceCode.focus();
 }
 
 async function revokeDevice(deviceId: string): Promise<void> {

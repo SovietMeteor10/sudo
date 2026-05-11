@@ -442,6 +442,60 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
+/* Pairing card shown inside the linked-devices dialog after the
+   user creates a pairing code. Holds the code, the URL the new
+   device can navigate to, an expiry countdown, and a cancel button.
+   Visual emphasis is on the code itself (large monospace) so the
+   user can read it across the room. */
+.pairing-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: #101211;
+}
+
+.pairing-card__title {
+  font-size: 14px;
+}
+
+.pairing-card__hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.pairing-card__code {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft, var(--line));
+  background: #0a0c0b;
+  font-size: 22px;
+  letter-spacing: 0.12em;
+  text-align: center;
+  user-select: all;
+}
+
+.pairing-card__url {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+  user-select: all;
+}
+
+.pairing-card__expires {
+  font-size: 11px;
+}
+
+.pairing-card__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* Recovery reminder banner above the personal feed. Calm warning
    styling — soft border, muted background, no red panic colors.
    Sits inline above the stream so it scrolls naturally. Hidden by

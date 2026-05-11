@@ -166,6 +166,7 @@ export async function completeDevicePairing(input: {
   name: string;
   device_public_key: string;
   encrypted_bootstrap_payload: string;
+  signed_membership?: unknown;
 }): Promise<{ ok: true; device: TrustedDevice; pairing_code: string }> {
   const response = await fetchWithTimeout("/api/devices/pair/complete", {
     method: "POST",
@@ -182,6 +183,78 @@ export async function completeDevicePairing(input: {
   }
 
   throw new Error(body.error ?? `device pairing complete failed: ${response.status}`);
+}
+
+// New device fetches the existing device's encrypted account bundle
+// from the pairing channel. Server returns opaque ciphertext + the
+// owner's canonical id and (optionally) handle. Returns null if the
+// pairing code is unknown / expired / consumed / not yet deposited
+// — caller surfaces "wrong code" without needing to distinguish.
+export async function fetchPairHandoffBundle(pairingCode: string): Promise<
+  | { encrypted_account_bundle: string; owner_canonical_id: string; owner_handle: string | null }
+  | null
+> {
+  const response = await fetchWithTimeout(
+    `/api/devices/pair/handoff/${encodeURIComponent(pairingCode)}`,
+    { headers: { accept: "application/json" } }
+  );
+  if (response.status === 404) return null;
+  const body = await response.json() as {
+    ok?: boolean;
+    encrypted_account_bundle?: string;
+    owner_canonical_id?: string;
+    owner_handle?: string | null;
+    error?: string;
+  };
+  if (response.ok && body.ok && typeof body.encrypted_account_bundle === "string" && typeof body.owner_canonical_id === "string") {
+    return {
+      encrypted_account_bundle: body.encrypted_account_bundle,
+      owner_canonical_id: body.owner_canonical_id,
+      owner_handle: typeof body.owner_handle === "string" ? body.owner_handle : null
+    };
+  }
+  throw new Error(body.error ?? `pair handoff fetch failed: ${response.status}`);
+}
+
+// Existing device pushes its (doubly-encrypted) account bundle into
+// the pairing channel. Throws on rejection so the caller can surface
+// the failure to the user.
+export async function postPairHandoffBundle(pairingCode: string, encryptedAccountBundle: string): Promise<void> {
+  const response = await fetchWithTimeout("/api/devices/pair/handoff", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ pairing_code: pairingCode, encrypted_account_bundle: encryptedAccountBundle })
+  });
+  const body = await response.json().catch(() => ({})) as { ok?: boolean; error?: string };
+  if (!response.ok || !body.ok) {
+    throw new Error(body.error ?? `pair handoff post failed: ${response.status}`);
+  }
+}
+
+// Existing device cancels a pending pair (idempotent). Authenticated
+// by the long pairing_token, not the visible pairing_code.
+export async function cancelPairing(pairingToken: string): Promise<void> {
+  await fetchWithTimeout("/api/devices/pair/cancel", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({ pairing_token: pairingToken })
+  }).catch(() => { /* fire-and-forget on UI close */ });
+}
+
+// Resolve the IdentityDocument for a known canonical id. The new
+// device fetches this to populate the LocalCryptoAccountRecord
+// during link-existing-account so the restored install knows its
+// own handle, public keys, and signed identity blob.
+export async function fetchIdentityProfile(canonicalId: string): Promise<IdentityDocument> {
+  const response = await fetchWithTimeout(
+    `/api/identity/profiles/${encodeURIComponent(canonicalId)}`,
+    { headers: { accept: "application/json" } }
+  );
+  if (!response.ok) {
+    const errorBody = await readErrorBody(response);
+    throw new Error(errorBody.message);
+  }
+  return response.json() as Promise<IdentityDocument>;
 }
 
 export async function revokeTrustedDevice(ownerCanonicalId: string, deviceId: string): Promise<TrustedDevice> {
