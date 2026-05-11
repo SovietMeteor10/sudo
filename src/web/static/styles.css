@@ -2264,6 +2264,43 @@ body[data-auth-state="auth-restore"] .landing {
   color: var(--text);
 }
 
+.device-row__status {
+  margin-top: 2px;
+}
+
+.device-row__status--failed,
+.device-row__status--retry_pending {
+  color: var(--warn, #b45309);
+}
+
+.device-row__status--revoked {
+  color: var(--dim);
+}
+
+.device-row__status--syncing {
+  color: var(--text);
+}
+
+.device-row__retry {
+  margin-top: 6px;
+  margin-right: 6px;
+}
+
+.device-row__advanced {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.device-row__advanced-summary {
+  cursor: pointer;
+}
+
+.device-row__advanced-body {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--line-soft);
+}
+
 /* Floating account-feedback toast (status messages) */
 .account-feedback {
   position: fixed;

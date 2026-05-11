@@ -281,6 +281,35 @@ async function readBSnapshot(page) {
   await waitFor(pageA, () => document.getElementById("settings-dialog")?.open === true);
   ok(`8. A's Settings re-opened — retry triggered`);
 
+  // ===== Settings → Linked devices shows retry copy =====
+  // We're not always inside the devices dialog at this point; click
+  // through to it and confirm the failed-peer row carries a
+  // retry-state status label and a "retry sync" button. The exact
+  // label depends on backoff timing ("sync will retry in 25s" /
+  // "sync failed — will retry"); we accept either.
+  await pageA.evaluate(() => document.getElementById("settings-devices")?.click());
+  await waitFor(pageA, () => document.getElementById("devices-dialog")?.open === true);
+  let retrySnap = null;
+  for (let i = 0; i < 30; i++) {
+    retrySnap = await pageA.evaluate(() => {
+      return [...document.querySelectorAll("#device-list .device-row")].map((row) => ({
+        name: (row.querySelector(".device-row__name")?.textContent ?? "").trim(),
+        status: row.querySelector(".device-row__status")?.getAttribute("data-device-status") ?? "",
+        statusLabel: (row.querySelector(".device-row__status")?.textContent ?? "").trim(),
+        hasRetry: row.querySelector('[data-device-action="retry-sync"]') !== null
+      }));
+    });
+    if (retrySnap.some((r) => r.status === "retry_pending" || r.status === "failed")) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const retryRow = retrySnap?.find((r) => r.status === "retry_pending" || r.status === "failed");
+  if (!retryRow) {
+    fail("8b.retry-visible", `Settings did not surface retry status: ${JSON.stringify(retrySnap)}`);
+  } else {
+    if (!retryRow.hasRetry) fail("8c.retry-button", `expected retry button on row with status=${retryRow.status}`);
+    else ok(`8b. Settings → Linked devices surfaces retry state ('${retryRow.statusLabel}') with retry button`);
+  }
+
   // ===== Wait for retry to converge =====
   // The backoff is 30s for the first retry, but the retry runs only
   // when (now - last_attempt_at) >= backoff. The blocked attempt

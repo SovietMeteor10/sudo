@@ -102,6 +102,66 @@ globally (see `src/protocol/constants.ts`). These are the spam and
 sybil pressure release valves for unknown senders. Don't lift them
 casually.
 
+### Linked-device sync status
+
+Settings → Linked devices shows a status line under each device. The
+labels are the only user-facing surface for sync health; the
+underlying state lives in the per-(owner, target_device_id) row of
+the IndexedDB `backfill_state` store.
+
+| Label                          | Meaning |
+| ------------------------------ | ------- |
+| `this device`                  | The current browser. Always synced with itself. |
+| `synced`                       | Backfill completed successfully. Live writes flow normally. |
+| `syncing…`                     | Backfill is in flight right now. |
+| `sync will retry in <n>m`      | Last attempt failed (likely a transient outage); the client is waiting out a backoff (30s → 2m → 10m) before the next auto-retry. |
+| `sync failed — will retry`     | Backoff has elapsed but the next attempt hasn't run yet (e.g. the user re-opened Settings). The auto-retry will fire on the next signin or the next Settings open. |
+| `sync failed`                  | Attempts hit `MAX_BACKFILL_ATTEMPTS` (5). The device has stopped auto-retrying; the user can click `retry sync` to bypass the cap. |
+| `revoked`                      | The peer was revoked. No sync traffic flows in either direction. |
+
+Each row carries an "advanced" disclosure with the technical fields
+operators may need when triaging:
+
+- `id` — short device_id (first 8 chars)
+- `backfill attempts` — count from `backfill_state.attempts`
+- `events sent` — `backfill_state.total_events` for the last run
+- `incoming cursor` — `sync.recipient_cursor:<owner>:<device>` setting
+- `outgoing sequence` — `sync.origin_sequence:<owner>:<device>` setting
+- `last attempt` — ISO timestamp of the last backfill attempt
+- `last error` — raw error string (e.g. `contacts: 1 of 1 failed to post`, `rate_limited`)
+
+If a backfill is stuck:
+
+1. Open Settings → Linked devices. Confirm the status is
+   `sync will retry…` or `sync failed`, not `synced` (which means
+   there's nothing to fix).
+2. Expand the advanced disclosure on the stuck row. The `last error`
+   line is the most useful signal:
+   - `rate_limited` → the per-IP or per-owner sync cap fired (see
+     `src/devices/sync-rate-limit.ts`). The next auto-retry will
+     succeed once the 60s window slides. Don't click retry in a tight
+     loop; it'll just keep firing the cap.
+   - `simulated_outage` / `network` → transient. Click `retry sync`.
+   - `sequence_regression` / `invalid_sync_signature` /
+     `origin_not_authorized` → something is wrong with the local
+     device's keys or its membership. A relink (revoke + re-pair) is
+     usually the safest fix.
+3. If the device is genuinely unreachable (e.g. the user's other
+   browser was wiped), revoke it. A `revoked` device produces 403 on
+   `POST /:owner/sync`, `GET /:owner/sync`, and `POST /:owner/sync/ack`
+   — see SECURITY.md.
+
+Server-side journals worth checking when a single device is failing
+across many users (i.e. an operator-level problem, not user-level):
+
+- `journalctl -u sudo.service --since '15 min ago' | grep '/sync'` —
+  look for spikes in 429s (rate-limit firing) or 503s (relay
+  upstream issue).
+- `sqlite3 data/sudo.sqlite "SELECT origin_device_id, COUNT(*) FROM
+  device_sync_log WHERE created_at > datetime('now', '-1 hour') GROUP BY
+  origin_device_id ORDER BY 2 DESC LIMIT 5"` — top emitters; a sudden
+  burst from one device often signals a client in a retry loop.
+
 ### Backups
 
 Take regular backups of `data/sudo.sqlite` (the registry, relay

@@ -62,6 +62,7 @@ import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/mes
 import "./sync/draftSync.js";
 import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
 import { notifyReadStateUpsert } from "./sync/readStateSync.js";
+import { computeDeviceSyncHealth } from "./sync/sync-health.js";
 import {
   applyContactDeleteWithBroadcast,
   applyContactUpsertWithBroadcast
@@ -80,6 +81,8 @@ import {
   renderChatList,
   renderDiscoveryPanel,
   renderDevicePanel,
+  type DevicePanelHealth,
+  type DevicePanelRow,
   renderFingerprintGrid,
   renderLookupResult,
   renderSearchResults,
@@ -526,6 +529,11 @@ deviceList.addEventListener("click", (event) => {
   const deviceId = target.dataset["deviceId"];
   if (action === "revoke" && deviceId !== undefined) {
     void revokeDevice(deviceId);
+    return;
+  }
+  if (action === "retry-sync" && deviceId !== undefined) {
+    void forceRetryBackfill(target, deviceId);
+    return;
   }
 });
 
@@ -2094,7 +2102,14 @@ async function refreshDevicePanel(): Promise<void> {
   deviceCurrentStatus.textContent = currentIdentityDocument === null
     ? "not signed in"
     : `signed in as ${currentIdentityDocument.handle}`;
-  renderDevicePanel(deviceList, currentDeviceId, devices, activePairingCode);
+  const owner = currentIdentityDocument?.canonical_id ?? null;
+  const rows = await Promise.all(devices.map(async (device) => {
+    const health: DevicePanelHealth = owner === null
+      ? { status: "unknown", label: "", lastSeenLine: "", canRetry: false, advanced: { deviceIdShort: device.device_id.slice(0, 8) } }
+      : await computeDeviceSyncHealth(owner, currentDeviceId, device);
+    return { device, health } satisfies DevicePanelRow;
+  }));
+  renderDevicePanel(deviceList, currentDeviceId, rows, activePairingCode);
 }
 
 async function syncCurrentDeviceToServer(
@@ -2613,6 +2628,31 @@ async function backfillToNewDevice(
 // session. Called from setSignedIn so a partial run from an earlier
 // browser open resumes the moment the user signs in again, without
 // requiring them to re-pair the device.
+// Manually triggered retry from the Settings → Linked devices "retry
+// sync" button. Bypasses the auto-retry backoff (the user is asking
+// for this *now*) but still respects MAX_BACKFILL_ATTEMPTS so a
+// busted device doesn't allow infinite hammering. Updates the button
+// in-place so the user sees immediate feedback.
+async function forceRetryBackfill(button: HTMLButtonElement, targetDeviceId: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const owner = currentIdentityDocument.canonical_id;
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "retrying…";
+  try {
+    await backfillToNewDevice(owner, targetDeviceId);
+  } catch (error) {
+    console.warn("[devices] manual retry failed", error instanceof Error ? error.message : error);
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+  // Pull the panel forward so the new status (synced or still-failed
+  // with a fresh attempt count) lands without waiting for the next
+  // open of Settings.
+  await refreshDevicePanel();
+}
+
 async function retryPendingBackfills(ownerCanonicalId: string): Promise<void> {
   let pending: import("./local/local-types.js").LocalBackfillState[];
   try {

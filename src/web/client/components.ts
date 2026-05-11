@@ -204,10 +204,35 @@ function describeReciprocal(reciprocallyFollowing: boolean, reciprocallyConnecte
   return "follow back, dismiss, or block";
 }
 
+// Per-device sync health view-model. Mirrors src/web/client/sync/
+// sync-health.ts → DeviceSyncHealth. Kept structural here so this
+// module doesn't need a runtime dependency on the sync layer.
+export type DevicePanelHealth = {
+  status: "current" | "synced" | "syncing" | "retry_pending" | "failed" | "revoked" | "unknown";
+  label: string;
+  lastSeenLine: string;
+  canRetry: boolean;
+  advanced: {
+    deviceIdShort: string;
+    attempts?: number;
+    lastAttemptAt?: string;
+    lastError?: string;
+    totalEvents?: number;
+    sliceProgress?: { [slice: string]: number };
+    recipientCursor?: number;
+    originSequence?: number;
+  };
+};
+
+export type DevicePanelRow = {
+  device: TrustedDevice;
+  health: DevicePanelHealth;
+};
+
 export function renderDevicePanel(
   root: HTMLElement,
   currentDeviceId: string | null,
-  devices: TrustedDevice[],
+  rows: DevicePanelRow[],
   pairingCode: string | null
 ): void {
   const fragment = document.createDocumentFragment();
@@ -216,28 +241,84 @@ export function renderDevicePanel(
     fragment.append(line(`pairing code: ${pairingCode}`, "is-muted"));
   }
 
-  if (devices.length === 0) {
+  if (rows.length === 0) {
     fragment.append(line("no linked devices yet", "lookup__empty"));
     root.replaceChildren(fragment);
     return;
   }
 
-  for (const device of devices) {
+  for (const { device, health } of rows) {
     const row = block("device-row", [
-      line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name"),
-      line(`status: ${device.trust_state}`, "is-muted"),
-      line(`last seen: ${device.last_seen_at}`, "is-muted"),
-      line(`sync: ${device.capabilities.can_sync ? "yes" : "no"}  decrypt: ${device.capabilities.can_decrypt ? "yes" : "no"}`, "is-muted"),
-      line(`id: ${shortCanonical(device.device_id)}`, "is-muted"),
+      line(`${device.name}${device.device_id === currentDeviceId ? " (current)" : ""}`, "device-row__name")
     ]);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "lookup-card__button";
-    button.dataset["deviceAction"] = "revoke";
-    button.dataset["deviceId"] = device.device_id;
-    button.textContent = device.trust_state === "revoked" ? "revoked" : "revoke";
-    button.disabled = device.trust_state === "revoked";
-    row.append(button);
+    row.classList.add(`device-row--${health.status}`);
+
+    const statusLine = document.createElement("div");
+    statusLine.className = `device-row__status device-row__status--${health.status} is-muted`;
+    statusLine.dataset["deviceStatus"] = health.status;
+    statusLine.textContent = health.label;
+    row.append(statusLine);
+
+    if (health.lastSeenLine.length > 0) {
+      row.append(line(health.lastSeenLine, "is-muted"));
+    }
+
+    // Retry button: visible for retry_pending and failed. Clicking
+    // forces the backfill to run immediately, bypassing the auto-
+    // retry backoff. The handler lives in main.ts via
+    // data-device-action="retry-sync".
+    if (health.canRetry) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "lookup-card__button device-row__retry";
+      retry.dataset["deviceAction"] = "retry-sync";
+      retry.dataset["deviceId"] = device.device_id;
+      retry.textContent = "retry sync";
+      row.append(retry);
+    }
+
+    // Advanced disclosure. Hidden by default; expands per-row. Holds
+    // the only place where ids, attempt counts, sequences, and the
+    // raw last_error appear — so the default surface stays calm and
+    // free of relay/internal terminology.
+    const details = document.createElement("details");
+    details.className = "device-row__advanced";
+    const summary = document.createElement("summary");
+    summary.textContent = "advanced";
+    summary.className = "device-row__advanced-summary is-muted";
+    details.append(summary);
+    const advancedBody = document.createElement("div");
+    advancedBody.className = "device-row__advanced-body";
+    advancedBody.append(line(`id: ${health.advanced.deviceIdShort}`, "is-muted"));
+    if (typeof health.advanced.attempts === "number") {
+      advancedBody.append(line(`backfill attempts: ${health.advanced.attempts}`, "is-muted"));
+    }
+    if (typeof health.advanced.totalEvents === "number") {
+      advancedBody.append(line(`events sent: ${health.advanced.totalEvents}`, "is-muted"));
+    }
+    if (typeof health.advanced.recipientCursor === "number") {
+      advancedBody.append(line(`incoming cursor: ${health.advanced.recipientCursor}`, "is-muted"));
+    }
+    if (typeof health.advanced.originSequence === "number") {
+      advancedBody.append(line(`outgoing sequence: ${health.advanced.originSequence}`, "is-muted"));
+    }
+    if (typeof health.advanced.lastAttemptAt === "string") {
+      advancedBody.append(line(`last attempt: ${health.advanced.lastAttemptAt}`, "is-muted"));
+    }
+    if (typeof health.advanced.lastError === "string" && health.advanced.lastError.length > 0) {
+      advancedBody.append(line(`last error: ${health.advanced.lastError}`, "is-muted"));
+    }
+    details.append(advancedBody);
+    row.append(details);
+
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "lookup-card__button";
+    revoke.dataset["deviceAction"] = "revoke";
+    revoke.dataset["deviceId"] = device.device_id;
+    revoke.textContent = device.trust_state === "revoked" ? "revoked" : "revoke";
+    revoke.disabled = device.trust_state === "revoked";
+    row.append(revoke);
     fragment.append(row);
   }
 

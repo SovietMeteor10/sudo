@@ -46,6 +46,7 @@
     "smoke:backfill-retry": "node scripts/backfill-retry-smoke.cjs",
     "smoke:message-tombstone": "node scripts/message-tombstone-smoke.cjs",
     "smoke:read-state": "node scripts/read-state-smoke.cjs",
+    "smoke:device-sync-health": "node scripts/device-sync-health-smoke.cjs",
     "smoke:sync-rate-limit": "node scripts/sync-rate-limit-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },

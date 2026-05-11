@@ -303,6 +303,37 @@ async function lookupCanonical(handle) {
     }
   }
 
+  // ===== A — Settings → Linked devices shows status=synced =====
+  // The pairing-completion poll fires the backfill; opening Settings
+  // surfaces the resulting health line. Poll briefly for the
+  // synced label to land.
+  await pageA.evaluate(() => {
+    document.getElementById("account-button")?.click();
+    document.getElementById("account-menu-settings")?.click();
+  });
+  await waitFor(pageA, () => document.getElementById("settings-dialog")?.open === true);
+  await pageA.evaluate(() => document.getElementById("settings-devices")?.click());
+  await waitFor(pageA, () => document.getElementById("devices-dialog")?.open === true);
+  let healthSnap = null;
+  for (let i = 0; i < 30; i++) {
+    healthSnap = await pageA.evaluate(() => {
+      const rows = [...document.querySelectorAll("#device-list .device-row")].map((row) => ({
+        name: (row.querySelector(".device-row__name")?.textContent ?? "").trim(),
+        status: row.querySelector(".device-row__status")?.getAttribute("data-device-status") ?? "",
+        statusLabel: (row.querySelector(".device-row__status")?.textContent ?? "").trim()
+      }));
+      return rows;
+    });
+    if (healthSnap.some((r) => !/\(current\)$/.test(r.name) && r.status === "synced")) break;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  const peerHealth = healthSnap?.find((r) => !/\(current\)$/.test(r.name));
+  if (!peerHealth || peerHealth.status !== "synced") {
+    fail("6g.health", `Settings did not show synced status for peer: ${JSON.stringify(healthSnap)}`);
+  } else {
+    ok(`6g. Settings → Linked devices shows status=synced for B ('${peerHealth.statusLabel}')`);
+  }
+
   // ===== B — reload, state persists =====
   await pageB.reload({ waitUntil: "networkidle0" });
   if (!await waitFor(pageB, () => document.body.dataset.authState === "signed-in", 10000)) {
