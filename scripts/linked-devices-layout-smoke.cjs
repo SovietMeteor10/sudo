@@ -88,6 +88,16 @@ async function collectAccountOnPage(page, code) {
 
   // ===== Open devices dialog =====
   await openDevicesDialog(pageA);
+  // Wait until the device-list has finished its first render against
+  // the (just-unlocked) crypto account — otherwise on a fresh signup
+  // we can briefly see 0 rows before the panel notices the current
+  // device. Local runs almost never hit this race; live runs do.
+  if (!await waitFor(pageA, () => {
+    return document.querySelectorAll(".devices-panel__section--current .device-row").length >= 1;
+  }, 15000)) {
+    fail("1b.panel-first-render", "device list never populated the 'this device' row");
+    throw new Error();
+  }
 
   // ===== Pairing card hidden by default =====
   const initial = await pageA.evaluate(() => {
