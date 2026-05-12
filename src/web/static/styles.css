@@ -2742,13 +2742,14 @@ body[data-auth-state="auth-restore"] .landing {
 }
 .chat-popup__typing[hidden] { display: none; }
 
-/* Composer attachment paperclip + upload-progress line. */
+/* Composer attachment plus button + upload-progress line. */
 .chat-popup__attach {
   background: transparent;
   border: 0;
   color: var(--text);
-  font-size: 18px;
-  padding: 4px 8px;
+  font-size: 22px;
+  font-weight: 400;
+  padding: 0 8px;
   cursor: pointer;
   line-height: 1;
 }

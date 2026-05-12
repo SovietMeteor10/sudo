@@ -7226,7 +7226,7 @@ async function doUpload(file: File, mediaClass: "image" | "video" | "file", ctx:
   }
 }
 
-// Wiring: paperclip button + hidden file input.
+// Wiring: plus button + hidden file input.
 chatPopupAttach.addEventListener("click", () => {
   chatPopupAttachmentInput.value = "";
   chatPopupAttachmentInput.click();
