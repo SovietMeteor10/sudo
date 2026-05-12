@@ -206,6 +206,32 @@ export const schemaSql = `
     PRIMARY KEY (owner_canonical_id, recipient_device_id)
   );
 
+  -- Web Push subscriptions. One row per (owner, device, endpoint). The
+  -- server holds only the opaque PushSubscription material (endpoint,
+  -- p256dh, auth) that the browser handed to the client during
+  -- pushManager.subscribe(); nothing here authenticates the user — if
+  -- this table were leaked, the worst case is an attacker could send
+  -- generic "new message" toasts to existing browsers, which would
+  -- still fail signature checks at delivery time and prune themselves
+  -- (FCM/Mozilla respond 410 on revoked endpoints, which we honour).
+  CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_canonical_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE(device_id, endpoint)
+  );
+
+  CREATE INDEX IF NOT EXISTS push_subscriptions_owner_idx
+    ON push_subscriptions(owner_canonical_id);
+
+  CREATE INDEX IF NOT EXISTS push_subscriptions_device_idx
+    ON push_subscriptions(device_id);
+
   CREATE TABLE IF NOT EXISTS feed_posts (
     post_id TEXT PRIMARY KEY,
     author_canonical_id TEXT NOT NULL,

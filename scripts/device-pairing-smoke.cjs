@@ -340,7 +340,46 @@ function decryptBootstrapPayload(pairingCode, payloadJson) {
   }
   ok(`device listing returns ${listingWithMemberships.body.memberships.length} canonical signed membership(s)`);
 
-  // 8. Revoke the device. Listing must reflect the new state.
+  // 8. Revoke the device. Listing must reflect the new state, AND any
+  //    push subscriptions associated with the device must be evicted
+  //    server-side so a revoked browser never receives another push
+  //    for this owner.
+  function fakeP256dh() {
+    const ec = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const jwk = ec.publicKey.export({ format: "jwk" });
+    const pad = (b) => { while (b.length < 32) b = Buffer.concat([Buffer.from([0]), b]); return b; };
+    const x = pad(Buffer.from(jwk.x, "base64url"));
+    const y = pad(Buffer.from(jwk.y, "base64url"));
+    return Buffer.concat([Buffer.from([0x04]), x, y]).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function fakeAuth() {
+    return randomBytes(16).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // Register a push subscription against the device that's about to be revoked.
+  const preRevokePushEndpoint = `https://stub.example/${randomBytes(8).toString("hex")}`;
+  const pushReg = await postJson(`/api/push/subscriptions`, {
+    owner_canonical_id: owner.canonicalId,
+    device_id: deviceId,
+    endpoint: preRevokePushEndpoint,
+    p256dh: fakeP256dh(),
+    auth: fakeAuth()
+  });
+  if (pushReg.status !== 200) fail(`pre-revoke push register status=${pushReg.status}`);
+  else ok("pre-revoke push subscription registered");
+
+  // Sanity: a test fan-out with stub-201 should now see attempted=1.
+  const fanBefore = await postJson(`/api/push/test`, {
+    recipient_canonical_id: owner.canonicalId,
+    sender_canonical_id: "sudo:smoke-sender",
+    sender_handle: "@alice",
+    unread_count: 1,
+    stub_status: 201
+  });
+  if ((fanBefore.body?.stats?.attempted ?? 0) < 1) {
+    fail(`expected pre-revoke fan-out attempts>=1, got ${JSON.stringify(fanBefore.body?.stats)}`);
+  } else ok(`pre-revoke fan-out attempts=${fanBefore.body.stats.attempted}`);
+
   const revoke = await postJson(`/api/devices/${encodeURIComponent(deviceId)}/revoke`, {
     owner_canonical_id: owner.canonicalId
   });
@@ -354,6 +393,20 @@ function decryptBootstrapPayload(pairingCode, payloadJson) {
     fail(`device list does not reflect revocation: ${JSON.stringify(listedAfter)}`);
   }
   ok("device list reflects revocation");
+
+  // Push subscription for the revoked device must be gone now. Fan-out
+  // attempts should drop back to 0 (no other subscription rows exist
+  // for this owner in this smoke).
+  const fanAfter = await postJson(`/api/push/test`, {
+    recipient_canonical_id: owner.canonicalId,
+    sender_canonical_id: "sudo:smoke-sender",
+    sender_handle: "@alice",
+    unread_count: 1,
+    stub_status: 201
+  });
+  if ((fanAfter.body?.stats?.attempted ?? -1) !== 0) {
+    fail(`post-revoke fan-out leaked: ${JSON.stringify(fanAfter.body?.stats)}`);
+  } else ok("post-revoke fan-out has zero attempts (push subscription evicted)");
 
   // 9. Revoke a device with a signed revocation membership. The
   //    server should verify and persist it so the canonical record

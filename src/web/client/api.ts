@@ -530,6 +530,46 @@ export async function listConnections(ownerCanonicalId: string): Promise<Connect
   return Array.isArray(body.relationships) ? body.relationships : [];
 }
 
+export async function fetchVapidPublicKey(): Promise<string> {
+  const response = await fetchWithTimeout("/api/push/vapid-public-key", {
+    headers: { accept: "application/json" }
+  });
+  if (!response.ok) throw new Error(`vapid key fetch failed: ${response.status}`);
+  const body = await response.json() as { public_key?: string };
+  if (typeof body.public_key !== "string" || body.public_key.length === 0) {
+    throw new Error("vapid key missing in response");
+  }
+  return body.public_key;
+}
+
+export async function registerPushSubscription(input: {
+  owner_canonical_id: string;
+  device_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}): Promise<void> {
+  const response = await fetchWithTimeout("/api/push/subscriptions", {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify(input)
+  });
+  if (!response.ok) throw new Error(`push subscription register failed: ${response.status}`);
+}
+
+export async function deletePushSubscription(input: { device_id: string; endpoint: string }): Promise<void> {
+  // Best-effort — reset paths call this and tolerate failure.
+  try {
+    await fetchWithTimeout("/api/push/subscriptions", {
+      method: "DELETE",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+  } catch {
+    /* swallow */
+  }
+}
+
 export async function listIncomingSocialNotifications(
   recipientCanonicalId: string,
   limit = 100

@@ -20,6 +20,22 @@ export function mountStaticClientPortal(app: Express): void {
   const protocolPath = resolve("dist/protocol");
   const pretextPath = resolve("node_modules/@chenglou/pretext/dist");
 
+  // The service worker MUST NOT be cached by the browser HTTP cache; the
+  // browser's own SW update check fetches /sw.js and compares bytes, so a
+  // stale cached copy can pin a deploy generation indefinitely. Same
+  // reasoning for the manifest — a stale manifest hides icon/scope
+  // changes from the install criteria.
+  app.get("/sw.js", (_request, response) => {
+    setNoStore(response);
+    response.type("application/javascript");
+    response.sendFile(resolve(publicPath, "sw.js"));
+  });
+  app.get("/manifest.webmanifest", (_request, response) => {
+    setNoStore(response);
+    response.type("application/manifest+json");
+    response.sendFile(resolve(publicPath, "manifest.webmanifest"));
+  });
+
   app.use(express.static(publicPath, { extensions: ["html"] }));
   app.use("/client", express.static(clientPath, { setHeaders: setNoStore }));
   app.use("/protocol", express.static(protocolPath, { setHeaders: setNoStore }));

@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { db } from "../storage/db.js";
+import { deletePushSubscriptionsForDevice } from "../push/push.store.js";
 import type { DeviceSyncEvent, SignedDeviceMembership, TrustedDevice } from "../protocol/types.js";
 
 type TrustedDeviceRow = {
@@ -82,6 +83,11 @@ export function revokeTrustedDevice(ownerCanonicalId: string, deviceId: string):
 
   const revoked = { ...device, trust_state: "revoked" as const, last_seen_at: new Date().toISOString() };
   upsertTrustedDevice(revoked);
+  // Drop any push subscriptions associated with the revoked device.
+  // A revoked device must never receive another push for this owner.
+  // Server-side cleanup is authoritative even if the client never gets
+  // a chance to run its own DELETE /api/push/subscriptions handshake.
+  try { deletePushSubscriptionsForDevice(deviceId); } catch { /* best-effort */ }
   return revoked;
 }
 

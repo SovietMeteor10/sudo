@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { verifyCanonicalSignature } from "../crypto/signatures.js";
 import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
 import { getIdentityByCanonicalId } from "../identity/identity.store.js";
+import { fireAndForgetPush } from "../push/push.service.js";
 import { evaluateRelayPolicy } from "./relay.policy.js";
 import type {
   LegacyEncryptedMessageEnvelope,
@@ -88,6 +89,21 @@ export function submitRelayEnvelope(input: unknown, now = new Date()): SubmitRel
     }
     throw error;
   }
+
+  // Best-effort push fan-out. We pass only metadata the relay already
+  // sees in plaintext (sender handle + recipient canonical_id); the
+  // ciphertext stays opaque. The push payload itself is shaped in
+  // push.service.ts — the relay path does not influence whether
+  // preview text is shown (that decision lives in the SW, using local
+  // conversation_settings).
+  fireAndForgetPush({
+    recipientCanonicalId: envelope.recipient_canonical_id,
+    senderCanonicalId: envelope.sender_canonical_id,
+    senderHandle: typeof envelope.sender_handle === "string" && envelope.sender_handle.length > 0
+      ? envelope.sender_handle
+      : envelope.sender_canonical_id,
+    unreadCount: counts.recipient + 1
+  });
 
   return {
     ok: true,

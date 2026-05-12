@@ -78,6 +78,15 @@ import {
   stopNotificationsPolling
 } from "./notifications/notificationsClient.js";
 import {
+  registerServiceWorker,
+  unregisterServiceWorker,
+  setOpenConversationListener,
+  ensurePushSubscription,
+  teardownPushSubscription,
+  suppressConversation,
+  unsuppressConversation
+} from "./pwa.js";
+import {
   feedPostToUnifiedItem,
   formatPostTimestamp,
   renderChatList,
@@ -378,6 +387,18 @@ renderSearchResults(searchResultsRoot, searchState, getFollowedCanonicals(), pen
 renderPasskeySupport();
 landingBrand.textContent = brandLabel;
 setFeedTab("personal");
+// Route notification taps from the service worker into the existing
+// chat-open flow. The hint is the peer canonical_id encoded in the
+// push payload at Part B.
+setOpenConversationListener((hint) => {
+  if (!hint || authView !== "signed-in") return;
+  const existing = localChats.find((chat) => chat.canonical === hint);
+  void openChatPopup({
+    canonical: hint,
+    handle: existing?.handle ?? hint,
+    fingerprint: existing?.fingerprint ?? ""
+  });
+});
 void initializeLocalRuntime();
 void refreshNodeDocument();
 void renderStreamWhenReady();
@@ -406,6 +427,24 @@ void (async () => {
       const url = new URL(window.location.href);
       url.searchParams.delete("collect");
       url.searchParams.delete("pair");
+      window.history.replaceState(null, "", url.toString());
+    }
+  } catch { /* ignore */ }
+})();
+
+// Deferred conversation open from a notification tap on a cold start.
+// The SW landed us at /?open=<canonical>. We can't focus the chat until
+// the user has signed in, so we stash the pending target and apply it
+// once setSignedIn finishes wiring up the local state.
+let pendingOpenConversation: string | null = null;
+void (async () => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const hint = params.get("open");
+    if (hint && hint.length > 0) {
+      pendingOpenConversation = hint;
+      const url = new URL(window.location.href);
+      url.searchParams.delete("open");
       window.history.replaceState(null, "", url.toString());
     }
   } catch { /* ignore */ }
@@ -4854,6 +4893,18 @@ function setSignedIn(handle: string): void {
   setAuthView("signed-in");
   setAccountButtonHandle(handle);
   closeChatPopup();
+  // Register the service worker lazily after sign-in. Cold landings
+  // should not request elevated browser capability; only an
+  // authenticated user gets a SW + (later) a push subscription.
+  void registerServiceWorker();
+  // Best-effort: if the user has already granted notification
+  // permission in a previous session, re-attach a push subscription
+  // so the new sign-in inherits delivery without re-prompting. If
+  // permission is "default" we wait for an explicit opt-in from the
+  // UI (not wired yet — first ask is deferred to a settings toggle).
+  if (currentIdentityDocument !== null) {
+    void ensurePushSubscription({ ownerCanonicalId: currentIdentityDocument.canonical_id });
+  }
   if (currentIdentityDocument !== null) {
     // Resume any backfill that was left pending or failed by a
     // previous signed-in session. Fire-and-forget — the retry
@@ -4862,7 +4913,21 @@ function setSignedIn(handle: string): void {
     void retryPendingBackfills(currentIdentityDocument.canonical_id);
     // Repaint chat + feed from the new owner's local state only. The previous
     // owner's in-memory state was already cleared in setSignedOut().
-    void refreshLocalChats();
+    void refreshLocalChats().then(() => {
+      // If we landed via a notification tap (cold start /?open=...),
+      // open the conversation once local state is ready so the chat
+      // popup paints against real data, not the empty placeholder.
+      if (pendingOpenConversation !== null) {
+        const hint = pendingOpenConversation;
+        pendingOpenConversation = null;
+        const existing = localChats.find((chat) => chat.canonical === hint);
+        void openChatPopup({
+          canonical: hint,
+          handle: existing?.handle ?? hint,
+          fingerprint: existing?.fingerprint ?? ""
+        });
+      }
+    });
     void refreshFeedPosts();
     startInboxPolling(currentIdentityDocument.canonical_id);
     startFeedPolling(currentIdentityDocument.canonical_id);
@@ -5192,6 +5257,13 @@ function setSignedOut(): void {
   stopInboxPolling();
   stopFeedPolling();
   stopNotificationsPolling();
+  // Tear down the push subscription first (best-effort DELETE +
+  // pushManager.unsubscribe), then unregister the SW + clear any
+  // sitting notifications. Order matters: once the SW is gone we
+  // can't dispatch the clear-notifications message.
+  void teardownPushSubscription().finally(() => {
+    void unregisterServiceWorker();
+  });
   // Banner is per-identity; hide it the moment the user signs out
   // so the next account (or anonymous landing) doesn't briefly
   // inherit the prior user's recovery banner.
@@ -5464,6 +5536,14 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   chatPopupHandle.textContent = target.handle || target.canonical;
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
+  // Foreground dedup: while a conversation is open, suppress push
+  // notifications targeted at it. The SW caches a TTL so closed tabs
+  // don't permanently silence themselves if the page never sends an
+  // unsuppress. The hint matches what push.service.ts emits as
+  // conversation_hint — the peer canonical_id from the recipient's
+  // perspective (i.e. the message sender). That is exactly
+  // target.canonical here.
+  suppressConversation(target.canonical);
   // Eager TTL sweep on chat open so expired messages disappear from
   // storage (not just the render filter) when the user lands in a
   // conversation with disappearing-messages on. Best-effort; failures
@@ -5686,6 +5766,11 @@ async function markConversationRead(partnerCanonicalId: string): Promise<void> {
 }
 
 function closeChatPopup(): void {
+  // Cancel the foreground-dedup window for the prior conversation so
+  // subsequent pushes for that peer aren't accidentally swallowed.
+  if (chatTarget !== null) {
+    unsuppressConversation(chatTarget.canonical);
+  }
   chatPopup.hidden = true;
   chatPopup.classList.remove("is-minimized");
   setChatFullscreen(false);

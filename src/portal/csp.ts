@@ -32,6 +32,11 @@ export const CONTENT_SECURITY_POLICY = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
   "connect-src 'self'",
+  // Same-origin service worker + manifest. Push subscription endpoints live
+  // off-origin (FCM / Mozilla autopush / Apple) but the browser does that
+  // fetch out-of-band from the page so it does NOT need to be in connect-src.
+  "worker-src 'self'",
+  "manifest-src 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'self'",

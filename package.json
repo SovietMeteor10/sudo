@@ -31,6 +31,10 @@
     "smoke:auth-buttons-clickable": "node scripts/auth-buttons-clickable-smoke.cjs",
     "smoke:mobile-layout": "node scripts/mobile-layout-smoke.cjs",
     "smoke:csp": "node scripts/csp-smoke.cjs",
+    "smoke:pwa-install": "node scripts/pwa-install-smoke.cjs",
+    "smoke:web-push": "node scripts/web-push-smoke.cjs",
+    "smoke:disappearing-notification-privacy": "node scripts/disappearing-notification-privacy-smoke.cjs",
+    "smoke:notification-click-routing": "node scripts/notification-click-routing-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",
@@ -61,12 +65,14 @@
   "dependencies": {
     "@chenglou/pretext": "^0.0.6",
     "better-sqlite3": "^11.9.1",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/express": "^4.17.21",
     "@types/node": "^22.13.5",
+    "@types/web-push": "^3.6.4",
     "typescript": "^5.7.3"
   }
 }

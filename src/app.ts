@@ -9,6 +9,7 @@ import { mountStaticClientPortal } from "./portal/clientPortal.js";
 import { CONTENT_SECURITY_POLICY } from "./portal/csp.js";
 import { notificationsRouter } from "./notifications/notifications.routes.js";
 import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
+import { pushRouter } from "./push/push.routes.js";
 import { relayRouter } from "./relay/relay.routes.js";
 import { devRouter } from "./routes/dev.js";
 import { fingerRouter } from "./routes/finger.js";
@@ -57,6 +58,7 @@ export function createApp() {
   app.use("/api/feeds", feedRouter);
   app.use("/api/discovery", discoveryRouter);
   app.use("/api/notifications", notificationsRouter);
+  app.use("/api/push", pushRouter);
 
   mountStaticClientPortal(app);
 
