@@ -140,6 +140,21 @@ function tinyPngBytes() {
       }
     }
 
+    // Freeze B's relay-inbox polling for the duration of the wire
+    // check below, so the carrier + attachment envelopes are still
+    // sitting in the inbox when we peek. We'll unblock right after.
+    await pageB.evaluate(() => {
+      if (window.__smokeOriginalFetch !== undefined) return;
+      window.__smokeOriginalFetch = window.fetch;
+      window.fetch = function(url, ...rest) {
+        const u = typeof url === "string" ? url : (url instanceof Request ? url.url : "");
+        if (u.includes("/api/relay/inbox/")) {
+          return Promise.reject(new Error("smoke-disable-inbox-poll"));
+        }
+        return window.__smokeOriginalFetch.call(this, url, ...rest);
+      };
+    });
+
     // ===== End-to-end via the UI: A sends image to B. =====
     await openChat(pageA, { canonical: canonicalB, handle: `@${handleB}` });
     await openChat(pageB, { canonical: canonicalA, handle: `@${handleA}` });
@@ -166,6 +181,44 @@ function tinyPngBytes() {
     } else {
       ok(`2. A renders the inline image preview`);
     }
+
+    // Phase 9 wire assertion: while B's poller is frozen, peek the
+    // queued envelopes. The carrier chat message is now a
+    // sudo_chat_v1 envelope, so the original filename
+    // ("smoke-test.png") must not appear anywhere on the wire.
+    {
+      let envelopes = [];
+      for (let i = 0; i < 25; i++) {
+        const r = await fetch(`${BASE}/api/relay/inbox/${encodeURIComponent(canonicalB)}`);
+        const j = await r.json().catch(() => ({}));
+        envelopes = Array.isArray(j?.envelopes) ? j.envelopes : [];
+        const carrier = envelopes.find((e) => e.ciphertext_scheme === "sudo_chat_v1");
+        const attMeta = envelopes.find((e) => e.ciphertext_scheme === "sudo_attachment_v1");
+        if (carrier !== undefined && attMeta !== undefined) break;
+        await new Promise((r2) => setTimeout(r2, 200));
+      }
+      if (envelopes.length === 0) {
+        fail("3a.wire-empty", "no envelopes ever landed at the relay while poller was frozen");
+      } else {
+        const leaked = envelopes.filter((e) => JSON.stringify(e).includes("smoke-test.png"));
+        if (leaked.length > 0) {
+          const schemes = leaked.map((e) => e.ciphertext_scheme).join(",");
+          fail("3a.filename-leak", `${leaked.length} envelope(s) leak 'smoke-test.png' on the wire (schemes=${schemes})`);
+        } else {
+          const schemes = envelopes.map((e) => e.ciphertext_scheme).join(",");
+          ok(`3a. attachment filename not visible in any relay envelope (${envelopes.length} envelope(s), schemes=${schemes})`);
+        }
+      }
+    }
+
+    // Unblock B's poller so the rest of the smoke can drive the
+    // receive path normally.
+    await pageB.evaluate(() => {
+      if (window.__smokeOriginalFetch !== undefined) {
+        window.fetch = window.__smokeOriginalFetch;
+        delete window.__smokeOriginalFetch;
+      }
+    });
 
     // B receives + decrypts + renders.
     if (!await waitFor(pageB, () => {

@@ -48,6 +48,7 @@
     "smoke:media-images": "node scripts/media-images-smoke.cjs",
     "smoke:media-files": "node scripts/media-files-smoke.cjs",
     "smoke:media-ttl": "node scripts/media-ttl-smoke.cjs",
+    "smoke:encrypted-chat-envelope": "node scripts/encrypted-chat-envelope-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",

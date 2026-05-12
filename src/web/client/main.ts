@@ -1575,7 +1575,21 @@ async function pollInbox(): Promise<void> {
   }
   inboxPollInFlight = true;
   try {
-    const newMessages = await retrieveRelayInboxAfterLocalSave(inboxPollOwner);
+    const newMessages = await retrieveRelayInboxAfterLocalSave(inboxPollOwner, {
+      recipientAccount: currentCryptoAccount,
+      resolveSenderMessagingKey: async (canonicalId) => {
+        try {
+          const doc = await fetchIdentityProfile(canonicalId);
+          const pk = doc.keys?.messaging?.public_key;
+          const kt = doc.keys?.messaging?.type;
+          if (typeof pk !== "string" || pk.length === 0) return null;
+          if (kt !== "x25519" && kt !== "ecdh-p256") return null;
+          return { public_key: pk, type: kt };
+        } catch {
+          return null;
+        }
+      }
+    });
     if (newMessages.length > 0) {
       await onIncomingMessages(newMessages);
     }
@@ -6790,8 +6804,24 @@ function openForwardPicker(body: string): void {
 
 async function executeForward(target: { canonical: string; handle: string }, body: string): Promise<void> {
   if (currentIdentityDocument === null) return;
+  if (currentCryptoAccount === null) {
+    forwardPickerState.textContent = "unlock this device to forward";
+    return;
+  }
   forwardPickerState.textContent = "forwarding…";
   try {
+    // Phase 9: fail closed if the recipient's messaging key isn't
+    // fetchable. Without it the relay would still ferry the
+    // envelope, but the body would be plaintext-on-wire which the
+    // sender contract no longer allows.
+    const recipientDoc = await fetchIdentityProfile(target.canonical);
+    const rmpk = recipientDoc.keys?.messaging?.public_key;
+    const rmkt = recipientDoc.keys?.messaging?.type;
+    if (typeof rmpk !== "string" || rmpk.length === 0
+        || (rmkt !== "x25519" && rmkt !== "ecdh-p256")) {
+      forwardPickerState.textContent = "recipient has no messaging key";
+      return;
+    }
     const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: currentIdentityDocument.canonical_id,
       recipientCanonicalId: target.canonical,
@@ -6799,6 +6829,8 @@ async function executeForward(target: { canonical: string; handle: string }, bod
       recipientHandle: target.handle,
       body,
       senderAccount: currentCryptoAccount,
+      recipientMessagingPublicKey: rmpk,
+      recipientMessagingKeyType: rmkt,
       forwarded: true
     });
     if (!result.ok) {
@@ -6909,7 +6941,23 @@ async function sendChatPopupMessage(): Promise<void> {
   const target = chatTarget;
   const replyTo = replyContext?.message_id;
   const replyToRelay = replyContext?.relay_message_id;
+  if (currentCryptoAccount === null) {
+    flashFeedback("unlock this device to send messages");
+    return;
+  }
   try {
+    // Phase 9: chat send is fail-closed on missing recipient
+    // messaging key. The body + reply pointer + forwarded flag
+    // are all packed inside the encrypted ChatEnvelopePayload, so
+    // the relay sees only opaque ciphertext.
+    const recipientDoc = await fetchIdentityProfile(target.canonical);
+    const rmpk = recipientDoc.keys?.messaging?.public_key;
+    const rmkt = recipientDoc.keys?.messaging?.type;
+    if (typeof rmpk !== "string" || rmpk.length === 0
+        || (rmkt !== "x25519" && rmkt !== "ecdh-p256")) {
+      flashFeedback("recipient has no messaging key");
+      return;
+    }
     const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: currentIdentityDocument.canonical_id,
       recipientCanonicalId: target.canonical,
@@ -6917,6 +6965,8 @@ async function sendChatPopupMessage(): Promise<void> {
       recipientHandle: target.handle,
       body,
       senderAccount: currentCryptoAccount,
+      recipientMessagingPublicKey: rmpk,
+      recipientMessagingKeyType: rmkt,
       replyToMessageId: replyTo,
       replyToRelayMessageId: replyToRelay
     });
