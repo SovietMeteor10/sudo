@@ -30,8 +30,13 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 
 const BASE = (process.env.BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
+
+function randCanonicalId() {
+  return `sudo:ed25519:${crypto.randomBytes(32).toString("hex")}`;
+}
 const failures = [];
 const fail = (label, msg) => { failures.push(`${label}: ${msg}`); console.error("FAIL:", label, "-", msg); };
 const ok = (label) => { console.log("ok:", label); };
@@ -66,9 +71,11 @@ async function postJson(path, body) {
   console.log(`BASE=${BASE}`);
 
   // 1. Echo a representative payload + check key allow-list.
+  const echoRecipient = randCanonicalId();
+  const echoSender = randCanonicalId();
   const echo = await postJson("/api/push/test", {
-    recipient_canonical_id: "sudo:smoke-recipient",
-    sender_canonical_id: "sudo:smoke-sender",
+    recipient_canonical_id: echoRecipient,
+    sender_canonical_id: echoSender,
     sender_handle: "@alice",
     unread_count: 3,
     echo_payload: true
@@ -100,8 +107,8 @@ async function postJson(path, body) {
   if (!forbiddenFound) ok("payload bytes contain no body/message/text/preview/content/ciphertext/plaintext");
 
   // 3. Round-trip the IDs faithfully.
-  if (payload.conversation_hint !== "sudo:smoke-sender") {
-    fail("hint", `conversation_hint='${payload.conversation_hint}'`);
+  if (payload.conversation_hint !== echoSender) {
+    fail("hint", `conversation_hint='${payload.conversation_hint}' expected '${echoSender}'`);
   } else ok("conversation_hint = sender_canonical_id");
   if (payload.sender_handle !== "@alice") {
     fail("handle", `sender_handle='${payload.sender_handle}'`);

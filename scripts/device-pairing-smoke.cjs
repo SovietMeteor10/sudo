@@ -371,7 +371,7 @@ function decryptBootstrapPayload(pairingCode, payloadJson) {
   // Sanity: a test fan-out with stub-201 should now see attempted=1.
   const fanBefore = await postJson(`/api/push/test`, {
     recipient_canonical_id: owner.canonicalId,
-    sender_canonical_id: "sudo:smoke-sender",
+    sender_canonical_id: `sudo:ed25519:${randomBytes(32).toString("hex")}`,
     sender_handle: "@alice",
     unread_count: 1,
     stub_status: 201
@@ -399,7 +399,7 @@ function decryptBootstrapPayload(pairingCode, payloadJson) {
   // for this owner in this smoke).
   const fanAfter = await postJson(`/api/push/test`, {
     recipient_canonical_id: owner.canonicalId,
-    sender_canonical_id: "sudo:smoke-sender",
+    sender_canonical_id: `sudo:ed25519:${randomBytes(32).toString("hex")}`,
     sender_handle: "@alice",
     unread_count: 1,
     stub_status: 201

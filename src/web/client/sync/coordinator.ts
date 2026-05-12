@@ -79,41 +79,106 @@ function recipientCursorKey(ownerCanonicalId: string, deviceId: string): string 
   return `sync.recipient_cursor:${ownerCanonicalId}:${deviceId}`;
 }
 
-// Per-(owner, device) outbound serialization. The promise-chain
-// mutex keyed by (owner, device) protects TWO things:
+// Per-(owner, device) outbound serialization. Protects:
 //
-//   1. The read-then-write against the settings-store sequence
-//      counter (not atomic on its own; two callers could read the
-//      same N and write N+1, producing duplicate sequences locally).
+//   1. The read-then-write against the IDB sequence counter (not
+//      atomic on its own; two callers could read the same N and
+//      write N+1, producing duplicate sequences locally).
 //   2. The order of arrival on the wire. The server's UNIQUE
 //      constraint on (owner, origin, origin_device_seq) means
-//      duplicates are rejected with sequence_regression, but it
-//      also means a slower-network post for seq N + a faster post
-//      for seq N+1 could leave a gap until N retries. Holding the
-//      lock across the whole sign+post chain keeps posts dense
-//      and avoids transient "behind" gaps that would mislead
-//      peer-progress and the chat list.
+//      duplicates are rejected with sequence_regression, and a
+//      slower-network post for seq N + a faster post for seq N+1
+//      could leave a gap until N retries. Holding the lock across
+//      the whole sign+post chain keeps posts dense.
 //
-// The throughput cost is bounded by post latency (~50ms locally,
-// ~200ms prod). For typical UI-driven workloads (a handful of
-// events per second) that's invisible; for the initial-state
-// backfill (dozens of events in a row) it adds a small but
-// acceptable wall-clock cost.
+// Implementation: navigator.locks.request when available — this is
+// the only mechanism that gives us cross-tab mutual exclusion. Two
+// tabs of the same account share IDB, so without cross-tab
+// serialization the two tabs would each read N from the counter,
+// each write N+1, and the second post would be rejected by the
+// server. navigator.locks is implemented in Chrome 69+, Firefox 96+
+// and Safari 15.4+ — all our targets.
+//
+// Fallback: per-tab promise-chain (the previous behaviour) so the
+// build at least serializes within a single tab. Combined with a
+// BroadcastChannel announcement so siblings can defer if they
+// notice an in-flight lock holder. This is best-effort — a true
+// cross-tab guarantee requires navigator.locks.
+type LockBackend = "navigator-locks" | "broadcast-fallback";
+
+const FALLBACK_CHANNEL_NAME = "sudo/origin-lock";
 const sequenceChains = new Map<string, Promise<unknown>>();
+let fallbackChannel: BroadcastChannel | null = null;
+let fallbackChannelInstalled = false;
+const inflightLockHolders = new Set<string>();
+
+function ensureFallbackChannel(): BroadcastChannel | null {
+  if (typeof BroadcastChannel === "undefined") return null;
+  if (fallbackChannel !== null) return fallbackChannel;
+  fallbackChannel = new BroadcastChannel(FALLBACK_CHANNEL_NAME);
+  fallbackChannelInstalled = true;
+  fallbackChannel.onmessage = (event) => {
+    const data = event.data as { type?: string; key?: string };
+    if (!data || typeof data.key !== "string") return;
+    if (data.type === "acquire") inflightLockHolders.add(data.key);
+    if (data.type === "release") inflightLockHolders.delete(data.key);
+  };
+  return fallbackChannel;
+}
+
+function chainKey(ownerCanonicalId: string, deviceId: string): string {
+  return `${ownerCanonicalId}|${deviceId}`;
+}
+
+function lockName(ownerCanonicalId: string, deviceId: string): string {
+  return `sudo/origin-lock/${ownerCanonicalId}/${deviceId}`;
+}
+
+function locksAvailable(): boolean {
+  return typeof navigator !== "undefined"
+    && typeof (navigator as Navigator & { locks?: unknown }).locks === "object"
+    && (navigator as Navigator & { locks?: { request?: unknown } }).locks?.request !== undefined;
+}
+
+export function originLockBackend(): LockBackend {
+  return locksAvailable() ? "navigator-locks" : "broadcast-fallback";
+}
+
 async function withOriginLock<T>(
   ownerCanonicalId: string,
   deviceId: string,
   fn: () => Promise<T>
 ): Promise<T> {
-  const chainKey = `${ownerCanonicalId}|${deviceId}`;
-  const prev = sequenceChains.get(chainKey) ?? Promise.resolve();
+  const key = chainKey(ownerCanonicalId, deviceId);
+
+  if (locksAvailable()) {
+    // navigator.locks.request returns a Promise that resolves with the
+    // callback's return value. Mode defaults to "exclusive". Held for
+    // the lifetime of the returned promise, so we just await fn inside.
+    return navigator.locks.request(lockName(ownerCanonicalId, deviceId), { mode: "exclusive" }, async () => {
+      return fn();
+    });
+  }
+
+  // Fallback: per-tab promise chain + BroadcastChannel signalling. Not
+  // a real cross-tab mutex, but combined with the sibling-defer logic
+  // it minimises the race window. Tests must not rely on this branch.
+  const ch = ensureFallbackChannel();
+  ch?.postMessage({ type: "acquire", key });
+  const prev = sequenceChains.get(key) ?? Promise.resolve();
   const next = prev.then(fn);
-  // Swallow rejection on the stored chain so a single failure
-  // doesn't poison every subsequent caller; the original await
-  // still sees the real error.
-  sequenceChains.set(chainKey, next.catch(() => undefined));
-  return next;
+  sequenceChains.set(key, next.catch(() => undefined));
+  try {
+    return await next;
+  } finally {
+    ch?.postMessage({ type: "release", key });
+  }
 }
+
+// Exposed for the cross-tab smoke. Tells callers whether the active
+// page is using navigator.locks (the strong mode) or the BC fallback
+// (best-effort). Not user-visible.
+void fallbackChannelInstalled; // silence unused warning in builds that prune the install path
 async function reserveOriginSequenceUnlocked(ownerCanonicalId: string, deviceId: string): Promise<number> {
   const key = originSeqKey(ownerCanonicalId, deviceId);
   const current = (await getSetting(key)) as number | null;

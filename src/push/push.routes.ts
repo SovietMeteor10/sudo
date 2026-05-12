@@ -23,7 +23,17 @@
 //     Gated on SUDO_LOCAL_DEV / NODE_ENV !== production.
 
 import express from "express";
+import { emitRateLimited } from "../devices/rate-limit-response.js";
+import {
+  isBoundedString,
+  isCanonicalId,
+  isDeviceId,
+  isFiniteInt,
+  isNonEmptyString,
+  makeBadRequest
+} from "../protocol/validators.js";
 import { getPublicVapidKey } from "./push.config.js";
+import { checkPushSubscriptionRate } from "./push.rate-limit.js";
 import {
   deletePushSubscriptionByDeviceAndEndpoint,
   upsertPushSubscription
@@ -31,6 +41,15 @@ import {
 import { buildPushPayload, notifyEnvelopeRecipient, setStubStatusForTests } from "./push.service.js";
 
 export const pushRouter = express.Router();
+
+// Resolve the upstream IP the same way devices/identity routes do
+// (X-Real-IP from nginx is preferred; we ignore X-Forwarded-For to
+// avoid spoofing because Express trusts only the loopback peer).
+function resolveRemoteIp(request: express.Request): string {
+  const realIp = request.get("x-real-ip");
+  if (typeof realIp === "string" && realIp.length > 0) return realIp;
+  return request.ip ?? "";
+}
 
 pushRouter.get("/vapid-public-key", (_request, response) => {
   response.json({ public_key: getPublicVapidKey() });
@@ -44,37 +63,55 @@ pushRouter.post("/subscriptions", (request, response) => {
     p256dh: string;
     auth: string;
   }>;
-  if (
-    typeof body?.owner_canonical_id !== "string" || !body.owner_canonical_id ||
-    typeof body?.device_id !== "string" || !body.device_id ||
-    typeof body?.endpoint !== "string" || !body.endpoint ||
-    typeof body?.p256dh !== "string" || !body.p256dh ||
-    typeof body?.auth !== "string" || !body.auth
-  ) {
-    response.status(400).json({ ok: false, error: "invalid_subscription" });
+  if (!isCanonicalId(body?.owner_canonical_id)) {
+    response.status(400).json(makeBadRequest("owner_canonical_id", "must be a canonical id"));
     return;
   }
-  if (!/^https?:\/\//i.test(body.endpoint)) {
-    response.status(400).json({ ok: false, error: "invalid_endpoint" });
+  const rateResult = checkPushSubscriptionRate(resolveRemoteIp(request), body.owner_canonical_id ?? null);
+  if (!rateResult.ok) { emitRateLimited(response, rateResult); return; }
+  if (!isDeviceId(body?.device_id)) {
+    response.status(400).json(makeBadRequest("device_id", "must be a 32-hex device id"));
+    return;
+  }
+  if (!isNonEmptyString(body?.endpoint, 2048) || !/^https?:\/\//i.test(body!.endpoint!)) {
+    response.status(400).json(makeBadRequest("endpoint", "must be an http(s) URL"));
+    return;
+  }
+  if (!isNonEmptyString(body?.p256dh, 256)) {
+    response.status(400).json(makeBadRequest("p256dh", "must be a non-empty base64url string"));
+    return;
+  }
+  if (!isNonEmptyString(body?.auth, 64)) {
+    response.status(400).json(makeBadRequest("auth", "must be a non-empty base64url string"));
     return;
   }
   upsertPushSubscription({
-    owner_canonical_id: body.owner_canonical_id,
-    device_id: body.device_id,
-    endpoint: body.endpoint,
-    p256dh: body.p256dh,
-    auth: body.auth
+    owner_canonical_id: body.owner_canonical_id!,
+    device_id: body.device_id!,
+    endpoint: body.endpoint!,
+    p256dh: body.p256dh!,
+    auth: body.auth!
   });
   response.json({ ok: true });
 });
 
 pushRouter.delete("/subscriptions", (request, response) => {
   const body = request.body as Partial<{ device_id: string; endpoint: string }>;
-  if (typeof body?.device_id !== "string" || typeof body?.endpoint !== "string") {
-    response.status(400).json({ ok: false, error: "invalid_payload" });
+  if (!isDeviceId(body?.device_id)) {
+    response.status(400).json(makeBadRequest("device_id", "must be a 32-hex device id"));
     return;
   }
-  const deleted = deletePushSubscriptionByDeviceAndEndpoint(body.device_id, body.endpoint);
+  if (!isNonEmptyString(body?.endpoint, 2048)) {
+    response.status(400).json(makeBadRequest("endpoint", "must be a non-empty URL"));
+    return;
+  }
+  // DELETE has no owner_canonical_id in the body — the row carries it.
+  // Per-IP cap is enough here; an attacker who can flood DELETE without
+  // owning the device_id cannot affect any row anyway (deleteByDeviceAndEndpoint
+  // is a no-op when the row doesn't exist).
+  const rateResult = checkPushSubscriptionRate(resolveRemoteIp(request), null);
+  if (!rateResult.ok) { emitRateLimited(response, rateResult); return; }
+  const deleted = deletePushSubscriptionByDeviceAndEndpoint(body!.device_id!, body!.endpoint!);
   response.json({ ok: true, deleted });
 });
 
@@ -97,8 +134,20 @@ pushRouter.post("/test", async (request, response) => {
     stub_status: number;
     echo_payload: boolean;
   }>;
-  if (typeof body?.recipient_canonical_id !== "string" || !body.recipient_canonical_id) {
-    response.status(400).json({ ok: false, error: "missing_recipient" });
+  if (!isCanonicalId(body?.recipient_canonical_id)) {
+    response.status(400).json(makeBadRequest("recipient_canonical_id", "must be a canonical id"));
+    return;
+  }
+  if (body?.sender_canonical_id !== undefined && !isCanonicalId(body.sender_canonical_id)) {
+    response.status(400).json(makeBadRequest("sender_canonical_id", "must be a canonical id"));
+    return;
+  }
+  if (body?.unread_count !== undefined && !isFiniteInt(body.unread_count, { min: 0, max: 1_000_000 })) {
+    response.status(400).json(makeBadRequest("unread_count", "must be a non-negative integer"));
+    return;
+  }
+  if (body?.sender_handle !== undefined && !isBoundedString(body.sender_handle, 64)) {
+    response.status(400).json(makeBadRequest("sender_handle", "must be ≤ 64 chars"));
     return;
   }
   // dev-only echo mode: returns the exact JSON payload the server

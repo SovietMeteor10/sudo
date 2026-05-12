@@ -72,6 +72,16 @@ function randId(prefix) {
   return prefix + crypto.randomBytes(8).toString("hex");
 }
 
+// Valid sudo: canonical_id (matches CANONICAL_ID_PATTERN).
+function randCanonicalId() {
+  return `sudo:ed25519:${crypto.randomBytes(32).toString("hex")}`;
+}
+
+// Valid device_id (32 hex chars).
+function randDeviceId() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
 function b64url(buf) {
   return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -145,8 +155,8 @@ async function main() {
   }
   {
     const r = await postJson("/api/push/subscriptions", {
-      owner_canonical_id: randId("sudo:owner-"),
-      device_id: randId("dev-"),
+      owner_canonical_id: randCanonicalId(),
+      device_id: randDeviceId(),
       endpoint: "javascript:alert(1)",
       p256dh: realP256dh(),
       auth: realAuth()
@@ -156,8 +166,8 @@ async function main() {
   }
 
   // 3) Subscription round-trip + idempotency.
-  const owner = randId("sudo:owner-");
-  const device = randId("dev-");
+  const owner = randCanonicalId();
+  const device = randDeviceId();
   await withStubProvider(
     (req, res) => {
       // Provider stub: answer 410 Gone for every push so we can assert
@@ -190,7 +200,7 @@ async function main() {
       // delivered=1, pruned=0.
       r = await postJson("/api/push/test", {
         recipient_canonical_id: owner,
-        sender_canonical_id: randId("sudo:sender-"),
+        sender_canonical_id: randCanonicalId(),
         sender_handle: "@alice",
         unread_count: 1,
         stub_status: 201
@@ -207,7 +217,7 @@ async function main() {
       // Fire again under stub-410 (endpoint gone). attempts=1, pruned=1.
       r = await postJson("/api/push/test", {
         recipient_canonical_id: owner,
-        sender_canonical_id: randId("sudo:sender-"),
+        sender_canonical_id: randCanonicalId(),
         sender_handle: "@alice",
         unread_count: 2,
         stub_status: 410
@@ -221,7 +231,7 @@ async function main() {
       // Re-fire under any stub — the row was pruned, so attempted = 0.
       r = await postJson("/api/push/test", {
         recipient_canonical_id: owner,
-        sender_canonical_id: randId("sudo:sender-"),
+        sender_canonical_id: randCanonicalId(),
         sender_handle: "@alice",
         unread_count: 1,
         stub_status: 201
@@ -236,8 +246,8 @@ async function main() {
   await withStubProvider(
     (req, res) => { res.statusCode = 410; res.end(); },
     async (endpoint) => {
-      const owner2 = randId("sudo:owner-");
-      const device2 = randId("dev-");
+      const owner2 = randCanonicalId();
+      const device2 = randDeviceId();
       const sub = {
         owner_canonical_id: owner2,
         device_id: device2,
@@ -258,7 +268,7 @@ async function main() {
       // After delete, a test fan-out should be a no-op.
       r = await postJson("/api/push/test", {
         recipient_canonical_id: owner2,
-        sender_canonical_id: randId("sudo:sender-"),
+        sender_canonical_id: randCanonicalId(),
         sender_handle: "@alice",
         unread_count: 1,
         stub_status: 201

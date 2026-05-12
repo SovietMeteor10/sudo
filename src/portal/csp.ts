@@ -26,11 +26,25 @@ function computeImportmapHash(): string {
 
 const importmapHash = computeImportmapHash();
 
+// Phase 2 tightening: drop base-uri to 'none' (no <base> tag is used
+// anywhere, so anchoring relative URLs to anything but the document
+// origin is never legitimate). font-src is added as a defence-in-
+// depth: no @font-face or external font URLs exist in styles.css, so
+// 'self' is correct and a future addition that tries to reach a
+// font CDN will need to be a deliberate CSP change.
+//
+// style-src keeps 'unsafe-inline' because the client mutates inline
+// element.style.X for several dynamic surfaces (fingerprint grid
+// colours, textarea autogrow, message menu positioning). Each of
+// those would need its own non-inline mechanism (class swap, CSS
+// custom property update from a hashed style block, etc.) before
+// 'unsafe-inline' can come out.
 export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   `script-src 'self' ${importmapHash}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data:",
+  "font-src 'self'",
   "connect-src 'self'",
   // Same-origin service worker + manifest. Push subscription endpoints live
   // off-origin (FCM / Mozilla autopush / Apple) but the browser does that
@@ -39,6 +53,6 @@ export const CONTENT_SECURITY_POLICY = [
   "manifest-src 'self'",
   "object-src 'none'",
   "frame-ancestors 'none'",
-  "base-uri 'self'",
+  "base-uri 'none'",
   "form-action 'self'"
 ].join("; ");

@@ -378,6 +378,25 @@ const brandLabel = "sudo";
 const brandFlickerPool = ["σ", "δ", "с", "д", "す", "ド", "س", "ו", "द", "ο", "そ", "ス", "ا", "א"];
 const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
 
+// Dev-mode CSP violation logging. The hostname check is so we don't
+// noise production with console output even if a stray violation
+// fires; in production those should surface via the browser's own
+// dev tools when needed. Loopback + localhost only.
+if (typeof document !== "undefined"
+    && (location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
+  document.addEventListener("securitypolicyviolation", (event) => {
+    // eslint-disable-next-line no-console
+    console.warn("[csp]", {
+      directive: event.violatedDirective,
+      effective: event.effectiveDirective,
+      blockedURI: event.blockedURI,
+      sample: event.sample,
+      source: event.sourceFile,
+      line: event.lineNumber
+    });
+  });
+}
+
 renderLookupResult(lookupRoot, lookupState);
 renderSignupState(signupStateRoot, signupState);
 renderSigninState(signinStateRoot, signinState);
