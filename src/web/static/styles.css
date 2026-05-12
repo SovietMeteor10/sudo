@@ -477,8 +477,7 @@ body[data-auth-state="auth-restore"] .landing {
 
 /* Inline passphrase prompt shown inside the linked-devices dialog
    when the user is signed in (identity restored) but the in-memory
-   crypto account is locked — typically after a page reload. Replaces
-   the legacy "unlock your account first" copy. */
+   crypto account is locked — typically after a page reload. */
 .device-passphrase-prompt {
   display: flex;
   flex-direction: column;
