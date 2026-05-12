@@ -9,6 +9,7 @@ import type {
   LocalEvent,
   LocalIdentityRecord,
   LocalMessage,
+  LocalMessageReaction,
   LocalReadState,
   LocalSetting,
   LocalStateSnapshot,
@@ -937,6 +938,63 @@ async function getRecord<T>(storeName: LocalStoreName, key: IDBValidKey): Promis
     request.onsuccess = () => resolve((request.result as T | undefined) ?? null);
     request.onerror = () => reject(request.error ?? new Error(`failed to read ${storeName}`));
   });
+}
+
+// ---- message_reactions ----------------------------------------------------
+
+// Monotonic upsert. Caller passes the FULL row including
+// updated_at + optional removed_at. The store keeps whichever side
+// has the newer updated_at. A removed_at write at a higher
+// updated_at than the previous active reaction wins; a stale
+// upsert (lower updated_at than the existing removed_at) is a
+// no-op so a slow peer replaying old state can never resurrect a
+// retired reaction.
+export async function upsertLocalMessageReactionMonotonic(
+  reaction: LocalMessageReaction
+): Promise<{ written: boolean; row: LocalMessageReaction }> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("message_reactions", "readwrite");
+    const store = tx.objectStore("message_reactions");
+    const key: [string, string, string] = [
+      reaction.owner_canonical_id,
+      reaction.relay_message_id,
+      reaction.reactor_canonical_id
+    ];
+    const get = store.get(key);
+    get.onsuccess = () => {
+      const existing = get.result as LocalMessageReaction | undefined;
+      if (existing !== undefined && Date.parse(existing.updated_at) >= Date.parse(reaction.updated_at)) {
+        resolve({ written: false, row: existing });
+        return;
+      }
+      const put = store.put(reaction);
+      put.onsuccess = () => resolve({ written: true, row: reaction });
+      put.onerror = () => reject(put.error ?? new Error("reaction put failed"));
+    };
+    get.onerror = () => reject(get.error ?? new Error("reaction get failed"));
+  }).then((result) => {
+    broadcastLocalStateChange("messages", reaction.owner_canonical_id);
+    return result as { written: boolean; row: LocalMessageReaction };
+  });
+}
+
+export async function listLocalReactionsForRelayMessageId(
+  ownerCanonicalId: string,
+  relayMessageId: string
+): Promise<LocalMessageReaction[]> {
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("message_reactions", "readonly");
+    const idx = tx.objectStore("message_reactions").index("by_owner_relay");
+    const req = idx.getAll(IDBKeyRange.only([ownerCanonicalId, relayMessageId]));
+    req.onsuccess = () => resolve((req.result as LocalMessageReaction[]) ?? []);
+    req.onerror = () => reject(req.error ?? new Error("listLocalReactionsForRelayMessageId failed"));
+  });
+}
+
+export async function listLocalReactionsForOwner(ownerCanonicalId: string): Promise<LocalMessageReaction[]> {
+  return getAllByIndex<LocalMessageReaction>("message_reactions", "by_owner", ownerCanonicalId);
 }
 
 async function getAllRecords<T>(storeName: LocalStoreName): Promise<T[]> {

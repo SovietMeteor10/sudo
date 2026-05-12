@@ -54,6 +54,17 @@ import {
   startPolling as startContactSyncPolling
 } from "./sync/coordinator.js";
 import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/messageSync.js";
+import {
+  REACTION_EMOJI_SET,
+  isReactionEmoji,
+  notifyReactionUpsert,
+  postReactionRelayEnvelope
+} from "./sync/messageReactionSync.js";
+import type { LocalMessageReaction } from "./local/local-types.js";
+import {
+  listLocalReactionsForOwner,
+  listLocalReactionsForRelayMessageId
+} from "./local/local-store.js";
 // Side-effect import: registers the draft slice projector at module
 // load. The broadcast wrappers (applyDraftUpsertWithBroadcast,
 // applyDraftDeleteWithBroadcast) aren't called from main yet because
@@ -67,6 +78,12 @@ import "./sync/draftSync.js";
 // resurrect deleted plaintext.
 import "./sync/tombstoneWatermarkSync.js";
 import { readLastGcMeta, runTombstoneGc } from "./local/tombstoneGc.js";
+import {
+  notifyComposerInput,
+  startReceivingTypingFor,
+  stopReceivingTyping,
+  stopTyping
+} from "./typing.js";
 import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
 import { notifyReadStateUpsert } from "./sync/readStateSync.js";
 import { notifyConversationSettingsUpsert } from "./sync/conversationSettingsSync.js";
@@ -240,7 +257,9 @@ const chatPopupReplyCancel = getRequiredButton("chat-popup-reply-cancel");
 const messageMenu = getRequiredElement("message-menu");
 const messageMenuReply = getRequiredButton("message-menu-reply");
 const messageMenuForward = getRequiredButton("message-menu-forward");
+const messageMenuReact = getRequiredButton("message-menu-react");
 const messageMenuDelete = getRequiredButton("message-menu-delete");
+const reactionPicker = getRequiredElement("reaction-picker");
 const conversationSettingsDialog = getRequiredDialog("conversation-settings-dialog");
 const conversationSettingsTtl = getRequiredSelect("conversation-settings-ttl");
 const conversationSettingsState = getRequiredElement("conversation-settings-state");
@@ -294,6 +313,7 @@ const devicePassphrasePrompt = getRequiredElement("device-passphrase-prompt");
 const devicePassphraseHint = getRequiredElement("device-passphrase-prompt-hint");
 const devicePassphraseInput = getRequiredInput("device-passphrase-input");
 const devicePassphraseFeedback = getRequiredElement("device-passphrase-prompt-feedback");
+const chatPopupTyping = getRequiredElement("chat-popup-typing");
 const unlockDialog = getRequiredDialog("unlock-dialog");
 const unlockPassphraseInput = getRequiredInput("unlock-passphrase-input");
 const unlockFeedback = getRequiredElement("unlock-feedback");
@@ -1097,6 +1117,18 @@ messageMenuDelete.addEventListener("click", () => {
   void handleChatMessageDelete(target.message_id);
 });
 
+messageMenuReact.addEventListener("click", () => {
+  const target = messageMenuTarget;
+  if (target === null || target.deleted || typeof target.relay_message_id !== "string") {
+    closeMessageMenu();
+    return;
+  }
+  // Position the picker over the same anchor the menu was over.
+  const rect = messageMenu.getBoundingClientRect();
+  closeMessageMenu();
+  openReactionPicker(target.relay_message_id, { top: rect.top, left: rect.left });
+});
+
 conversationSettingsCancel.addEventListener("click", () => {
   conversationSettingsDialog.close();
 });
@@ -1119,7 +1151,18 @@ chatPopupForm.addEventListener("submit", (event) => {
   void sendChatPopupMessage();
 });
 
-chatPopupInput.addEventListener("input", () => autoGrowTextarea(chatPopupInput, 28, 120));
+chatPopupInput.addEventListener("input", () => {
+  autoGrowTextarea(chatPopupInput, 28, 120);
+  // Typing indicator: only emit when a chat is open AND the user
+  // is signed in. Clearing the composer issues an immediate stop.
+  if (chatTarget !== null && currentIdentityDocument !== null) {
+    if (chatPopupInput.value.length === 0) {
+      stopTyping(currentIdentityDocument.canonical_id);
+    } else {
+      notifyComposerInput(currentIdentityDocument.canonical_id, chatTarget.canonical);
+    }
+  }
+});
 chatPopupInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -5724,6 +5767,26 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   chatPopupHandle.textContent = target.handle || target.canonical;
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
+  // Start the typing-indicator receive loop for this peer. The
+  // server is recipient-keyed (it stores "X is typing TO me"), so
+  // we poll under our own canonical_id and filter for events from
+  // the peer.
+  if (currentIdentityDocument !== null) {
+    startReceivingTypingFor({
+      ownCanonicalId: currentIdentityDocument.canonical_id,
+      peerCanonicalId: target.canonical,
+      peerHandle: target.handle || target.canonical,
+      render: (active, handle) => {
+        if (active) {
+          chatPopupTyping.textContent = `${handle ?? "someone"} is typing…`;
+          chatPopupTyping.hidden = false;
+        } else {
+          chatPopupTyping.textContent = "";
+          chatPopupTyping.hidden = true;
+        }
+      }
+    });
+  }
   // Foreground dedup: while a conversation is open, suppress push
   // notifications targeted at it. The SW caches a TTL so closed tabs
   // don't permanently silence themselves if the page never sends an
@@ -5959,6 +6022,13 @@ function closeChatPopup(): void {
   if (chatTarget !== null) {
     unsuppressConversation(chatTarget.canonical);
   }
+  // Tear down typing — both directions. Receive loop stops polling
+  // + clears the indicator; sender side issues a final stop so the
+  // peer's view goes blank on the next poll.
+  stopReceivingTyping();
+  if (currentIdentityDocument !== null) {
+    stopTyping(currentIdentityDocument.canonical_id);
+  }
   chatPopup.hidden = true;
   chatPopup.classList.remove("is-minimized");
   setChatFullscreen(false);
@@ -6011,6 +6081,18 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
       messageByRelayId.set(m.relay_message_id, m);
     }
   }
+  // Load reactions for the messages in view and group by relay_message_id.
+  // Aggregate counts in render. Reactions store is keyed on the relay id
+  // (the only id shared between sender and recipient devices).
+  const reactionsByRelay = new Map<string, LocalMessageReaction[]>();
+  try {
+    const ownerReactions = await listLocalReactionsForOwner(currentIdentityDocument.canonical_id);
+    for (const r of ownerReactions) {
+      const list = reactionsByRelay.get(r.relay_message_id) ?? [];
+      list.push(r);
+      reactionsByRelay.set(r.relay_message_id, list);
+    }
+  } catch { /* missing IDB → render without pills */ }
   // Merge timeline: interleave messages and system events by created_at.
   type Entry = { at: string; kind: "message"; m: ChatMessageView } | { at: string; kind: "system"; text: string };
   const entries: Entry[] = [];
@@ -6019,8 +6101,10 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
   entries.sort((a, b) => a.at.localeCompare(b.at));
   const fragment = document.createDocumentFragment();
   for (const entry of entries) {
-    if (entry.kind === "message") fragment.append(renderChatMessage(entry.m, messageById, messageByRelayId));
-    else fragment.append(renderChatSystem(entry.text));
+    if (entry.kind === "message") {
+      const rel = typeof entry.m.relay_message_id === "string" ? reactionsByRelay.get(entry.m.relay_message_id) ?? [] : [];
+      fragment.append(renderChatMessage(entry.m, messageById, messageByRelayId, rel));
+    } else fragment.append(renderChatSystem(entry.text));
   }
   chatPopupBody.replaceChildren(fragment);
   if (options.forceScrollToBottom || wasNearBottom) {
@@ -6045,7 +6129,8 @@ function makeChatEmpty(text: string): HTMLElement {
 function renderChatMessage(
   message: ChatMessageView,
   messageById: Map<string, ChatMessageView>,
-  messageByRelayId: Map<string, ChatMessageView>
+  messageByRelayId: Map<string, ChatMessageView>,
+  reactions: LocalMessageReaction[] = []
 ): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
@@ -6141,6 +6226,56 @@ function renderChatMessage(
     meta.append(tick);
   }
   wrapper.append(bubble, meta);
+
+  // Reaction pills. Compact aggregate per emoji. Hidden when the
+  // message has no active reactions. Clicking my-own pill removes
+  // it; clicking another emoji's pill is a no-op (the picker is the
+  // entry for adding a new reaction). On tombstoned messages we
+  // keep the aggregate visible but disable interaction.
+  const myCanonical = currentIdentityDocument?.canonical_id ?? "";
+  const activeReactions = reactions.filter((r) => typeof r.removed_at !== "string");
+  if (activeReactions.length > 0) {
+    const reactionsRow = document.createElement("div");
+    reactionsRow.className = "chat-message__reactions";
+    // Aggregate by emoji.
+    const byEmoji = new Map<string, { count: number; mine: boolean }>();
+    for (const r of activeReactions) {
+      const entry = byEmoji.get(r.emoji) ?? { count: 0, mine: false };
+      entry.count += 1;
+      if (r.reactor_canonical_id === myCanonical) entry.mine = true;
+      byEmoji.set(r.emoji, entry);
+    }
+    // Stable order: follow the canonical 5-emoji set.
+    for (const emoji of REACTION_EMOJI_SET) {
+      const entry = byEmoji.get(emoji);
+      if (entry === undefined) continue;
+      const pill = document.createElement("button");
+      pill.type = "button";
+      pill.className = "chat-message__reaction-pill" + (entry.mine ? " is-mine" : "");
+      pill.textContent = `${emoji} ${entry.count}`;
+      pill.dataset["reactionEmoji"] = emoji;
+      if (tombstoned) {
+        pill.disabled = true;
+      } else if (entry.mine && typeof message.relay_message_id === "string") {
+        const relayId = message.relay_message_id;
+        pill.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void toggleOwnReaction(relayId, emoji, "remove");
+        });
+      } else {
+        pill.disabled = false;
+        if (typeof message.relay_message_id === "string") {
+          const relayId = message.relay_message_id;
+          pill.addEventListener("click", (event) => {
+            event.stopPropagation();
+            void toggleOwnReaction(relayId, emoji, "add");
+          });
+        }
+      }
+      reactionsRow.append(pill);
+    }
+    wrapper.append(reactionsRow);
+  }
 
   // Action kebab. Replaces the prior inline delete button. The
   // trigger is in DOM for every message (so smokes can assert
@@ -6239,14 +6374,115 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
   messageMenuForward.disabled = messageMenuTarget.deleted;
   messageMenuForward.setAttribute("aria-disabled", String(messageMenuTarget.deleted));
   messageMenuForward.removeAttribute("title");
+  // React requires a relay_message_id (reactions are keyed by it),
+  // and is disabled on tombstoned messages per the spec ("hide
+  // reaction picker on tombstoned, keep aggregate visible").
+  const canReact = !messageMenuTarget.deleted && typeof messageMenuTarget.relay_message_id === "string";
+  messageMenuReact.disabled = !canReact;
+  messageMenuReact.setAttribute("aria-disabled", String(!canReact));
   // Focus first enabled item for keyboard users.
-  const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuDelete].find((b) => !b.disabled);
+  const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuReact, messageMenuDelete].find((b) => !b.disabled);
   if (firstEnabled) firstEnabled.focus();
 }
 
 function closeMessageMenu(): void {
   messageMenu.hidden = true;
   messageMenuTarget = null;
+}
+
+// ============================================================
+// Reaction picker + toggle logic.
+// ============================================================
+function openReactionPicker(relayMessageId: string, anchor: { top: number; left: number }): void {
+  reactionPicker.hidden = false;
+  // Measure + clamp to viewport so we don't paint off-screen on
+  // tiny mobile widths.
+  const rect = reactionPicker.getBoundingClientRect();
+  const clampedLeft = Math.min(Math.max(8, anchor.left), window.innerWidth - rect.width - 8);
+  const clampedTop = Math.min(Math.max(8, anchor.top), window.innerHeight - rect.height - 8);
+  reactionPicker.style.top = `${clampedTop}px`;
+  reactionPicker.style.left = `${clampedLeft}px`;
+  reactionPicker.dataset["relayMessageId"] = relayMessageId;
+}
+
+function closeReactionPicker(): void {
+  reactionPicker.hidden = true;
+  delete reactionPicker.dataset["relayMessageId"];
+}
+
+reactionPicker.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) return;
+  const button = target.closest<HTMLElement>("[data-reaction-emoji]");
+  if (button === null) return;
+  const emoji = button.dataset["reactionEmoji"];
+  const relayMessageId = reactionPicker.dataset["relayMessageId"];
+  closeReactionPicker();
+  if (typeof emoji !== "string" || typeof relayMessageId !== "string") return;
+  void toggleOwnReaction(relayMessageId, emoji, "add");
+});
+
+document.addEventListener("click", (event) => {
+  if (reactionPicker.hidden) return;
+  if (event.target instanceof Element) {
+    // Clicks INSIDE the picker, or on the kebab menu item that
+    // opens it, must not auto-close.
+    if (event.target.closest("#reaction-picker")) return;
+    if (event.target.closest("#message-menu-react")) return;
+  }
+  closeReactionPicker();
+});
+
+// User-driven add / remove. "Add" semantics: if the user already
+// has a reaction on this message and the new emoji matches, treat
+// as remove (toggle); if the new emoji differs, replace.
+async function toggleOwnReaction(
+  relayMessageId: string,
+  emoji: string,
+  mode: "add" | "remove"
+): Promise<void> {
+  if (currentIdentityDocument === null || chatTarget === null) return;
+  if (!isReactionEmoji(emoji)) return;
+  if (isAccountLocked()) {
+    // Reactions piggyback on the relay envelope which needs the
+    // crypto account for signing; if locked, run the unlock flow
+    // first then retry. The local store write is fast enough that
+    // we keep it inside the resume callback rather than splitting.
+    requestUnlock(() => toggleOwnReaction(relayMessageId, emoji, mode));
+    return;
+  }
+  const owner = currentIdentityDocument.canonical_id;
+  const me = owner;
+  const existing = (await listLocalReactionsForRelayMessageId(owner, relayMessageId))
+    .find((r) => r.reactor_canonical_id === me);
+  const now = new Date().toISOString();
+  let next: LocalMessageReaction;
+  if (mode === "remove" && existing !== undefined && existing.emoji === emoji && typeof existing.removed_at !== "string") {
+    next = { ...existing, removed_at: now, updated_at: now };
+  } else if (existing !== undefined && existing.emoji === emoji && typeof existing.removed_at !== "string") {
+    // Same emoji, mode=add: toggle off
+    next = { ...existing, removed_at: now, updated_at: now };
+  } else {
+    next = {
+      owner_canonical_id: owner,
+      relay_message_id: relayMessageId,
+      reactor_canonical_id: me,
+      emoji,
+      updated_at: now
+    };
+  }
+  await notifyReactionUpsert(next);
+  // Cross-user emit: the chat peer also needs to see the aggregate.
+  if (currentCryptoAccount !== null) {
+    void postReactionRelayEnvelope({
+      senderAccount: currentCryptoAccount,
+      senderHandle: currentIdentityDocument.handle,
+      recipientCanonicalId: chatTarget.canonical,
+      recipientHandle: chatTarget.handle,
+      reaction: next
+    });
+  }
+  await renderChatPopupBody(chatTarget.canonical);
 }
 
 function setReplyContext(messageId: string, body: string, direction: "sent" | "received", relayMessageId?: string): void {
@@ -6531,6 +6767,12 @@ async function sendChatPopupMessage(): Promise<void> {
     });
     chatPopupInput.value = "";
     autoGrowTextarea(chatPopupInput, 28, 120);
+    // The composer was just cleared by send — tell the peer we
+    // stopped typing so their indicator goes away immediately rather
+    // than waiting for the 5s idle timeout.
+    if (currentIdentityDocument !== null) {
+      stopTyping(currentIdentityDocument.canonical_id);
+    }
     clearReplyContext();
     await renderChatPopupBody(target.canonical, { forceScrollToBottom: true });
     await refreshLocalChats();

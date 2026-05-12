@@ -260,3 +260,20 @@ export type LocalStorageStatus = {
   pending_outbound: number;
   device_sync_events: number;
 };
+
+// One row per (owner, relay_message_id, reactor). A reactor can
+// have at most one active reaction per message; switching emoji is
+// an in-place update keyed on the composite primary key.
+//
+// `removed_at` is what the spec calls a tombstone-equivalent. We
+// preserve the row instead of deleting it so a stale "you reacted
+// 👍" replay from a slow peer can be dropped by the monotonic-by-
+// updated_at rule (newer wins; removed_at flips active off).
+export type LocalMessageReaction = {
+  owner_canonical_id: string;
+  relay_message_id: string;
+  reactor_canonical_id: string;
+  emoji: string;
+  updated_at: string;
+  removed_at?: string;
+};

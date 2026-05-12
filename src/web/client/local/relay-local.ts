@@ -13,6 +13,11 @@ import {
 } from "./local-store.js";
 import type { LocalMessage, PendingOutbound } from "./local-types.js";
 import { notifyMessageUpsert } from "../sync/messageSync.js";
+import {
+  REACTION_CIPHERTEXT_SCHEME,
+  applyIncomingReactionFromRelay,
+  decodeReactionEnvelopeBody
+} from "../sync/messageReactionSync.js";
 
 const SUDO_PROTOCOL_VERSION = "0.1.0";
 
@@ -349,6 +354,31 @@ export async function retrieveRelayInboxAfterLocalSave(
           await applyMessageReceipt(ownerCanonicalId, receipt.target_relay_message_id, {
             delivered_at: receipt.delivered_at,
             read_at: receipt.read_at
+          });
+        }
+      } catch { /* malformed — drop, still ACK below */ }
+      try {
+        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+          method: "POST",
+          headers: { accept: "application/json" }
+        });
+      } catch { /* ACK retry on next poll */ }
+      continue;
+    }
+    // Reaction envelopes are metadata about an existing message, not
+    // chat content. Decode, apply to the local reaction store, ACK,
+    // and skip the message-save path.
+    if (envelope.ciphertext_scheme === REACTION_CIPHERTEXT_SCHEME) {
+      try {
+        const body = decodeReactionEnvelopeBody(envelope.ciphertext);
+        if (body !== null) {
+          await applyIncomingReactionFromRelay(ownerCanonicalId, {
+            owner_canonical_id: ownerCanonicalId,
+            relay_message_id: body.relay_message_id,
+            reactor_canonical_id: body.reactor_canonical_id,
+            emoji: body.emoji,
+            updated_at: body.updated_at,
+            removed_at: body.removed_at
           });
         }
       } catch { /* malformed — drop, still ACK below */ }

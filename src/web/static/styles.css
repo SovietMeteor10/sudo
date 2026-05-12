@@ -2595,6 +2595,79 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
+/* Reaction picker — same visual family as message-menu but
+   horizontal, hosting the fixed 5-emoji set. */
+.reaction-picker {
+  position: fixed;
+  z-index: 7;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+}
+.reaction-picker[hidden] { display: none; }
+.reaction-picker__item {
+  background: transparent;
+  border: 0;
+  padding: 6px 8px;
+  font-size: 18px;
+  cursor: pointer;
+  border-radius: 3px;
+  line-height: 1;
+}
+.reaction-picker__item:hover,
+.reaction-picker__item:focus-visible {
+  background: var(--panel-soft);
+  outline: none;
+}
+
+/* Reaction pills appear directly below the message bubble. They
+   render aggregate counts by emoji; the current user's reaction
+   carries a distinguishing background. */
+.chat-message__reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.chat-message__reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+.chat-message__reaction-pill.is-mine {
+  border-color: var(--focus);
+  background: var(--panel);
+}
+.chat-message__reaction-pill:hover:not(:disabled) {
+  background: var(--panel);
+}
+.chat-message__reaction-pill:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Typing indicator. Lives between the message body and the
+   composer; small muted line, never blocks scroll. */
+.chat-popup__typing {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+.chat-popup__typing[hidden] { display: none; }
+
 .chat-popup__form {
   display: flex;
   align-items: flex-end;

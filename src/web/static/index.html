@@ -178,6 +178,7 @@
       <div class="chat-popup__sidebar-list" id="chat-popup-sidebar-list"></div>
     </aside>
     <div class="chat-popup__body" id="chat-popup-body" aria-live="polite"></div>
+    <div class="chat-popup__typing" id="chat-popup-typing" hidden aria-live="polite"></div>
     <div class="chat-popup__reply-context" id="chat-popup-reply-context" hidden aria-live="polite">
       <div class="chat-popup__reply-snippet" id="chat-popup-reply-snippet"></div>
       <button class="chat-popup__reply-cancel" id="chat-popup-reply-cancel" type="button" aria-label="cancel reply" title="cancel reply">×</button>
@@ -199,7 +200,16 @@
   <div class="message-menu" id="message-menu" hidden role="menu" aria-label="message actions">
     <button class="message-menu__item" id="message-menu-reply" type="button" role="menuitem">reply</button>
     <button class="message-menu__item" id="message-menu-forward" type="button" role="menuitem">forward</button>
+    <button class="message-menu__item" id="message-menu-react" type="button" role="menuitem">react</button>
     <button class="message-menu__item message-menu__item--danger" id="message-menu-delete" type="button" role="menuitem">delete</button>
+  </div>
+
+  <div class="reaction-picker" id="reaction-picker" hidden role="menu" aria-label="pick a reaction">
+    <button class="reaction-picker__item" type="button" role="menuitem" data-reaction-emoji="👍" aria-label="like">👍</button>
+    <button class="reaction-picker__item" type="button" role="menuitem" data-reaction-emoji="❤️" aria-label="love">❤️</button>
+    <button class="reaction-picker__item" type="button" role="menuitem" data-reaction-emoji="😂" aria-label="laugh">😂</button>
+    <button class="reaction-picker__item" type="button" role="menuitem" data-reaction-emoji="😮" aria-label="wow">😮</button>
+    <button class="reaction-picker__item" type="button" role="menuitem" data-reaction-emoji="😢" aria-label="sad">😢</button>
   </div>
 
   <dialog class="signup-dialog signup-dialog--forward" id="forward-picker-dialog" aria-labelledby="forward-picker-title">

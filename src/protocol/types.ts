@@ -355,7 +355,7 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // on the device that wrote it. The rationale (sync loops, accidental
 // secret propagation, cross-device UX confusion) is documented in
 // docs/SECURITY.md → "Sync is explicit, not automatic".
-export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile" | "read_state" | "conversation_settings" | "tombstone_watermark";
+export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile" | "read_state" | "conversation_settings" | "tombstone_watermark" | "message_reaction";
 export type SyncEventKind =
   | "contact.upsert"
   | "contact.delete"
@@ -368,7 +368,8 @@ export type SyncEventKind =
   | "profile.upsert"
   | "read_state.upsert"
   | "conversation_settings.upsert"
-  | "tombstone_watermark.set";
+  | "tombstone_watermark.set"
+  | "message_reaction.upsert";
 
 export type SignableSyncEvent = {
   type: "sudo_sync_event";

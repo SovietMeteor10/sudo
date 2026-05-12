@@ -11,6 +11,7 @@ import { notificationsRouter } from "./notifications/notifications.routes.js";
 import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
 import { pushRouter } from "./push/push.routes.js";
 import { relayRouter } from "./relay/relay.routes.js";
+import { typingRouter } from "./typing/typing.routes.js";
 import { devRouter } from "./routes/dev.js";
 import { fingerRouter } from "./routes/finger.js";
 import { inboxRouter } from "./routes/inbox.js";
@@ -59,6 +60,7 @@ export function createApp() {
   app.use("/api/discovery", discoveryRouter);
   app.use("/api/notifications", notificationsRouter);
   app.use("/api/push", pushRouter);
+  app.use("/api/typing", typingRouter);
 
   mountStaticClientPortal(app);
 

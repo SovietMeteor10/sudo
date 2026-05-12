@@ -10,7 +10,11 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-export const LOCAL_DB_VERSION = 8;
+// v9: message_reactions store. One row per (owner, relay_message_id,
+// reactor_canonical_id). Monotonic by updated_at; removed_at preserves
+// the row as a tombstone-equivalent so a late replay of the prior
+// emoji can't resurrect it.
+export const LOCAL_DB_VERSION = 9;
 
 export const localStoreNames = [
   "events",
@@ -27,7 +31,8 @@ export const localStoreNames = [
   "backfill_state",
   "read_state",
   "conversation_settings",
-  "conversation_system_events"
+  "conversation_system_events",
+  "message_reactions"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -83,6 +88,17 @@ export function subscribeLocalStateBroadcasts(handler: LocalStateSubscriber): ()
 export function broadcastLocalStateChange(kind: LocalStateChangeKind, ownerCanonicalId: string): void {
   if (typeof ownerCanonicalId !== "string" || ownerCanonicalId.length === 0) return;
   broadcast({ type: "local-state-changed", kind, ownerCanonicalId });
+  // Also notify SAME-tab subscribers. BroadcastChannel by spec
+  // doesn't deliver back to the originating tab; without this fan-
+  // out a same-tab write whose UI refresh isn't already explicitly
+  // wired at the call site (e.g. the inbox poll's reaction branch)
+  // would leave the visible chat popup stale until the next render
+  // triggered by some unrelated event. Subscribers must be
+  // idempotent — the existing handler chain (refreshLocalChats /
+  // renderChatPopupBody) already is.
+  for (const handler of [...localStateSubscribers]) {
+    try { handler({ kind, ownerCanonicalId }); } catch { /* ignore */ }
+  }
 }
 
 let broadcastChannel: BroadcastChannel | null = null;
@@ -513,6 +529,19 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     });
     store.createIndex("by_owner_conversation", ["owner_canonical_id", "conversation_id"]);
     store.createIndex("by_owner", "owner_canonical_id");
+  }
+
+  // v9: message_reactions. One row per (owner, relay_message_id,
+  // reactor_canonical_id). Keyed on a composite array so two
+  // accounts on the same browser don't collide AND so we never
+  // accidentally let one reactor stash two simultaneous emojis on
+  // the same message.
+  if (!db.objectStoreNames.contains("message_reactions")) {
+    const store = db.createObjectStore("message_reactions", {
+      keyPath: ["owner_canonical_id", "relay_message_id", "reactor_canonical_id"]
+    });
+    store.createIndex("by_owner", "owner_canonical_id");
+    store.createIndex("by_owner_relay", ["owner_canonical_id", "relay_message_id"]);
   }
 
   // ---- v3 → v4: account isolation ----

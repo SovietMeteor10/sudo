@@ -584,6 +584,37 @@ export async function deletePushSubscription(input: { device_id: string; endpoin
   }
 }
 
+// Typing indicators are ephemeral — fire-and-forget. We do NOT
+// surface fetch errors to the user; if the relay can't accept a
+// typing ping the worst that happens is the peer doesn't see "is
+// typing…" for a beat. The real message will still send.
+export async function postTypingState(input: {
+  sender_canonical_id: string;
+  recipient_canonical_id: string;
+  typing: boolean;
+}): Promise<void> {
+  try {
+    await fetchWithTimeout("/api/typing", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(input)
+    });
+  } catch { /* best-effort */ }
+}
+
+export type TypingEntry = { sender_canonical_id: string; expires_at: string };
+
+export async function fetchTypingForRecipient(recipientCanonicalId: string): Promise<TypingEntry[]> {
+  try {
+    const r = await fetchWithTimeout(`/api/typing/${encodeURIComponent(recipientCanonicalId)}`, {
+      headers: { accept: "application/json" }
+    });
+    if (!r.ok) return [];
+    const body = await r.json() as { typing?: TypingEntry[] };
+    return Array.isArray(body.typing) ? body.typing : [];
+  } catch { return []; }
+}
+
 export async function listIncomingSocialNotifications(
   recipientCanonicalId: string,
   limit = 100
