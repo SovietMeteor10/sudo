@@ -388,6 +388,15 @@ export async function listPendingOutbound(ownerCanonicalId: string): Promise<Pen
   return getAllByIndex<PendingOutbound>("pending_outbound", "by_owner", ownerCanonicalId);
 }
 
+// Idempotent delete by queue id. Used by the cancel-failed-send
+// path to drop a row the user gave up on.
+export async function deletePendingOutboundByQueueId(localQueueId: string): Promise<void> {
+  const db = await openLocalDb();
+  const transaction = db.transaction("pending_outbound", "readwrite");
+  transaction.objectStore("pending_outbound").delete(localQueueId);
+  await txDone(transaction);
+}
+
 export async function saveIdentitySeen(identity: LocalIdentityRecord): Promise<void> {
   await putRecord("identities", identity);
 }

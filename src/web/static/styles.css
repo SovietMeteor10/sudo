@@ -35,6 +35,20 @@
 html,
 body {
   height: 100%;
+  /* Phase 10.1: kill the mobile rubber-band + horizontal pan that
+     made the whole page feel scrollable. overscroll-behavior stops
+     iOS's bounce; the explicit overflow:hidden on both elements
+     keeps any rogue child from creating page-level scroll. */
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html {
+  /* Pin the viewport so iOS Safari can't pan the document under
+     the URL bar. Combined with the body lock below this prevents
+     "I can move the whole page side-to-side and up/down" without
+     stopping intended internal pane scrolling. */
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
@@ -44,6 +58,12 @@ body {
   font: 14px/1.55 var(--font);
   letter-spacing: 0;
   overflow: hidden;
+  overscroll-behavior: none;
+  /* Block any horizontal touch pan at the document level. Vertical
+     intent passes through to intended scrolling panes (chat body,
+     dialog body, feed list) which set touch-action: pan-y on
+     themselves implicitly via overflow-y: auto. */
+  touch-action: pan-y;
 }
 
 button,
@@ -53,6 +73,25 @@ textarea {
   font: inherit;
   color: inherit;
 }
+
+/* Phase 10.1: top-level offline banner. Sits above the shell on
+   desktop and above the topbar on mobile. Calm copy, no emoji,
+   subdued color so it doesn't look like an error. */
+.offline-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  background: var(--warn-bg, #2a2a2a);
+  color: var(--warn-fg, #f1f1f1);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  padding: 6px 12px;
+  text-align: center;
+}
+.offline-banner[hidden] { display: none; }
+body[data-offline="1"] .shell { padding-top: 30px; }
 
 /* Auth-state visibility */
 body:not([data-auth-state="signed-in"]) .topbar,
@@ -660,7 +699,13 @@ body[data-auth-state="auth-restore"] .landing {
  * Three-column shell
  * ============================================================ */
 .shell {
+  /* Phase 10.1: dvh (dynamic viewport) on mobile so the shell tracks
+     the URL-bar show/hide instead of jumping when iOS Safari resizes
+     the viewport. Vh fallback for older browsers — the visible delta
+     is small (the topbar height) so an old browser still renders a
+     usable, if slightly clipped, shell. */
   height: calc(100vh - var(--topbar-h));
+  height: calc(100dvh - var(--topbar-h));
   display: grid;
   grid-template-columns: var(--column-side) minmax(0, 1fr) var(--column-side);
 }
@@ -2410,6 +2455,41 @@ body[data-auth-state="auth-restore"] .landing {
 
 .chat-message__tick--sent { color: var(--dim); }
 .chat-message__tick--queued { color: var(--muted); }
+.chat-message__tick--delivered { color: var(--dim); }
+.chat-message__tick--read { color: var(--focus); }
+.chat-message__tick--retrying { color: var(--muted); }
+.chat-message__tick--failed { color: #d9534f; }
+
+/* Failed-send recovery row. Rendered BELOW the bubble for sent
+   messages whose pending_outbound row hit a non-recoverable error.
+   The reason text is dim; retry is the primary action. */
+.chat-message__recovery {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.chat-message__recovery-reason {
+  color: #d9534f;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-message__recovery-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.chat-message__recovery-btn--retry { border-color: var(--focus); color: var(--focus); }
+.chat-message__recovery-btn--retry:hover { background: var(--focus); color: var(--bg); }
+.chat-message__recovery-btn--cancel:hover { border-color: #d9534f; color: #d9534f; }
 
 .chat-message--deleted .chat-message__bubble {
   font-style: italic;
@@ -3454,6 +3534,20 @@ body[data-auth-state="signed-in"] .shell {
     /* Reserve room at the bottom for the mobile tab bar so content
        doesn't sit under it. The bar is 52px tall plus safe-area. */
     padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    /* Phase 10.1 viewport containment: the user-visible symptom we
+       want to kill is "I can drag the whole page side-to-side". A
+       single child that is even 1px wider than the viewport (a long
+       handle, a settings card, a media row) lets iOS Safari rubber-
+       band the entire document horizontally. We belt-and-braces here
+       by clamping the document's horizontal axis; intended internal
+       overflow lives on specific scrolling panes (chat body, dialog
+       body, feed list) — none of which need horizontal scroll. */
+    overflow-x: hidden;
+    max-width: 100vw;
+  }
+  html {
+    overflow-x: hidden;
+    max-width: 100vw;
   }
 
   .shell {
@@ -3537,8 +3631,8 @@ body[data-auth-state="signed-in"] .shell {
   .chat-popup {
     right: 8px;
     bottom: calc(60px + env(safe-area-inset-bottom, 0px));
-    width: calc(100vw - 16px);
-    height: min(60vh, 420px);
+    width: calc(100% - 16px);
+    height: min(60dvh, 420px);
   }
 
   /* On mobile widths, fullscreen mode reclaims the whole viewport
@@ -3549,9 +3643,10 @@ body[data-auth-state="signed-in"] .shell {
     right: 0;
     left: 0;
     bottom: 0;
-    width: 100vw;
-    max-width: 100vw;
+    width: 100%;
+    max-width: 100%;
     height: calc(100vh - var(--topbar-h));
+    height: calc(100dvh - var(--topbar-h));
     /* Mobile fullscreen collapses the sidebar — the chat takes the
        whole viewport. The back-arrow in the header is the route
        back to the chat list. */

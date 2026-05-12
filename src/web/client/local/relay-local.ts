@@ -8,6 +8,9 @@ import { selectRelayForRecipient } from "../transport/relay-transport.js";
 import {
   appendLocalEvent,
   applyMessageReceipt,
+  deletePendingOutboundByQueueId,
+  getLocalMessage as loadLocalMessageById,
+  listPendingOutbound,
   saveLocalMessage,
   savePendingOutbound
 } from "./local-store.js";
@@ -246,7 +249,8 @@ export async function queueAndSubmitLocalMessage(options: {
     status: "queued_local",
     envelope,
     created_at: now,
-    updated_at: now
+    updated_at: now,
+    attempts: 0
   };
 
   await saveLocalMessage(ownerCanonicalId, message);
@@ -263,13 +267,61 @@ export async function queueAndSubmitLocalMessage(options: {
   });
   await savePendingOutbound(ownerCanonicalId, outbound);
 
+  // Phase 10.1: pre-flight offline check. If the browser is offline
+  // we DON'T try the POST — we just leave the row queued so the
+  // drainer picks it up on the next 'online' event. The composer
+  // returns ok so the caller's UI clears the textarea.
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { ok: true, message_id: messageId };
+  }
+
+  const submitResult = await submitPendingOutbound(ownerCanonicalId, outbound, {
+    recipientIdentityDocument: options.recipientIdentityDocument ?? null
+  });
+  return {
+    ok: submitResult.outcome === "ok",
+    message_id: messageId,
+    error: submitResult.outcome === "ok" ? undefined : submitResult.error
+  };
+}
+
+// Phase 10.1: drain step. Tries one relay POST for a single pending
+// row. Classifies the outcome as:
+//   - ok       — relay accepted (or 200/duplicate). Row + message
+//                advance to "stored_by_relay".
+//   - transient — network blip / 5xx / offline. Row stays "queued_local",
+//                attempts++, next_retry_at scheduled with exponential
+//                backoff. UI shows "retrying" if attempts > 0.
+//   - fatal    — relay rejected with a non-recoverable error
+//                (invalid_envelope, expired, …). Row + message flip
+//                to "failed"; UI exposes retry/cancel.
+export async function submitPendingOutbound(
+  ownerCanonicalId: string,
+  outbound: PendingOutbound,
+  options: { recipientIdentityDocument?: Pick<IdentityDocument, "delivery_relays"> | null } = {}
+): Promise<
+  | { outcome: "ok" }
+  | { outcome: "transient"; error: string; attempts: number; next_retry_at: string }
+  | { outcome: "fatal"; error: string }
+> {
+  const envelope = outbound.envelope;
+  const messageId = outbound.message_id;
+  // Re-hydrate the local message row so we can write tombstone-safe
+  // status updates (a tombstone may have landed between queue + send).
+  const messageRecord = await loadLocalMessageById(messageId);
+  if (messageRecord === null) {
+    // Message was deleted while queued — drop the row, don't retry.
+    await deletePendingOutboundByQueueId(outbound.local_queue_id);
+    return { outcome: "fatal", error: "message_gone" };
+  }
+
   try {
     if (options.recipientIdentityDocument !== undefined && options.recipientIdentityDocument !== null) {
       const relaySelection = selectRelayForRecipient(options.recipientIdentityDocument);
 
       if (!relaySelection.ok) {
-        await markFailed(ownerCanonicalId, message, outbound, "no delivery relay advertised");
-        return { ok: false, message_id: messageId, error: relaySelection.error };
+        await markFailed(ownerCanonicalId, messageRecord, outbound, "no delivery relay advertised");
+        return { outcome: "fatal", error: relaySelection.error };
       }
 
       const portalOrigin = window.location.origin;
@@ -281,13 +333,13 @@ export async function queueAndSubmitLocalMessage(options: {
           : "local_dev";
 
       if (relaySelection.relay.transport === "onion" && portalTransport !== "onion") {
-        await markFailed(ownerCanonicalId, message, outbound, relaySelection.warning ?? "onion transport unavailable in this browser");
-        return { ok: false, message_id: messageId, error: "onion_transport_unavailable" };
+        await markFailed(ownerCanonicalId, messageRecord, outbound, relaySelection.warning ?? "onion transport unavailable in this browser");
+        return { outcome: "fatal", error: "onion_transport_unavailable" };
       }
 
       if (relaySelection.relay.transport !== "onion" && relayOrigin !== portalOrigin) {
-        await markFailed(ownerCanonicalId, message, outbound, relaySelection.warning ?? "relay transport requires same-origin submission");
-        return { ok: false, message_id: messageId, error: "relay_cross_origin_unavailable" };
+        await markFailed(ownerCanonicalId, messageRecord, outbound, relaySelection.warning ?? "relay transport requires same-origin submission");
+        return { outcome: "fatal", error: "relay_cross_origin_unavailable" };
       }
     }
 
@@ -299,12 +351,12 @@ export async function queueAndSubmitLocalMessage(options: {
       },
       body: JSON.stringify(envelope)
     });
-    const result = await response.json() as { ok?: boolean; status?: string; error?: string; expires_at?: string };
+    const result = await response.json().catch(() => ({})) as { ok?: boolean; status?: string; error?: string; expires_at?: string };
     const updatedAt = new Date().toISOString();
 
     if (response.ok && result.ok === true) {
       const storedRow: LocalMessage = {
-        ...message,
+        ...messageRecord,
         owner_canonical_id: ownerCanonicalId,
         updated_at: updatedAt,
         status: "stored_by_relay"
@@ -321,16 +373,175 @@ export async function queueAndSubmitLocalMessage(options: {
           expires_at: result.expires_at ?? envelope.expires_at
         }
       });
-      return { ok: true, message_id: messageId };
+      return { outcome: "ok" };
     }
 
-    await markFailed(ownerCanonicalId, message, outbound, result.error ?? `relay rejected: ${response.status}`);
-    return { ok: false, message_id: messageId, error: result.error ?? "relay_rejected" };
+    // The relay's `duplicate_message` reply is idempotent — we
+    // already delivered this row, so treat as success.
+    if (response.ok && result.error === "duplicate_message") {
+      const storedRow: LocalMessage = {
+        ...messageRecord,
+        owner_canonical_id: ownerCanonicalId,
+        updated_at: updatedAt,
+        status: "stored_by_relay"
+      };
+      await saveLocalMessage(ownerCanonicalId, storedRow);
+      void notifyMessageUpsert(ownerCanonicalId, storedRow);
+      await savePendingOutbound(ownerCanonicalId, {
+        ...outbound,
+        updated_at: updatedAt,
+        status: "stored_by_relay"
+      });
+      return { outcome: "ok" };
+    }
+
+    const errorString = result.error ?? `relay rejected: ${response.status}`;
+    if (isTransientRelayFailure(response.status, result.error)) {
+      const attempts = (outbound.attempts ?? 0) + 1;
+      const next_retry_at = new Date(Date.now() + backoffDelayMs(attempts)).toISOString();
+      await savePendingOutbound(ownerCanonicalId, {
+        ...outbound,
+        updated_at: updatedAt,
+        status: "queued_local",
+        last_error: errorString,
+        attempts,
+        next_retry_at
+      });
+      // Bump the message row updated_at so renderers re-paint with
+      // the new "retrying" state.
+      const retryingRow: LocalMessage = { ...messageRecord, updated_at: updatedAt, status: "queued_local" };
+      await saveLocalMessage(ownerCanonicalId, retryingRow);
+      void notifyMessageUpsert(ownerCanonicalId, retryingRow);
+      return { outcome: "transient", error: errorString, attempts, next_retry_at };
+    }
+    await markFailed(ownerCanonicalId, messageRecord, outbound, errorString);
+    return { outcome: "fatal", error: errorString };
   } catch (error) {
-    const messageText = error instanceof Error ? error.message : "relay submit failed";
-    await markFailed(ownerCanonicalId, message, outbound, messageText);
-    return { ok: false, message_id: messageId, error: messageText };
+    // Network exception — always transient.
+    const errorString = error instanceof Error ? error.message : "relay submit failed";
+    const updatedAt = new Date().toISOString();
+    const attempts = (outbound.attempts ?? 0) + 1;
+    const next_retry_at = new Date(Date.now() + backoffDelayMs(attempts)).toISOString();
+    await savePendingOutbound(ownerCanonicalId, {
+      ...outbound,
+      updated_at: updatedAt,
+      status: "queued_local",
+      last_error: errorString,
+      attempts,
+      next_retry_at
+    });
+    const retryingRow: LocalMessage = { ...messageRecord, updated_at: updatedAt, status: "queued_local" };
+    await saveLocalMessage(ownerCanonicalId, retryingRow);
+    void notifyMessageUpsert(ownerCanonicalId, retryingRow);
+    return { outcome: "transient", error: errorString, attempts, next_retry_at };
   }
+}
+
+// Drain step. Iterates the owner's pending_outbound rows and tries
+// to submit any that are queued AND past their next_retry_at gate.
+// Idempotent — safe to call from multiple triggers (online event,
+// visibilitychange, manual retry click, boot drain).
+export async function drainPendingOutbound(ownerCanonicalId: string): Promise<{ tried: number; ok: number; transient: number; fatal: number }> {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return { tried: 0, ok: 0, transient: 0, fatal: 0 };
+  }
+  const all = await listPendingOutbound(ownerCanonicalId);
+  const due = all.filter((row) => {
+    if (row.status !== "queued_local") return false;
+    if (typeof row.next_retry_at !== "string") return true;
+    return Date.parse(row.next_retry_at) <= Date.now();
+  });
+  let tried = 0, ok = 0, transient = 0, fatal = 0;
+  for (const row of due) {
+    tried++;
+    const result = await submitPendingOutbound(ownerCanonicalId, row);
+    if (result.outcome === "ok") ok++;
+    else if (result.outcome === "transient") transient++;
+    else fatal++;
+  }
+  return { tried, ok, transient, fatal };
+}
+
+// Manual retry button handler. Resets the row to attempts=0 so the
+// drainer treats it as a fresh send rather than a back-off victim.
+export async function retryFailedOutbound(ownerCanonicalId: string, messageId: string): Promise<{ ok: boolean; error?: string }> {
+  const all = await listPendingOutbound(ownerCanonicalId);
+  const row = all.find((r) => r.message_id === messageId);
+  if (row === undefined) return { ok: false, error: "no_pending_row" };
+  const updatedAt = new Date().toISOString();
+  const reset: PendingOutbound = {
+    ...row,
+    status: "queued_local",
+    updated_at: updatedAt,
+    attempts: 0,
+    next_retry_at: undefined,
+    last_error: undefined
+  };
+  await savePendingOutbound(ownerCanonicalId, reset);
+  // Also flip the message row back to queued_local so the UI clears
+  // the "failed" state pending the drain attempt.
+  const msg = await loadLocalMessageById(messageId);
+  if (msg !== null) {
+    const queuedRow: LocalMessage = { ...msg, updated_at: updatedAt, status: "queued_local" };
+    await saveLocalMessage(ownerCanonicalId, queuedRow);
+    void notifyMessageUpsert(ownerCanonicalId, queuedRow);
+  }
+  const result = await submitPendingOutbound(ownerCanonicalId, reset);
+  return { ok: result.outcome === "ok", error: result.outcome === "ok" ? undefined : result.error };
+}
+
+// Cancel a stuck send. The pending row is deleted and the message
+// row is tombstoned locally so the chat history reflects the cancel
+// rather than leaving a phantom "failed" row.
+export async function cancelFailedOutbound(ownerCanonicalId: string, messageId: string): Promise<{ ok: boolean }> {
+  const all = await listPendingOutbound(ownerCanonicalId);
+  const row = all.find((r) => r.message_id === messageId);
+  if (row !== undefined) await deletePendingOutboundByQueueId(row.local_queue_id);
+  const msg = await loadLocalMessageById(messageId);
+  if (msg !== null) {
+    const updatedAt = new Date().toISOString();
+    const cancelled: LocalMessage = {
+      ...msg,
+      updated_at: updatedAt,
+      status: "rejected",
+      deleted_at: updatedAt,
+      body: ""
+    };
+    await saveLocalMessage(ownerCanonicalId, cancelled);
+    void notifyMessageUpsert(ownerCanonicalId, cancelled);
+  }
+  return { ok: true };
+}
+
+// Backoff schedule. Capped at ~60s so even a wedged network resumes
+// within a minute once it recovers. The drainer is also triggered
+// by 'online' / visibilitychange events so the backoff is mostly a
+// fairness/rate-limit ceiling, not a user-perceived wait.
+function backoffDelayMs(attempts: number): number {
+  const ladder = [1_000, 3_000, 8_000, 20_000, 60_000];
+  return ladder[Math.min(attempts - 1, ladder.length - 1)] ?? 60_000;
+}
+
+// Errors the relay returns that we should NOT retry. 4xx-ish
+// validation failures are terminal; 5xx-ish + duplicates + parse
+// failures + 429 are transient.
+function isTransientRelayFailure(status: number, errorCode: string | undefined): boolean {
+  if (status === 429) return true;
+  if (status >= 500) return true;
+  // Specific error codes we know are non-recoverable. Anything not
+  // listed here defaults to transient — better to retry on an
+  // unknown error than to silently swallow a legitimate send.
+  const fatalCodes = new Set([
+    "invalid_envelope",
+    "expired",
+    "tier_blocked",
+    "rate_limited", // surfaced as fatal so the user sees it; the
+                    // drainer doesn't auto-retry abusive sends
+    "onion_transport_unavailable",
+    "relay_cross_origin_unavailable"
+  ]);
+  if (errorCode !== undefined && fatalCodes.has(errorCode)) return false;
+  return true;
 }
 
 export type SenderMessagingKey = {

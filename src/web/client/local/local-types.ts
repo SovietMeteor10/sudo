@@ -231,6 +231,13 @@ export type PendingOutbound = {
   created_at: string;
   updated_at: string;
   last_error?: string;
+  // Phase 10.1 reliability: monotonic attempt counter (0 on first
+  // queue, ++ on every retry). next_retry_at gates the drainer so
+  // exponential backoff doesn't hammer the relay on a wedged network.
+  // Both are optional for backwards compat with rows written before
+  // Phase 10.1.
+  attempts?: number;
+  next_retry_at?: string;
 };
 
 export type LocalStateSnapshot = {

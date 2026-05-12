@@ -132,6 +132,36 @@ async function noHorizontalOverflow(page) {
         else ok(`mobile-tab/${tab}: pane active, region visible, no overflow`);
       }
 
+      // Phase 10.1: viewport-containment regression guard. The user-
+      // visible bug we fixed was "I can drag the whole page side-to-
+      // side on mobile". This asserts the CSS rules that prevent that
+      // are still active — overflow:hidden on html+body, non-default
+      // overscroll-behavior, and that window.scrollTo can't move the
+      // pinned document.
+      const containment = await page.evaluate(() => {
+        const html = document.documentElement;
+        const body = document.body;
+        window.scrollTo(500, 500);
+        return {
+          bodyOverflow: getComputedStyle(body).overflow,
+          htmlOverflow: getComputedStyle(html).overflow,
+          bodyOverscroll: getComputedStyle(body).overscrollBehavior,
+          htmlOverscroll: getComputedStyle(html).overscrollBehavior,
+          bodyTouchAction: getComputedStyle(body).touchAction,
+          scrollX: window.scrollX,
+          scrollY: window.scrollY
+        };
+      });
+      if (containment.bodyOverflow.indexOf("hidden") === -1) {
+        fail("mobile-containment/body-overflow", `body overflow='${containment.bodyOverflow}' (expected hidden)`);
+      } else if (containment.bodyOverscroll === "auto" || containment.bodyOverscroll === "") {
+        fail("mobile-containment/body-overscroll", `body overscroll-behavior='${containment.bodyOverscroll}' (expected none)`);
+      } else if (containment.scrollX !== 0 || containment.scrollY !== 0) {
+        fail("mobile-containment/pinned", `scrollTo(500,500) moved the page to (${containment.scrollX},${containment.scrollY})`);
+      } else {
+        ok(`mobile-containment: body overflow=${containment.bodyOverflow}, overscroll=${containment.bodyOverscroll}, touch=${containment.bodyTouchAction}; document pinned`);
+      }
+
       // Feed pane: composer is reachable.
       await page.click(`[data-mobile-tab="feed"]`);
       await new Promise((r) => setTimeout(r, 250));

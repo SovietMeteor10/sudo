@@ -170,6 +170,7 @@ import {
   listLocalMessagesByConversation,
   listLocalSubscriptions,
   listPendingBackfills,
+  listPendingOutbound,
   listTrustedDevices,
   getLocalDeviceMetadata,
   putBackfillState,
@@ -183,7 +184,14 @@ import {
   runConversationTtlGc
 } from "./local/local-store.js";
 import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, resetCachedLocalDb, subscribeLocalStateBroadcasts, broadcastLocalStateChange, type LocalStateChangeKind } from "./local/local-db.js";
-import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave, sendChatReceipt } from "./local/relay-local.js";
+import {
+  cancelFailedOutbound,
+  drainPendingOutbound,
+  queueAndSubmitLocalMessage,
+  retrieveRelayInboxAfterLocalSave,
+  retryFailedOutbound,
+  sendChatReceipt
+} from "./local/relay-local.js";
 import type {
   ChatSummary,
   ConnectionRelationship,
@@ -1335,8 +1343,20 @@ function startInboxPolling(canonicalId: string): void {
   inboxPollOwner = canonicalId;
   inboxInitialPollDone = false;
   void pollInbox();
+  // Phase 10.1 reliability: drain whatever's stuck in pending_outbound
+  // from a previous session right as we come online so the user's
+  // first observation is "my queued message is going out", not "my
+  // queued message looks failed".
+  void drainQueueNow();
   inboxPollTimer = window.setInterval(() => {
     void pollInbox();
+  }, INBOX_POLL_INTERVAL_MS);
+  // Periodic drainer pass. Catches rows whose next_retry_at gate has
+  // passed in the absence of an explicit 'online' or visibilitychange
+  // wake event. Cadence matches inbox polling so the user perceives
+  // sends + receives as moving together.
+  outboundDrainTimer = window.setInterval(() => {
+    void drainQueueNow();
   }, INBOX_POLL_INTERVAL_MS);
   // Attempt to claim leadership at a faster cadence than the poll
   // interval so handoff to a follower happens quickly when the leader
@@ -1368,10 +1388,74 @@ function stopInboxPolling(): void {
     window.clearInterval(ttlGcTimer);
     ttlGcTimer = null;
   }
+  if (outboundDrainTimer !== null) {
+    window.clearInterval(outboundDrainTimer);
+    outboundDrainTimer = null;
+  }
   if (inboxPollOwner !== null) clearLeaderIfOwned(inboxPollOwner);
   inboxPollOwner = null;
   inboxInitialPollDone = false;
 }
+
+let outboundDrainTimer: number | null = null;
+let outboundDrainInFlight = false;
+
+// Phase 10.1: idempotent drainer. Each trigger (boot, online,
+// visibilitychange, periodic timer, manual retry button) calls here.
+// The in-flight guard prevents two concurrent drain passes from
+// stepping on each other when the user e.g. focuses the tab right
+// after coming online.
+async function drainQueueNow(): Promise<void> {
+  if (outboundDrainInFlight) return;
+  if (currentIdentityDocument === null) return;
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  outboundDrainInFlight = true;
+  try {
+    await drainPendingOutbound(currentIdentityDocument.canonical_id);
+    // After draining, re-render the active chat so failed/queued/
+    // sent state transitions show up immediately.
+    if (chatTarget !== null) {
+      void renderChatPopupBody(chatTarget.canonical);
+    }
+    void refreshLocalChats();
+  } catch {
+    // Network blip — next periodic drain will retry.
+  } finally {
+    outboundDrainInFlight = false;
+  }
+}
+
+// Phase 10.1: offline banner state. The banner element sits at the
+// top of the body and shows when navigator.onLine is false. We also
+// pessimistically toggle it on after repeated fetch failures (the
+// browser's onLine signal is not always reliable on iOS Safari).
+function updateOfflineBanner(): void {
+  const banner = document.getElementById("offline-banner");
+  if (!(banner instanceof HTMLElement)) return;
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  banner.hidden = !offline;
+  document.body.dataset["offline"] = offline ? "1" : "0";
+}
+
+window.addEventListener("online", () => {
+  updateOfflineBanner();
+  void drainQueueNow();
+  // The inbox poller's interval will pick up on its own cadence,
+  // but kick it once now so the user doesn't wait for the next tick.
+  void pollInbox();
+});
+window.addEventListener("offline", () => {
+  updateOfflineBanner();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") {
+    updateOfflineBanner();
+    void drainQueueNow();
+    void pollInbox();
+  }
+});
+// Initial sync so a page loaded while offline shows the banner.
+updateOfflineBanner();
 
 // Best-effort: release the leader lease when the tab closes so a sibling
 // tab takes over quickly instead of waiting out the full lease.
@@ -6244,7 +6328,11 @@ function renderChatMessage(
   meta.className = "chat-message__meta";
   meta.textContent = formatChatTimestamp(message.created_at);
 
-  // Sent-message tick. Three states:
+  // Sent-message tick. Phase 10.1 extends the state set:
+  //   ⏱        queued — message saved locally, not yet at the relay
+  //                     (offline or first send pending)
+  //   ⟳        retrying — transient failure, drainer will retry
+  //   ⚠ + buttons — failed — fatal failure, user must retry/cancel
   //   ✓        sent — message stored locally + at the relay
   //   ✓✓       delivered — recipient device ACKed the envelope
   //   ✓✓ (accent) — read — recipient broadcast a read receipt
@@ -6252,10 +6340,30 @@ function renderChatMessage(
   if (message.direction === "sent" && !tombstoned) {
     const tick = document.createElement("span");
     tick.className = "chat-message__tick";
-    let status: "sent" | "delivered" | "read" = "sent";
+    let status: "sent" | "delivered" | "read" | "queued" | "retrying" | "failed" = "sent";
     let label = "sent";
     let glyph = "✓";
-    if (typeof message.read_at === "string") {
+    if (message.raw_status === "failed") {
+      status = "failed";
+      label = typeof message.last_error === "string" && message.last_error.length > 0
+        ? `failed: ${message.last_error}`
+        : "failed to send";
+      glyph = "⚠";
+      tick.classList.add("chat-message__tick--failed");
+    } else if (message.raw_status === "queued_local") {
+      const attempts = message.pending_attempts ?? 0;
+      if (attempts > 0) {
+        status = "retrying";
+        label = `retrying (attempt ${attempts + 1})`;
+        glyph = "⟳";
+        tick.classList.add("chat-message__tick--retrying");
+      } else {
+        status = "queued";
+        label = "queued — will send when online";
+        glyph = "⏱";
+        tick.classList.add("chat-message__tick--queued");
+      }
+    } else if (typeof message.read_at === "string") {
       status = "read";
       label = "read";
       glyph = "✓✓";
@@ -6275,6 +6383,39 @@ function renderChatMessage(
     meta.append(tick);
   }
   wrapper.append(bubble, meta);
+
+  // Failed-message retry/cancel controls. Surfaces the user-visible
+  // recovery path so a failed send never silently disappears.
+  if (message.direction === "sent" && !tombstoned && message.raw_status === "failed") {
+    const recovery = document.createElement("div");
+    recovery.className = "chat-message__recovery";
+    const reason = typeof message.last_error === "string" && message.last_error.length > 0
+      ? message.last_error
+      : "send failed";
+    const reasonEl = document.createElement("span");
+    reasonEl.className = "chat-message__recovery-reason";
+    reasonEl.textContent = reason;
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "chat-message__recovery-btn chat-message__recovery-btn--retry";
+    retry.textContent = "retry";
+    retry.dataset["action"] = "retry-send";
+    retry.dataset["messageId"] = message.message_id;
+    retry.addEventListener("click", () => {
+      void handleRetryFailedSend(message.message_id);
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "chat-message__recovery-btn chat-message__recovery-btn--cancel";
+    cancel.textContent = "cancel";
+    cancel.dataset["action"] = "cancel-send";
+    cancel.dataset["messageId"] = message.message_id;
+    cancel.addEventListener("click", () => {
+      void handleCancelFailedSend(message.message_id);
+    });
+    recovery.append(reasonEl, retry, cancel);
+    wrapper.append(recovery);
+  }
 
   // Attachment render. Three modes (image / video / file) +
   // tombstoned placeholder. The blob isn't fetched here — we paint
@@ -6901,26 +7042,82 @@ type ChatMessageView = {
   delivered_at?: string;
   read_at?: string;
   forwarded?: boolean;
+  // Phase 10.1 reliability fields. raw_status is the LocalMessage.status
+  // value; pending_attempts is the matching pending_outbound row's
+  // attempt counter (0 = first send in flight, ≥1 = retry attempt).
+  // last_error surfaces the relay's last reason so the user can see
+  // why the send failed.
+  raw_status?: string;
+  pending_attempts?: number;
+  last_error?: string;
 };
 
 async function listConversationMessages(conversationId: string): Promise<ChatMessageView[]> {
   if (currentIdentityDocument === null) return [];
-  const records = await listLocalMessagesByConversation(currentIdentityDocument.canonical_id, conversationId);
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  const records = await listLocalMessagesByConversation(ownerCanonicalId, conversationId);
+  // Pull the (small) pending_outbound table once and join in-memory.
+  // Keyed by message_id so each chat row can pick up its own row's
+  // attempt count + last_error without a per-row IDB hit.
+  const pendingByMessageId = new Map<string, { attempts: number; last_error?: string }>();
+  try {
+    const pending = await listPendingOutbound(ownerCanonicalId);
+    for (const row of pending) {
+      pendingByMessageId.set(row.message_id, {
+        attempts: row.attempts ?? 0,
+        last_error: row.last_error
+      });
+    }
+  } catch {
+    // pending_outbound read failure shouldn't break the chat render —
+    // we just lose the retry-attempt count for this paint.
+  }
   return records
-    .map((record): ChatMessageView => ({
-      message_id: record.message_id,
-      relay_message_id: typeof record.relay_message_id === "string" ? record.relay_message_id : undefined,
-      created_at: record.created_at,
-      direction: record.direction,
-      body: record.body,
-      deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined,
-      reply_to_message_id: typeof record.reply_to_message_id === "string" ? record.reply_to_message_id : undefined,
-      reply_to_relay_message_id: typeof record.reply_to_relay_message_id === "string" ? record.reply_to_relay_message_id : undefined,
-      delivered_at: typeof record.delivered_at === "string" ? record.delivered_at : undefined,
-      read_at: typeof record.read_at === "string" ? record.read_at : undefined,
-      forwarded: record.forwarded === true ? true : undefined
-    }))
+    .map((record): ChatMessageView => {
+      const pending = pendingByMessageId.get(record.message_id);
+      return {
+        message_id: record.message_id,
+        relay_message_id: typeof record.relay_message_id === "string" ? record.relay_message_id : undefined,
+        created_at: record.created_at,
+        direction: record.direction,
+        body: record.body,
+        deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined,
+        reply_to_message_id: typeof record.reply_to_message_id === "string" ? record.reply_to_message_id : undefined,
+        reply_to_relay_message_id: typeof record.reply_to_relay_message_id === "string" ? record.reply_to_relay_message_id : undefined,
+        delivered_at: typeof record.delivered_at === "string" ? record.delivered_at : undefined,
+        read_at: typeof record.read_at === "string" ? record.read_at : undefined,
+        forwarded: record.forwarded === true ? true : undefined,
+        raw_status: record.status,
+        pending_attempts: pending?.attempts,
+        last_error: pending?.last_error
+      };
+    })
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
+async function handleRetryFailedSend(messageId: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  try {
+    await retryFailedOutbound(ownerCanonicalId, messageId);
+  } catch (error) {
+    flashFeedback(`retry failed: ${error instanceof Error ? error.message : "unknown"}`);
+  }
+  if (chatTarget !== null) await renderChatPopupBody(chatTarget.canonical);
+  void refreshLocalChats();
+}
+
+async function handleCancelFailedSend(messageId: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const ownerCanonicalId = currentIdentityDocument.canonical_id;
+  try {
+    await cancelFailedOutbound(ownerCanonicalId, messageId);
+  } catch {
+    // Cancel is best-effort. If the local-store write failed the
+    // user can still re-tap.
+  }
+  if (chatTarget !== null) await renderChatPopupBody(chatTarget.canonical);
+  void refreshLocalChats();
 }
 
 async function sendChatPopupMessage(): Promise<void> {
