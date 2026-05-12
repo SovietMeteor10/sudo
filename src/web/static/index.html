@@ -288,15 +288,69 @@
     </form>
   </dialog>
 
+  <!-- Phase 10.2: first-run onboarding. Shown only when localStorage
+       has no sudo_onboarded_v1 flag. Skippable. Calm copy, no
+       internal terms (no "relay envelope", "sync slice", etc). -->
+  <dialog class="signup-dialog signup-dialog--onboarding" id="onboarding-dialog" aria-labelledby="onboarding-title">
+    <form class="signup-dialog__panel onboarding__panel" id="onboarding-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="onboarding-title">welcome to sudo</div>
+      <div class="onboarding__dots" role="tablist" aria-label="onboarding steps">
+        <span class="onboarding__dot is-active" data-onboarding-dot="0"></span>
+        <span class="onboarding__dot" data-onboarding-dot="1"></span>
+        <span class="onboarding__dot" data-onboarding-dot="2"></span>
+        <span class="onboarding__dot" data-onboarding-dot="3"></span>
+        <span class="onboarding__dot" data-onboarding-dot="4"></span>
+      </div>
+
+      <section class="onboarding__step is-active" data-onboarding-step="0" aria-hidden="false">
+        <h2 class="onboarding__heading">private by default</h2>
+        <p class="onboarding__body">sudo is a messenger built so the server can't read what you say. only your devices can.</p>
+        <p class="onboarding__body">your account lives on your devices, not on the server. if you sign out without a backup, your account on this browser is gone.</p>
+      </section>
+
+      <section class="onboarding__step" data-onboarding-step="1" aria-hidden="true">
+        <h2 class="onboarding__heading">this browser is one device</h2>
+        <p class="onboarding__body">when you create an account, the keys live on this browser. it counts as one of your devices.</p>
+        <p class="onboarding__body">you can pair another browser or phone later. all your devices share the same account, but each keeps its own copy of the keys.</p>
+      </section>
+
+      <section class="onboarding__step" data-onboarding-step="2" aria-hidden="true">
+        <h2 class="onboarding__heading">linked devices + revoke</h2>
+        <p class="onboarding__body">to add another device, open settings → linked devices and scan the QR code. the new device gets its own keys, derived from yours.</p>
+        <p class="onboarding__body">if a device is lost or stolen, you can revoke it. revoke means: that device can't send or read messages anymore. the rest of your devices stay signed in.</p>
+      </section>
+
+      <section class="onboarding__step" data-onboarding-step="3" aria-hidden="true">
+        <h2 class="onboarding__heading">disappearing messages + push</h2>
+        <p class="onboarding__body">inside any chat, the clock icon turns on disappearing messages. messages older than the timer are erased from every device in that conversation.</p>
+        <p class="onboarding__body">push notifications are off by default. you can turn them on in settings. notifications only show that you got a message — never the content.</p>
+      </section>
+
+      <section class="onboarding__step" data-onboarding-step="4" aria-hidden="true">
+        <h2 class="onboarding__heading">you're ready</h2>
+        <p class="onboarding__body">if you ever want to back up your account, settings → backup account saves an encrypted file you can restore on a new device.</p>
+        <p class="onboarding__body">reset this browser clears everything from this device only. it doesn't touch your other devices or anyone you've chatted with.</p>
+      </section>
+
+      <div class="signup-dialog__actions onboarding__actions">
+        <button class="text-button onboarding__skip" id="onboarding-skip" type="button">skip</button>
+        <button class="text-button onboarding__back" id="onboarding-back" type="button" hidden>back</button>
+        <button class="text-button text-button--primary onboarding__next" id="onboarding-next" type="button">next</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="signup-dialog signup-dialog--devices" id="devices-dialog" aria-labelledby="devices-dialog-title">
     <form class="signup-dialog__panel" id="devices-form" method="dialog" autocomplete="off">
       <div class="signup-dialog__title" id="devices-dialog-title">linked devices</div>
+      <p class="signup-dialog__hint signup-dialog__hint--lead">each device that's linked to your account on sudo. revoking a device stops it from sending or reading messages — your other devices stay signed in.</p>
       <div class="signup-dialog__hint" id="device-current-status">not signed in</div>
       <div class="signup-dialog__hint" id="local-storage-status">checking…</div>
       <div class="devices-panel__list" id="device-list"></div>
       <div class="devices-panel__actions">
         <button class="text-button" id="device-link-start" type="button">link another device</button>
       </div>
+      <p class="signup-dialog__hint signup-dialog__hint--secondary">linking another device gives it its own keys derived from yours. nothing leaves this browser unencrypted.</p>
 
       <details class="settings-danger settings-danger--quiet">
         <summary class="settings-danger__summary">advanced</summary>
@@ -399,8 +453,13 @@
         <summary class="settings-danger__summary">danger zone</summary>
         <div class="settings-danger__body">
           <p class="settings-danger__warning">
-            this removes this browser's copy of your account keys, messages, contacts, and settings. if you have no backup or paired device, you may permanently lose access.
+            <strong>reset this browser</strong> clears <em>this browser only</em>: account keys, messages, contacts, and settings on this device.
           </p>
+          <ul class="settings-danger__list">
+            <li>your other linked devices are <strong>not</strong> affected.</li>
+            <li>your account on sudo isn't deleted — but if this is your only device and you have no backup, you'll lose access permanently.</li>
+            <li>this is not reversible from this browser.</li>
+          </ul>
           <label class="settings-danger__label" for="settings-reset-confirm">type <strong>RESET</strong> to confirm</label>
           <input id="settings-reset-confirm" class="lookup__input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false">
           <button class="text-button text-button--danger settings-danger__action" id="settings-reset" type="button" disabled>reset this browser</button>

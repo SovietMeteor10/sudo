@@ -2822,6 +2822,68 @@ body[data-auth-state="auth-restore"] .landing {
 }
 .chat-popup__typing[hidden] { display: none; }
 
+/* Phase 10.2: onboarding carousel. Five steps; only one .is-active
+   at a time. Dots track position. Skip lives next to next/back. */
+.onboarding__panel {
+  max-width: 480px;
+}
+.onboarding__dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin: 8px 0 4px;
+}
+.onboarding__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line);
+  transition: background 0.18s ease;
+}
+.onboarding__dot.is-active { background: var(--focus); }
+.onboarding__step {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0;
+}
+.onboarding__step.is-active { display: flex; }
+.onboarding__heading {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+.onboarding__body {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.55;
+  font-size: 14px;
+}
+.onboarding__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.onboarding__skip {
+  margin-right: auto;
+  color: var(--muted);
+}
+
+/* Phase 10.3 reduced-motion: respect prefers-reduced-motion by
+   skipping transitions/animations across the app. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* Composer attachment plus button + upload-progress line. */
 .chat-popup__attach {
   background: transparent;

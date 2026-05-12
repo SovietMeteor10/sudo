@@ -372,7 +372,11 @@ function renderDeviceRow(
     confirmTitle.textContent = `revoke ${device.name}?`;
     const confirmBody = document.createElement("div");
     confirmBody.className = "device-row__confirm-body is-muted";
-    confirmBody.textContent = "this device will need to link again before it can sync this account.";
+    // Phase 10.2: be explicit about what revoke does and doesn't do.
+    // The user needs to know that revoking one device doesn't sign
+    // them out of the others, and that the account on sudo isn't
+    // deleted — just this device's access.
+    confirmBody.textContent = "that device can't send or read messages anymore. your other linked devices stay signed in, and your account on sudo isn't touched. the revoked device would need to link again to come back.";
     const confirmActions = document.createElement("div");
     confirmActions.className = "device-row__confirm-actions";
     const cancelBtn = document.createElement("button");

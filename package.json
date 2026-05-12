@@ -53,6 +53,8 @@
     "smoke:offline-recovery": "node scripts/offline-recovery-smoke.cjs",
     "smoke:reconnect-recovery": "node scripts/reconnect-recovery-smoke.cjs",
     "smoke:mobile-viewport-containment": "node scripts/mobile-viewport-containment-smoke.cjs",
+    "smoke:onboarding-flow": "node scripts/onboarding-flow-smoke.cjs",
+    "smoke:dialog-accessibility": "node scripts/dialog-accessibility-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",

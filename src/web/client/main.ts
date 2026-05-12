@@ -246,6 +246,10 @@ const accountMenuSettings = getRequiredButton("account-menu-settings");
 const accountMenuLogout = getRequiredButton("account-menu-logout");
 const devicesDialog = getRequiredDialog("devices-dialog");
 const devicesCancel = getRequiredButton("devices-cancel");
+const onboardingDialog = getRequiredDialog("onboarding-dialog");
+const onboardingNext = getRequiredButton("onboarding-next");
+const onboardingBack = getRequiredButton("onboarding-back");
+const onboardingSkip = getRequiredButton("onboarding-skip");
 const settingsDialog = getRequiredDialog("settings-dialog");
 const settingsBackupButton = getRequiredButton("settings-backup");
 const settingsRestoreButton = getRequiredButton("settings-restore");
@@ -993,6 +997,58 @@ settingsCancel.addEventListener("click", () => {
   settingsDialog.close();
 });
 
+// Phase 10.2 onboarding navigation. Five steps; next advances,
+// back retreats, skip dismisses + persists. On the last step the
+// "next" button reads "done" and closes the dialog.
+const ONBOARDING_STEP_COUNT = 5;
+let onboardingStep = 0;
+function renderOnboardingStep(): void {
+  const steps = document.querySelectorAll<HTMLElement>("[data-onboarding-step]");
+  for (const step of steps) {
+    const idx = Number(step.dataset["onboardingStep"] ?? "0");
+    const active = idx === onboardingStep;
+    step.classList.toggle("is-active", active);
+    step.setAttribute("aria-hidden", active ? "false" : "true");
+  }
+  const dots = document.querySelectorAll<HTMLElement>("[data-onboarding-dot]");
+  for (const dot of dots) {
+    const idx = Number(dot.dataset["onboardingDot"] ?? "0");
+    dot.classList.toggle("is-active", idx === onboardingStep);
+  }
+  onboardingBack.hidden = onboardingStep === 0;
+  onboardingNext.textContent = onboardingStep === ONBOARDING_STEP_COUNT - 1 ? "done" : "next";
+  onboardingSkip.hidden = onboardingStep === ONBOARDING_STEP_COUNT - 1;
+}
+
+onboardingNext.addEventListener("click", () => {
+  if (onboardingStep < ONBOARDING_STEP_COUNT - 1) {
+    onboardingStep++;
+    renderOnboardingStep();
+    return;
+  }
+  markOnboardingComplete();
+  onboardingDialog.close();
+  onboardingStep = 0;
+  renderOnboardingStep();
+});
+onboardingBack.addEventListener("click", () => {
+  if (onboardingStep > 0) {
+    onboardingStep--;
+    renderOnboardingStep();
+  }
+});
+onboardingSkip.addEventListener("click", () => {
+  markOnboardingComplete();
+  onboardingDialog.close();
+  onboardingStep = 0;
+  renderOnboardingStep();
+});
+// Escape closes + marks complete (user has clearly seen the dialog).
+onboardingDialog.addEventListener("close", () => {
+  markOnboardingComplete();
+});
+renderOnboardingStep();
+
 accountSaveBio.addEventListener("click", () => {
   void saveAccountBio();
 });
@@ -1003,6 +1059,19 @@ accountCancel.addEventListener("click", () => {
 
 accountMenuLogout.addEventListener("click", () => {
   setAccountMenuOpen(false);
+  // Phase 10.2: be explicit about scope. Sign out only releases the
+  // in-memory crypto unlock for this browser. The account keys
+  // remain encrypted-at-rest in this browser's IDB, so you can sign
+  // back in with your passphrase. Other linked devices stay signed
+  // in; your account on sudo is unaffected.
+  const proceed = confirm(
+    "sign out of this browser?\n\n"
+    + "• your account is unlocked again with your passphrase — keys stay safe in this browser.\n"
+    + "• your other linked devices stay signed in.\n"
+    + "• your account on sudo isn't touched.\n\n"
+    + "press OK to sign out, or cancel to stay signed in."
+  );
+  if (!proceed) return;
   logout();
 });
 
@@ -4977,6 +5046,41 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   if (searchState.status === "results") {
     void runSearch(searchState.query);
   }
+  // Phase 10.2: first-run onboarding. Only opens if the local flag
+  // is missing. Returning users never see it.
+  maybeShowOnboarding();
+}
+
+// Phase 10.2: first-run onboarding. localStorage flag persists the
+// "I've seen this" state per browser; account-scoped is intentional
+// (a second signed-in account in the same browser doesn't re-trigger
+// the carousel). Skippable + dismissible — never blocks the user.
+const ONBOARDING_FLAG_KEY = "sudo_onboarded_v1";
+function maybeShowOnboarding(): void {
+  try {
+    if (localStorage.getItem(ONBOARDING_FLAG_KEY) === "1") return;
+  } catch {
+    // Storage unavailable (private mode, quota) — skip rather than
+    // pop the dialog on every reload.
+    return;
+  }
+  // Smoke harness: puppeteer sets navigator.webdriver === true.
+  // Auto-skip the onboarding overlay for ALL automated runs except
+  // the onboarding-flow smoke itself, which opts in by setting
+  // window.__sudoForceOnboarding = true before goto.
+  if (typeof navigator !== "undefined"
+      && (navigator as Navigator & { webdriver?: boolean }).webdriver === true
+      && (window as Window & { __sudoForceOnboarding?: boolean }).__sudoForceOnboarding !== true) {
+    return;
+  }
+  const dialog = document.getElementById("onboarding-dialog");
+  if (!(dialog instanceof HTMLDialogElement)) return;
+  if (dialog.open) return;
+  dialog.showModal();
+}
+
+function markOnboardingComplete(): void {
+  try { localStorage.setItem(ONBOARDING_FLAG_KEY, "1"); } catch { /* ignore */ }
 }
 
 function getIdentityPublicKey(identity: IdentityDocument): string {
