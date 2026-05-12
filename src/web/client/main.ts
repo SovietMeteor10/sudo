@@ -128,10 +128,11 @@ import {
   saveTrustedDevice,
   upsertContact,
   getConversationSettings,
-  listConversationSystemEventsLocal
+  listConversationSystemEventsLocal,
+  runConversationTtlGc
 } from "./local/local-store.js";
 import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, resetCachedLocalDb, subscribeLocalStateBroadcasts, broadcastLocalStateChange, type LocalStateChangeKind } from "./local/local-db.js";
-import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave } from "./local/relay-local.js";
+import { queueAndSubmitLocalMessage, retrieveRelayInboxAfterLocalSave, sendChatReceipt } from "./local/relay-local.js";
 import type {
   ChatSummary,
   ConnectionRelationship,
@@ -230,6 +231,13 @@ const conversationSettingsTtl = getRequiredSelect("conversation-settings-ttl");
 const conversationSettingsState = getRequiredElement("conversation-settings-state");
 const conversationSettingsSave = getRequiredButton("conversation-settings-save");
 const conversationSettingsCancel = getRequiredButton("conversation-settings-cancel");
+const chatPopupSidebar = getRequiredElement("chat-popup-sidebar");
+const chatPopupSidebarList = getRequiredElement("chat-popup-sidebar-list");
+const forwardPickerDialog = getRequiredDialog("forward-picker-dialog");
+const forwardPickerPreview = getRequiredElement("forward-picker-preview");
+const forwardPickerList = getRequiredElement("forward-picker-list");
+const forwardPickerState = getRequiredElement("forward-picker-state");
+const forwardPickerCancel = getRequiredButton("forward-picker-cancel");
 const signupCancel = getRequiredButton("signup-cancel");
 const signupDialog = getRequiredDialog("signup-dialog");
 const signupForm = getRequiredForm("signup-form");
@@ -345,8 +353,8 @@ let chatTarget: { canonical: string; handle: string; fingerprint: string } | nul
 // currently-open per-message kebab menu so Escape/outside-click can
 // close it cleanly.
 let chatFullscreen = false;
-let replyContext: { message_id: string; body: string; direction: "sent" | "received" } | null = null;
-let messageMenuTarget: { message_id: string; direction: "sent" | "received"; body: string; deleted: boolean } | null = null;
+let replyContext: { message_id: string; relay_message_id?: string; body: string; direction: "sent" | "received" } | null = null;
+let messageMenuTarget: { message_id: string; relay_message_id?: string; direction: "sent" | "received"; body: string; deleted: boolean } | null = null;
 let brandFlickerTimeout: number | null = null;
 let brandFlickerTick: number | null = null;
 let brandFlickerActive = false;
@@ -966,10 +974,25 @@ document.addEventListener("mousedown", (event) => {
 
 messageMenuReply.addEventListener("click", () => {
   if (messageMenuTarget !== null && !messageMenuTarget.deleted) {
-    setReplyContext(messageMenuTarget.message_id, messageMenuTarget.body, messageMenuTarget.direction);
+    setReplyContext(
+      messageMenuTarget.message_id,
+      messageMenuTarget.body,
+      messageMenuTarget.direction,
+      messageMenuTarget.relay_message_id
+    );
     chatPopupInput.focus();
   }
   closeMessageMenu();
+});
+
+messageMenuForward.addEventListener("click", () => {
+  if (messageMenuTarget === null || messageMenuTarget.deleted) {
+    closeMessageMenu();
+    return;
+  }
+  const targetBody = messageMenuTarget.body;
+  closeMessageMenu();
+  openForwardPicker(targetBody);
 });
 
 messageMenuDelete.addEventListener("click", () => {
@@ -981,6 +1004,10 @@ messageMenuDelete.addEventListener("click", () => {
 
 conversationSettingsCancel.addEventListener("click", () => {
   conversationSettingsDialog.close();
+});
+
+forwardPickerCancel.addEventListener("click", () => {
+  forwardPickerDialog.close();
 });
 
 conversationSettingsSave.addEventListener("click", () => {
@@ -1066,6 +1093,12 @@ async function refreshLocalChats(): Promise<void> {
     localChats = [];
   }
   renderChatList(chatsRoot, localChats);
+  // Mirror the same data into the fullscreen-chat sidebar so an
+  // updated chat list (new conversation, last-line change) reflects
+  // immediately without waiting for a fullscreen re-toggle.
+  if (chatFullscreen && !chatPopupSidebar.hidden) {
+    renderChatPopupSidebar();
+  }
 }
 
 // ---- inbox polling ---------------------------------------------------------
@@ -1141,12 +1174,29 @@ function startInboxPolling(canonicalId: string): void {
   window.setInterval(() => {
     if (inboxPollOwner !== null) ensureInboxLeadership(inboxPollOwner);
   }, INBOX_LEADER_RENEW_MS);
+  // Periodic disappearing-messages sweep. Runs every minute against
+  // whatever TTL settings are in conversation_settings; messages
+  // older than the active TTL are tombstoned in place. The 60s
+  // cadence is a tradeoff: too fast wastes work on a quiet user;
+  // too slow leaves expired text on disk past the user's expectation.
+  ttlGcTimer = window.setInterval(() => {
+    if (inboxPollOwner !== null) {
+      void runConversationTtlGc(inboxPollOwner).catch(() => {});
+    }
+  }, TTL_GC_INTERVAL_MS);
 }
+
+const TTL_GC_INTERVAL_MS = 60_000;
+let ttlGcTimer: number | null = null;
 
 function stopInboxPolling(): void {
   if (inboxPollTimer !== null) {
     window.clearInterval(inboxPollTimer);
     inboxPollTimer = null;
+  }
+  if (ttlGcTimer !== null) {
+    window.clearInterval(ttlGcTimer);
+    ttlGcTimer = null;
   }
   if (inboxPollOwner !== null) clearLeaderIfOwned(inboxPollOwner);
   inboxPollOwner = null;
@@ -5400,6 +5450,13 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
   chatPopupHandle.textContent = target.handle || target.canonical;
   chatPopup.classList.remove("is-minimized");
   chatPopup.hidden = false;
+  // Eager TTL sweep on chat open so expired messages disappear from
+  // storage (not just the render filter) when the user lands in a
+  // conversation with disappearing-messages on. Best-effort; failures
+  // don't block the open.
+  if (currentIdentityDocument !== null) {
+    void runConversationTtlGc(currentIdentityDocument.canonical_id).catch(() => {});
+  }
   // Fullscreen-by-default on mobile widths so an opened chat reads
   // as a full-page route. Desktop opens the floating popup unless
   // the user already toggled fullscreen during this session.
@@ -5409,6 +5466,10 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
     // Make sure a stray fullscreen class from a prior mobile session
     // doesn't carry into a resized desktop view.
     setChatFullscreen(false);
+  } else {
+    // Already fullscreen on desktop — refresh the sidebar so the
+    // active-row highlight points at the new target.
+    renderChatPopupSidebar();
   }
   for (const row of chatsRoot.querySelectorAll<HTMLElement>("[data-chat-canonical]")) {
     row.classList.toggle("is-selected", row.dataset["chatCanonical"] === target.canonical);
@@ -5436,12 +5497,57 @@ function setChatFullscreen(on: boolean): void {
   chatPopupFullscreen.setAttribute("aria-label", on ? "exit fullscreen" : "enter fullscreen");
   chatPopupFullscreen.setAttribute("title", on ? "exit fullscreen" : "enter fullscreen");
   chatPopupFullscreen.textContent = on ? "⤡" : "⛶";
+  // Sidebar visibility tracks fullscreen on desktop. Mobile CSS
+  // hides the sidebar regardless, but flipping `hidden` keeps the
+  // accessibility tree clean (and the global [hidden] rule wins
+  // even if CSS specificity changes later).
+  if (on && !isMobileViewport()) {
+    chatPopupSidebar.hidden = false;
+    renderChatPopupSidebar();
+  } else {
+    chatPopupSidebar.hidden = true;
+  }
+}
+
+function renderChatPopupSidebar(): void {
+  const owner = currentIdentityDocument?.canonical_id ?? null;
+  const activeCanonical = chatTarget?.canonical ?? null;
+  const candidates = localChats.filter((chat) => owner === null || getChatCanonical(chat) !== owner);
+  chatPopupSidebarList.replaceChildren();
+  if (candidates.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "chat-popup__sidebar-empty";
+    empty.textContent = "no other chats";
+    chatPopupSidebarList.append(empty);
+    return;
+  }
+  for (const chat of candidates) {
+    const canonical = getChatCanonical(chat);
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "chat-popup__sidebar-row";
+    row.dataset["chatCanonical"] = canonical;
+    row.dataset["chatHandle"] = chat.handle ?? "";
+    if (canonical === activeCanonical) row.classList.add("is-active");
+    row.textContent = chat.handle || canonical;
+    row.addEventListener("click", () => {
+      if (canonical === activeCanonical) return;
+      // Switch the active conversation in place — preserve fullscreen.
+      void openChatPopup({
+        canonical,
+        handle: chat.handle ?? "",
+        fingerprint: chat.fingerprint ?? ""
+      });
+    });
+    chatPopupSidebarList.append(row);
+  }
 }
 
 async function markConversationRead(partnerCanonicalId: string): Promise<void> {
   if (currentIdentityDocument === null) return;
   const owner = currentIdentityDocument.canonical_id;
   const conversationId = conversationKey(owner, partnerCanonicalId);
+  let receiptTargets: Array<{ relay_message_id: string }> = [];
   try {
     const messages = await listLocalMessagesByConversation(owner, conversationId);
     // Latest message wins. Tombstones count for the marker (so a
@@ -5465,9 +5571,36 @@ async function markConversationRead(partnerCanonicalId: string): Promise<void> {
       last_read_message_id: latestNonTombstoneId,
       last_read_at: lastReadAt
     });
+    // Build the set of cross-user read receipts to broadcast back to
+    // the original sender. One receipt per RECEIVED, non-tombstoned
+    // message that carries a relay_message_id we can reference. We
+    // dedup against the local read_at we just stamped — the receipt
+    // pipeline is fire-and-forget, but resending the same receipt is
+    // a harmless no-op on the peer side (monotonic merge).
+    receiptTargets = messages
+      .filter((m) => m.direction === "received"
+        && typeof m.deleted_at !== "string"
+        && typeof m.relay_message_id === "string"
+        && m.relay_message_id.length > 0)
+      .map((m) => ({ relay_message_id: m.relay_message_id as string }));
   } catch (error) {
     console.warn("[chat] mark-read failed", error instanceof Error ? error.message : error);
     return;
+  }
+  // Fire receipts in the background — the chat-list refresh shouldn't
+  // wait on N relay POSTs. Each is best-effort.
+  if (receiptTargets.length > 0) {
+    const readAt = new Date().toISOString();
+    void Promise.all(receiptTargets.map((t) => sendChatReceipt(
+      owner,
+      partnerCanonicalId,
+      { target_relay_message_id: t.relay_message_id, read_at: readAt },
+      {
+        senderAccount: currentCryptoAccount,
+        senderHandle: currentIdentityDocument?.handle,
+        peerHandle: chatTarget?.canonical === partnerCanonicalId ? chatTarget.handle : undefined
+      }
+    )));
   }
   // Refresh the chat list so the badge clears immediately on this
   // device. The peer will catch up via the projector + listener.
@@ -5516,7 +5649,13 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
     return;
   }
   const messageById = new Map<string, ChatMessageView>();
-  for (const m of messages) messageById.set(m.message_id, m);
+  const messageByRelayId = new Map<string, ChatMessageView>();
+  for (const m of messages) {
+    messageById.set(m.message_id, m);
+    if (typeof m.relay_message_id === "string" && m.relay_message_id.length > 0) {
+      messageByRelayId.set(m.relay_message_id, m);
+    }
+  }
   // Merge timeline: interleave messages and system events by created_at.
   type Entry = { at: string; kind: "message"; m: ChatMessageView } | { at: string; kind: "system"; text: string };
   const entries: Entry[] = [];
@@ -5525,7 +5664,7 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
   entries.sort((a, b) => a.at.localeCompare(b.at));
   const fragment = document.createDocumentFragment();
   for (const entry of entries) {
-    if (entry.kind === "message") fragment.append(renderChatMessage(entry.m, messageById));
+    if (entry.kind === "message") fragment.append(renderChatMessage(entry.m, messageById, messageByRelayId));
     else fragment.append(renderChatSystem(entry.text));
   }
   chatPopupBody.replaceChildren(fragment);
@@ -5548,30 +5687,63 @@ function makeChatEmpty(text: string): HTMLElement {
   return element;
 }
 
-function renderChatMessage(message: ChatMessageView, messageById: Map<string, ChatMessageView>): HTMLElement {
+function renderChatMessage(
+  message: ChatMessageView,
+  messageById: Map<string, ChatMessageView>,
+  messageByRelayId: Map<string, ChatMessageView>
+): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
   wrapper.dataset.messageId = message.message_id;
+  if (typeof message.relay_message_id === "string") {
+    wrapper.dataset.relayMessageId = message.relay_message_id;
+  }
   // Tabindex makes the wrapper reachable by keyboard so :focus-within
   // can reveal the kebab on keyboard navigation, not just hover.
   wrapper.tabIndex = 0;
   const tombstoned = typeof message.deleted_at === "string";
   if (tombstoned) wrapper.classList.add("chat-message--deleted");
+  if (message.forwarded === true && !tombstoned) wrapper.classList.add("chat-message--forwarded");
 
-  // Reply snippet preview — if this message replied to an earlier one
-  // we still have locally, render a compact quote line above the body.
+  // Forwarded label. Above the body, dim. Original sender / time
+  // intentionally omitted (envelope carries no forwarded-from
+  // metadata — see RelayEnvelope.is_forwarded doc).
+  if (message.forwarded === true && !tombstoned) {
+    const label = document.createElement("div");
+    label.className = "chat-message__forwarded-label";
+    label.textContent = "↪ forwarded";
+    wrapper.append(label);
+  }
+
+  // Reply snippet preview. Two resolution paths:
+  //   1. reply_to_message_id — our own local linkage (sender side or
+  //      sender's linked-device replay). Resolves through messageById.
+  //   2. reply_to_relay_message_id — cross-user linkage. Resolves
+  //      through messageByRelayId (which is built from the same
+  //      conversation's rows on whichever device we're rendering on).
   // Tombstoned originals render as "message deleted" so the user
   // sees a coherent thread even after a delete.
+  let replyOriginal: ChatMessageView | undefined;
+  let replyAnchor: string | undefined;
   if (typeof message.reply_to_message_id === "string" && message.reply_to_message_id.length > 0) {
-    const original = messageById.get(message.reply_to_message_id);
-    const snippetText = original
-      ? (typeof original.deleted_at === "string" ? "message deleted" : original.body)
+    replyOriginal = messageById.get(message.reply_to_message_id);
+    replyAnchor = message.reply_to_message_id;
+  }
+  if (replyOriginal === undefined
+    && typeof message.reply_to_relay_message_id === "string"
+    && message.reply_to_relay_message_id.length > 0) {
+    replyOriginal = messageByRelayId.get(message.reply_to_relay_message_id);
+    replyAnchor = replyOriginal?.message_id ?? message.reply_to_relay_message_id;
+  }
+  if (replyAnchor !== undefined) {
+    const snippetText = replyOriginal
+      ? (typeof replyOriginal.deleted_at === "string" ? "message deleted" : replyOriginal.body)
       : "original message unavailable";
     const snippet = document.createElement("div");
     snippet.className = "chat-message__reply-snippet";
     snippet.textContent = snippetText.length > 80 ? `${snippetText.slice(0, 80)}…` : snippetText;
     snippet.title = snippetText;
-    snippet.dataset["replyTo"] = message.reply_to_message_id;
+    snippet.dataset["replyTo"] = replyAnchor;
     wrapper.append(snippet);
   }
 
@@ -5583,17 +5755,34 @@ function renderChatMessage(message: ChatMessageView, messageById: Map<string, Ch
   meta.className = "chat-message__meta";
   meta.textContent = formatChatTimestamp(message.created_at);
 
-  // Sent-tick. Honest single tick: the message is on this device and
-  // (presumably) at the relay. Cross-user delivered/read receipts are
-  // a future protocol addition — until then we don't claim more than
-  // we can prove. Tombstoned messages don't carry a tick.
+  // Sent-message tick. Three states:
+  //   ✓        sent — message stored locally + at the relay
+  //   ✓✓       delivered — recipient device ACKed the envelope
+  //   ✓✓ (accent) — read — recipient broadcast a read receipt
+  // Tombstoned messages don't carry a tick.
   if (message.direction === "sent" && !tombstoned) {
     const tick = document.createElement("span");
-    tick.className = "chat-message__tick chat-message__tick--sent";
-    tick.textContent = "✓";
-    tick.setAttribute("aria-label", "sent");
-    tick.setAttribute("title", "sent");
-    tick.dataset["messageStatus"] = "sent";
+    tick.className = "chat-message__tick";
+    let status: "sent" | "delivered" | "read" = "sent";
+    let label = "sent";
+    let glyph = "✓";
+    if (typeof message.read_at === "string") {
+      status = "read";
+      label = "read";
+      glyph = "✓✓";
+      tick.classList.add("chat-message__tick--read");
+    } else if (typeof message.delivered_at === "string") {
+      status = "delivered";
+      label = "delivered";
+      glyph = "✓✓";
+      tick.classList.add("chat-message__tick--delivered");
+    } else {
+      tick.classList.add("chat-message__tick--sent");
+    }
+    tick.textContent = glyph;
+    tick.setAttribute("aria-label", label);
+    tick.setAttribute("title", label);
+    tick.dataset["messageStatus"] = status;
     meta.append(tick);
   }
   wrapper.append(bubble, meta);
@@ -5664,6 +5853,7 @@ function attachLongPress(target: HTMLElement, handler: () => void): void {
 function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
   messageMenuTarget = {
     message_id: message.message_id,
+    relay_message_id: typeof message.relay_message_id === "string" ? message.relay_message_id : undefined,
     direction: message.direction,
     body: typeof message.deleted_at === "string" ? "" : message.body,
     deleted: typeof message.deleted_at === "string"
@@ -5689,10 +5879,11 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
   messageMenuReply.setAttribute("aria-disabled", String(messageMenuTarget.deleted));
   messageMenuDelete.disabled = messageMenuTarget.direction !== "sent" || messageMenuTarget.deleted;
   messageMenuDelete.setAttribute("aria-disabled", String(messageMenuDelete.disabled));
-  // Forward is gated globally; explicit per-target re-assert so the
-  // disabled state survives a previous open.
-  messageMenuForward.disabled = true;
-  messageMenuForward.setAttribute("aria-disabled", "true");
+  // Forward enabled on any live message (deleted rows can't be
+  // forwarded because they have no body left).
+  messageMenuForward.disabled = messageMenuTarget.deleted;
+  messageMenuForward.setAttribute("aria-disabled", String(messageMenuTarget.deleted));
+  messageMenuForward.removeAttribute("title");
   // Focus first enabled item for keyboard users.
   const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuDelete].find((b) => !b.disabled);
   if (firstEnabled) firstEnabled.focus();
@@ -5703,8 +5894,8 @@ function closeMessageMenu(): void {
   messageMenuTarget = null;
 }
 
-function setReplyContext(messageId: string, body: string, direction: "sent" | "received"): void {
-  replyContext = { message_id: messageId, body, direction };
+function setReplyContext(messageId: string, body: string, direction: "sent" | "received", relayMessageId?: string): void {
+  replyContext = { message_id: messageId, relay_message_id: relayMessageId, body, direction };
   const snippetText = body.length > 80 ? `${body.slice(0, 80)}…` : body;
   chatPopupReplySnippet.textContent = snippetText;
   chatPopupReplySnippet.title = body;
@@ -5807,6 +5998,69 @@ async function refreshConversationTtlBadge(canonicalId: string): Promise<void> {
   chatPopupTtlBadge.hidden = false;
 }
 
+function openForwardPicker(body: string): void {
+  if (currentIdentityDocument === null || body.length === 0) return;
+  forwardPickerPreview.textContent = body.length > 240 ? `${body.slice(0, 240)}…` : body;
+  forwardPickerState.textContent = "";
+  // Reuse the existing chat list — these are users who already have
+  // a conversation row, which keeps the picker scoped to "people you
+  // already talk to" instead of acting as a general directory.
+  const ownerCanonical = currentIdentityDocument.canonical_id;
+  const candidates = localChats.filter((chat) => getChatCanonical(chat) !== ownerCanonical);
+  forwardPickerList.replaceChildren();
+  if (candidates.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "forward-picker__empty";
+    empty.textContent = "no chats yet — start one first.";
+    forwardPickerList.append(empty);
+  } else {
+    for (const chat of candidates) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "forward-picker__row";
+      row.setAttribute("role", "option");
+      row.dataset["chatCanonical"] = getChatCanonical(chat);
+      row.dataset["chatHandle"] = chat.handle ?? "";
+      row.textContent = chat.handle || getChatCanonical(chat);
+      row.addEventListener("click", () => {
+        void executeForward({ canonical: getChatCanonical(chat), handle: chat.handle ?? "" }, body);
+      });
+      forwardPickerList.append(row);
+    }
+  }
+  if (!forwardPickerDialog.open) forwardPickerDialog.showModal();
+}
+
+async function executeForward(target: { canonical: string; handle: string }, body: string): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  forwardPickerState.textContent = "forwarding…";
+  try {
+    const result = await queueAndSubmitLocalMessage({
+      senderCanonicalId: currentIdentityDocument.canonical_id,
+      recipientCanonicalId: target.canonical,
+      senderHandle: currentIdentityDocument.handle,
+      recipientHandle: target.handle,
+      body,
+      senderAccount: currentCryptoAccount,
+      forwarded: true
+    });
+    if (!result.ok) {
+      forwardPickerState.textContent = `forward failed: ${result.error ?? "unknown"}`;
+      return;
+    }
+    forwardPickerState.textContent = "forwarded";
+    await refreshLocalChats();
+    // If the user is currently in a chat, refresh that view so a
+    // forward into the same conversation lands immediately.
+    if (chatTarget !== null) await renderChatPopupBody(chatTarget.canonical);
+    window.setTimeout(() => {
+      if (forwardPickerDialog.open) forwardPickerDialog.close();
+    }, 600);
+  } catch (error) {
+    forwardPickerState.textContent = error instanceof Error ? error.message : "forward failed";
+  }
+}
+
 async function openConversationSettings(): Promise<void> {
   if (chatTarget === null || currentIdentityDocument === null) return;
   const conversationId = conversationKey(currentIdentityDocument.canonical_id, chatTarget.canonical);
@@ -5848,11 +6102,16 @@ async function saveConversationSettings(): Promise<void> {
 
 type ChatMessageView = {
   message_id: string;
+  relay_message_id?: string;
   created_at: string;
   direction: "sent" | "received";
   body: string;
   deleted_at?: string;
   reply_to_message_id?: string;
+  reply_to_relay_message_id?: string;
+  delivered_at?: string;
+  read_at?: string;
+  forwarded?: boolean;
 };
 
 async function listConversationMessages(conversationId: string): Promise<ChatMessageView[]> {
@@ -5861,13 +6120,16 @@ async function listConversationMessages(conversationId: string): Promise<ChatMes
   return records
     .map((record): ChatMessageView => ({
       message_id: record.message_id,
+      relay_message_id: typeof record.relay_message_id === "string" ? record.relay_message_id : undefined,
       created_at: record.created_at,
       direction: record.direction,
       body: record.body,
       deleted_at: typeof record.deleted_at === "string" ? record.deleted_at : undefined,
-      reply_to_message_id: typeof (record as { reply_to_message_id?: string }).reply_to_message_id === "string"
-        ? (record as { reply_to_message_id?: string }).reply_to_message_id
-        : undefined
+      reply_to_message_id: typeof record.reply_to_message_id === "string" ? record.reply_to_message_id : undefined,
+      reply_to_relay_message_id: typeof record.reply_to_relay_message_id === "string" ? record.reply_to_relay_message_id : undefined,
+      delivered_at: typeof record.delivered_at === "string" ? record.delivered_at : undefined,
+      read_at: typeof record.read_at === "string" ? record.read_at : undefined,
+      forwarded: record.forwarded === true ? true : undefined
     }))
     .sort((left, right) => left.created_at.localeCompare(right.created_at));
 }
@@ -5882,6 +6144,7 @@ async function sendChatPopupMessage(): Promise<void> {
   if (body.length === 0) return;
   const target = chatTarget;
   const replyTo = replyContext?.message_id;
+  const replyToRelay = replyContext?.relay_message_id;
   try {
     const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: currentIdentityDocument.canonical_id,
@@ -5890,7 +6153,8 @@ async function sendChatPopupMessage(): Promise<void> {
       recipientHandle: target.handle,
       body,
       senderAccount: currentCryptoAccount,
-      replyToMessageId: replyTo
+      replyToMessageId: replyTo,
+      replyToRelayMessageId: replyToRelay
     });
     chatPopupInput.value = "";
     autoGrowTextarea(chatPopupInput, 28, 120);

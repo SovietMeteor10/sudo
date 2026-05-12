@@ -19,6 +19,19 @@
   box-sizing: border-box;
 }
 
+/* Global belt-and-braces enforcement of the HTML `hidden` attribute.
+   Component CSS that sets a custom display (.pairing-card { display:
+   flex }, .notifications__list { display: flex }, etc.) will silently
+   override the user-agent `[hidden] { display: none }` rule on
+   specificity grounds; toggling el.hidden then leaves the element
+   visible. This rule wins everywhere so any element with `hidden`
+   stops painting AND stops reserving space. Per-component overrides
+   that previously fixed this individually (.pairing-card[hidden], etc.)
+   stay in place as documentation of the prior gotcha. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -1935,11 +1948,25 @@ body[data-auth-state="auth-restore"] .landing {
   border: 1px solid var(--line);
   background: var(--panel);
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  /* Floating-popup layout — single column, header / body / reply
+     chip / form rows. The optional sidebar slot is collapsed
+     (zero-width); .is-fullscreen on desktop re-expands it. */
+  grid-template-columns: 0 minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-areas:
+    "header header"
+    "sidebar body"
+    "sidebar reply"
+    "sidebar form";
   overflow: hidden;
   animation: chat-popup-in 140ms ease-out;
 }
+
+.chat-popup__header { grid-area: header; }
+.chat-popup__sidebar { grid-area: sidebar; }
+.chat-popup__body { grid-area: body; }
+.chat-popup__reply-context { grid-area: reply; }
+.chat-popup__form { grid-area: form; }
 
 .chat-popup[hidden] {
   display: none;
@@ -1974,6 +2001,70 @@ body[data-auth-state="auth-restore"] .landing {
   border: 0;
   border-radius: 0;
   animation: none;
+  /* Desktop fullscreen pulls the chat list into a left rail so the
+     user can switch conversations without exiting. The 240px is
+     wide enough for handles + the search-result truncation rule
+     ellipsizes anything longer. */
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+.chat-popup__sidebar {
+  display: none;
+  flex-direction: column;
+  border-right: 1px solid var(--line-soft);
+  background: var(--panel-soft);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chat-popup.is-fullscreen .chat-popup__sidebar {
+  display: flex;
+}
+
+.chat-popup__sidebar-title {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.chat-popup__sidebar-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.chat-popup__sidebar-row {
+  display: block;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 8px 12px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-popup__sidebar-row:hover,
+.chat-popup__sidebar-row:focus-visible {
+  background: rgba(255, 255, 255, 0.03);
+  outline: none;
+}
+
+.chat-popup__sidebar-row.is-active {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.chat-popup__sidebar-empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .chat-popup.is-fullscreen .chat-popup__handle {
@@ -2248,6 +2339,66 @@ body[data-auth-state="auth-restore"] .landing {
 .chat-message--deleted .chat-message__bubble {
   font-style: italic;
   color: var(--dim);
+}
+
+/* "↪ forwarded" label rendered above the body of any forwarded
+   message bubble. Dim and small so the body still reads as the
+   focus. */
+.chat-message__forwarded-label {
+  font-size: 10px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  margin: 0 0 2px;
+}
+
+/* Forward-picker dialog list. One row per existing chat. */
+.forward-picker__preview {
+  margin: 8px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  background: rgba(255, 255, 255, 0.02);
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+.forward-picker__list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-soft);
+  max-height: 240px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+
+.forward-picker__row {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.forward-picker__row:last-child {
+  border-bottom: 0;
+}
+
+.forward-picker__row:hover,
+.forward-picker__row:focus-visible {
+  background: var(--panel-soft);
+  outline: none;
+}
+
+.forward-picker__empty {
+  padding: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 /* System message rendered inline in the chat body for events like
@@ -3017,6 +3168,14 @@ body[data-auth-state="signed-in"] .shell {
     width: 100vw;
     max-width: 100vw;
     height: calc(100vh - var(--topbar-h));
+    /* Mobile fullscreen collapses the sidebar — the chat takes the
+       whole viewport. The back-arrow in the header is the route
+       back to the chat list. */
+    grid-template-columns: 0 minmax(0, 1fr);
+  }
+
+  .chat-popup.is-fullscreen .chat-popup__sidebar {
+    display: none;
   }
 
   body[data-chat-fullscreen="1"] .mobile-tabs {

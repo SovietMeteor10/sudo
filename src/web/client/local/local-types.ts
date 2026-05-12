@@ -60,6 +60,25 @@ export type LocalMessage = {
   // tombstone-aware (rendering checks the referenced row's deleted_at
   // to avoid resurrecting deleted text).
   reply_to_message_id?: string;
+  // Cross-user reply pointer. The sender stamps the ORIGINAL envelope's
+  // message_id (= the value stored on every device's row as
+  // `relay_message_id`); the receiver resolves it back to their own
+  // local message via the by_relay_message_id index. Both fields can
+  // co-exist on a single row — reply_to_message_id is the writer's
+  // local linkage, reply_to_relay_message_id is the cross-user one.
+  reply_to_relay_message_id?: string;
+  // Per-message receipts. `delivered_at` flips once the relay reports
+  // the envelope as `acked` (recipient device saved + ACKed it);
+  // `read_at` flips when the recipient broadcasts a chat_receipt
+  // marking this message as read. Both are monotonic — receipts
+  // can only ratchet forward, never back.
+  delivered_at?: string;
+  read_at?: string;
+  // True when the message was sent as a forward. Rendered with a
+  // "forwarded" label above the body. Original sender / timestamp
+  // are intentionally not preserved — see RelayEnvelope's
+  // is_forwarded doc for rationale.
+  forwarded?: boolean;
 };
 
 // Per-conversation settings shared across both participants by sync.

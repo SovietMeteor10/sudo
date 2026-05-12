@@ -143,6 +143,78 @@ export async function getLocalMessage(messageId: string): Promise<LocalMessage |
   return getRecord<LocalMessage>("messages", messageId);
 }
 
+// Owner-scoped lookup by the envelope-side identifier. Used by the
+// chat-receipt pipeline (Alice maps an inbound receipt back to her
+// outbound row) and by cross-user reply rendering (Bob's render maps
+// an inbound reply_to_relay_message_id back to his locally-stored
+// copy of Alice's earlier message). Returns null when no row matches
+// or when the matching row's owner stamp differs from the caller —
+// owner-isolation is enforced here, not just at write time.
+export async function getLocalMessageByRelayId(
+  ownerCanonicalId: string,
+  relayMessageId: string
+): Promise<LocalMessage | null> {
+  if (typeof relayMessageId !== "string" || relayMessageId.length === 0) return null;
+  const db = await openLocalDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("messages", "readonly");
+    const index = tx.objectStore("messages").index("by_owner_relay");
+    const request = index.get(IDBKeyRange.only([ownerCanonicalId, relayMessageId]));
+    request.onsuccess = () => {
+      const row = request.result as LocalMessage | undefined;
+      if (row === undefined) return resolve(null);
+      if (row.owner_canonical_id !== ownerCanonicalId) return resolve(null);
+      resolve(row);
+    };
+    request.onerror = () => reject(request.error ?? new Error("failed to read message by relay id"));
+  });
+}
+
+// Apply a cross-user receipt to a local sent message. Monotonic:
+// `delivered_at` can only ratchet forward (never back), and `read_at`
+// implies delivered (we stamp delivered_at too if it's not already
+// set). Tombstoned rows ignore receipts — once the user deletes
+// their own message, the row carries no body and the receipt is
+// meaningless. Returns whether anything actually changed so the
+// caller can skip the broadcast + re-render on a no-op.
+export async function applyMessageReceipt(
+  ownerCanonicalId: string,
+  relayMessageId: string,
+  patch: { delivered_at?: string; read_at?: string }
+): Promise<{ written: boolean; row: LocalMessage | null }> {
+  const existing = await getLocalMessageByRelayId(ownerCanonicalId, relayMessageId);
+  if (existing === null) return { written: false, row: null };
+  if (typeof existing.deleted_at === "string") return { written: false, row: existing };
+  const next: LocalMessage = { ...existing };
+  let changed = false;
+  if (typeof patch.delivered_at === "string") {
+    const prior = typeof existing.delivered_at === "string" ? Date.parse(existing.delivered_at) : -Infinity;
+    if (Date.parse(patch.delivered_at) > prior) {
+      next.delivered_at = patch.delivered_at;
+      changed = true;
+    }
+  }
+  if (typeof patch.read_at === "string") {
+    const prior = typeof existing.read_at === "string" ? Date.parse(existing.read_at) : -Infinity;
+    if (Date.parse(patch.read_at) > prior) {
+      next.read_at = patch.read_at;
+      // Read implies delivered. Don't backfill delivered_at if the
+      // sender already has a later one (e.g. a manual repair / dev
+      // mutation).
+      const priorDelivered = typeof existing.delivered_at === "string" ? Date.parse(existing.delivered_at) : -Infinity;
+      if (Date.parse(patch.read_at) > priorDelivered) {
+        next.delivered_at = patch.read_at;
+      }
+      changed = true;
+    }
+  }
+  if (!changed) return { written: false, row: existing };
+  next.updated_at = new Date().toISOString();
+  await putRecord("messages", next);
+  broadcastLocalStateChange("messages", ownerCanonicalId);
+  return { written: true, row: next };
+}
+
 export async function listLocalMessagesByConversation(
   ownerCanonicalId: string,
   conversationId: string
@@ -414,6 +486,58 @@ export async function upsertConversationSettingsMonotonic(
   await txDone(tx);
   broadcastLocalStateChange("conversation_settings", ownerCanonicalId);
   return { row: next, written: true };
+}
+
+export async function listConversationSettings(ownerCanonicalId: string): Promise<LocalConversationSettings[]> {
+  return getAllByIndex<LocalConversationSettings>("conversation_settings", "by_owner", ownerCanonicalId);
+}
+
+// TTL garbage-collection sweep. For every conversation with a
+// positive TTL, tombstone messages older than (now - ttl). Local
+// only — each device runs the same sweep against the same converged
+// `conversation_settings` row, so we don't need to broadcast a
+// delete event for every GC'd message (which would also re-spread
+// the row through the sync log). Returns the count of rows
+// tombstoned per conversation so callers can surface progress in
+// tests. Respects all the existing tombstone invariants:
+//   - already-tombstoned rows are skipped
+//   - body + ciphertext are blanked on the GC'd row
+//   - the row stays in the store so the conversation listing remains
+//     stable on every device
+export async function runConversationTtlGc(
+  ownerCanonicalId: string,
+  options: { nowMs?: number } = {}
+): Promise<{ tombstoned: number; conversations: number }> {
+  const now = typeof options.nowMs === "number" ? options.nowMs : Date.now();
+  const settings = await listConversationSettings(ownerCanonicalId);
+  let tombstoned = 0;
+  let touchedConversations = 0;
+  for (const row of settings) {
+    if (!Number.isFinite(row.message_ttl_seconds) || row.message_ttl_seconds <= 0) continue;
+    const cutoffMs = now - row.message_ttl_seconds * 1000;
+    if (!Number.isFinite(cutoffMs)) continue;
+    const cutoffIso = new Date(cutoffMs).toISOString();
+    const messages = await listLocalMessagesByConversation(ownerCanonicalId, row.conversation_id);
+    let conversationTombstoned = 0;
+    for (const message of messages) {
+      if (typeof message.deleted_at === "string") continue;
+      if (message.created_at >= cutoffIso) continue;
+      const result = await tombstoneLocalMessage(ownerCanonicalId, {
+        message_id: message.message_id,
+        conversation_id: message.conversation_id,
+        sender_canonical_id: message.sender_canonical_id,
+        recipient_canonical_id: message.recipient_canonical_id,
+        created_at: message.created_at,
+        deleted_at: new Date(now).toISOString()
+      });
+      if (result.written) conversationTombstoned++;
+    }
+    if (conversationTombstoned > 0) {
+      tombstoned += conversationTombstoned;
+      touchedConversations++;
+    }
+  }
+  return { tombstoned, conversations: touchedConversations };
 }
 
 export async function getConversationSettings(

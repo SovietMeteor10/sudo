@@ -155,7 +155,7 @@ function parseRelayEnvelopeInput(input: unknown): RelayEnvelope | null {
     return null;
   }
 
-  return {
+  const envelope: RelayEnvelope = {
     type: "sudo_relay_envelope",
     protocol_version: SUDO_PROTOCOL_VERSION,
     message_id: typeof value.message_id === "string" && value.message_id.length > 0 ? value.message_id : randomUUID(),
@@ -170,6 +170,17 @@ function parseRelayEnvelopeInput(input: unknown): RelayEnvelope | null {
     status: "submitted_to_relay",
     sender_signature: typeof value.sender_signature === "string" ? value.sender_signature : "dev-placeholder"
   };
+  // Optional cross-user reply pointer + forwarded flag. These are
+  // additive — older clients (and the dev-placeholder signing path)
+  // simply omit them. The relay treats them as opaque pass-through
+  // metadata; receiver-side handling is the canonical interpreter.
+  if (typeof value.reply_to_relay_message_id === "string" && value.reply_to_relay_message_id.length > 0) {
+    envelope.reply_to_relay_message_id = value.reply_to_relay_message_id;
+  }
+  if (value.is_forwarded === true) {
+    envelope.is_forwarded = true;
+  }
+  return envelope;
 }
 
 function relaySignableEnvelope(envelope: RelayEnvelope): Omit<RelayEnvelope, "sender_signature" | "status"> {

@@ -153,6 +153,10 @@
         <button class="chat-popup__icon" id="chat-popup-close" type="button" aria-label="close" title="close">×</button>
       </div>
     </header>
+    <aside class="chat-popup__sidebar" id="chat-popup-sidebar" hidden aria-label="other conversations">
+      <div class="chat-popup__sidebar-title">chats</div>
+      <div class="chat-popup__sidebar-list" id="chat-popup-sidebar-list"></div>
+    </aside>
     <div class="chat-popup__body" id="chat-popup-body" aria-live="polite"></div>
     <div class="chat-popup__reply-context" id="chat-popup-reply-context" hidden aria-live="polite">
       <div class="chat-popup__reply-snippet" id="chat-popup-reply-snippet"></div>
@@ -174,9 +178,22 @@
 
   <div class="message-menu" id="message-menu" hidden role="menu" aria-label="message actions">
     <button class="message-menu__item" id="message-menu-reply" type="button" role="menuitem">reply</button>
-    <button class="message-menu__item" id="message-menu-forward" type="button" role="menuitem" disabled aria-disabled="true" title="forward coming soon">forward</button>
+    <button class="message-menu__item" id="message-menu-forward" type="button" role="menuitem">forward</button>
     <button class="message-menu__item message-menu__item--danger" id="message-menu-delete" type="button" role="menuitem">delete</button>
   </div>
+
+  <dialog class="signup-dialog signup-dialog--forward" id="forward-picker-dialog" aria-labelledby="forward-picker-title">
+    <form class="signup-dialog__panel" id="forward-picker-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="forward-picker-title">forward to…</div>
+      <p class="signup-dialog__hint">pick an existing chat. the message is sent as a forward, no original sender or timestamp attached.</p>
+      <div class="forward-picker__preview" id="forward-picker-preview"></div>
+      <div class="forward-picker__list" id="forward-picker-list" role="listbox" aria-label="existing chats"></div>
+      <div class="signup-dialog__state" id="forward-picker-state" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="forward-picker-cancel" type="button">cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog class="signup-dialog signup-dialog--conversation" id="conversation-settings-dialog" aria-labelledby="conversation-settings-title">
     <form class="signup-dialog__panel" id="conversation-settings-form" method="dialog" autocomplete="off">

@@ -7,6 +7,7 @@ import { base64Url, base64UrlToBytes } from "./crypto.js";
 import { selectRelayForRecipient } from "../transport/relay-transport.js";
 import {
   appendLocalEvent,
+  applyMessageReceipt,
   saveLocalMessage,
   savePendingOutbound
 } from "./local-store.js";
@@ -14,6 +15,108 @@ import type { LocalMessage, PendingOutbound } from "./local-types.js";
 import { notifyMessageUpsert } from "../sync/messageSync.js";
 
 const SUDO_PROTOCOL_VERSION = "0.1.0";
+
+// Ciphertext scheme tag for the cross-user delivery/read receipt
+// envelope. The receipt body is JSON: { target_relay_message_id,
+// delivered_at?, read_at? }. The relay treats it like any other
+// envelope (server is content-agnostic); recipient routes by scheme.
+export const CHAT_RECEIPT_SCHEME = "sudo_chat_receipt_v1";
+
+type ChatReceiptBody = {
+  target_relay_message_id: string;
+  delivered_at?: string;
+  read_at?: string;
+};
+
+function encodeChatReceiptBody(body: ChatReceiptBody): string {
+  const json = JSON.stringify(body);
+  return `${CHAT_RECEIPT_SCHEME}:${btoa(unescape(encodeURIComponent(json)))}`;
+}
+
+function decodeChatReceiptEnvelope(envelope: RelayEnvelope): ChatReceiptBody | null {
+  if (envelope.ciphertext_scheme !== CHAT_RECEIPT_SCHEME) return null;
+  if (typeof envelope.ciphertext !== "string") return null;
+  const prefix = `${CHAT_RECEIPT_SCHEME}:`;
+  const payload = envelope.ciphertext.startsWith(prefix)
+    ? envelope.ciphertext.slice(prefix.length)
+    : envelope.ciphertext;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(decodeURIComponent(escape(atob(payload))));
+  } catch {
+    return null;
+  }
+  if (decoded === null || typeof decoded !== "object") return null;
+  const obj = decoded as Partial<ChatReceiptBody>;
+  if (typeof obj.target_relay_message_id !== "string" || obj.target_relay_message_id.length === 0) return null;
+  const out: ChatReceiptBody = { target_relay_message_id: obj.target_relay_message_id };
+  if (typeof obj.delivered_at === "string") out.delivered_at = obj.delivered_at;
+  if (typeof obj.read_at === "string") out.read_at = obj.read_at;
+  return out;
+}
+
+// Best-effort fire-and-forget receipt send. Caller passes the
+// peer (the original sender), the receipt body, and signs as the
+// receipt-emitting account. Failure is silent — receipts are a UX
+// nicety, not a delivery guarantee.
+export async function sendChatReceipt(
+  ownerCanonicalId: string,
+  peerCanonicalId: string,
+  body: ChatReceiptBody,
+  options: { senderAccount?: BrowserCryptoAccount | null; senderHandle?: string; peerHandle?: string } = {}
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.parse(now) + 24 * 60 * 60 * 1000).toISOString();
+  const envelope: RelayEnvelope = {
+    type: "sudo_relay_envelope",
+    protocol_version: SUDO_PROTOCOL_VERSION,
+    message_id: crypto.randomUUID(),
+    sender_canonical_id: ownerCanonicalId,
+    recipient_canonical_id: peerCanonicalId,
+    sender_handle: options.senderHandle,
+    recipient_handle: options.peerHandle,
+    ciphertext: encodeChatReceiptBody(body),
+    ciphertext_scheme: CHAT_RECEIPT_SCHEME,
+    created_at: now,
+    expires_at: expiresAt,
+    status: "queued_local",
+    sender_signature: "dev-placeholder"
+  };
+  if (options.senderAccount !== undefined && options.senderAccount !== null) {
+    try {
+      envelope.sender_signature = await signRelayEnvelope(
+        {
+          type: envelope.type,
+          protocol_version: envelope.protocol_version,
+          message_id: envelope.message_id,
+          sender_canonical_id: envelope.sender_canonical_id,
+          recipient_canonical_id: envelope.recipient_canonical_id,
+          sender_handle: envelope.sender_handle,
+          recipient_handle: envelope.recipient_handle,
+          ciphertext: envelope.ciphertext,
+          ciphertext_scheme: envelope.ciphertext_scheme,
+          created_at: envelope.created_at,
+          expires_at: envelope.expires_at
+        },
+        options.senderAccount.identity_key,
+        options.senderAccount.identity_key_type
+      );
+    } catch {
+      // Sign failure → still try to POST with placeholder; relay
+      // may reject signature but that's fine — receipts are best-effort.
+    }
+  }
+  try {
+    const response = await fetch("/api/relay/envelopes", {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify(envelope)
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
 
 export async function queueAndSubmitLocalMessage(options: {
   senderCanonicalId: string;
@@ -26,6 +129,14 @@ export async function queueAndSubmitLocalMessage(options: {
   recipientMessagingKeyType?: "x25519" | "ecdh-p256";
   recipientIdentityDocument?: Pick<IdentityDocument, "delivery_relays"> | null;
   replyToMessageId?: string;
+  // The ORIGINAL envelope id (stored as `relay_message_id` on every
+  // device's row). Carries the reply pointer to the receiver who
+  // doesn't share the sender's local `message_id`.
+  replyToRelayMessageId?: string;
+  // Marks the outgoing envelope as a forward — receiver renders a
+  // "forwarded" label above the body and the sender's local copy
+  // records the forwarded flag.
+  forwarded?: boolean;
 }): Promise<{ ok: boolean; message_id: string; error?: string }> {
   const now = new Date().toISOString();
   const messageId = crypto.randomUUID();
@@ -50,6 +161,12 @@ export async function queueAndSubmitLocalMessage(options: {
     status: "queued_local",
     sender_signature: "dev-placeholder"
   };
+  if (typeof options.replyToRelayMessageId === "string" && options.replyToRelayMessageId.length > 0) {
+    envelope.reply_to_relay_message_id = options.replyToRelayMessageId;
+  }
+  if (options.forwarded === true) {
+    envelope.is_forwarded = true;
+  }
 
   if (
     options.senderAccount !== undefined
@@ -98,7 +215,9 @@ export async function queueAndSubmitLocalMessage(options: {
     updated_at: now,
     status: "queued_local",
     relay_message_id: envelope.message_id,
-    reply_to_message_id: options.replyToMessageId
+    reply_to_message_id: options.replyToMessageId,
+    reply_to_relay_message_id: options.replyToRelayMessageId,
+    forwarded: options.forwarded === true ? true : undefined
   };
 
   const outbound: PendingOutbound = {
@@ -219,6 +338,28 @@ export async function retrieveRelayInboxAfterLocalSave(
 
   for (const envelope of envelopes) {
     const now = new Date().toISOString();
+    // Chat-receipt envelopes carry the peer's delivered/read state
+    // for one of OUR sent messages — they're metadata, not chat
+    // content. Decode, apply to the matching local row, then ACK
+    // and skip the message-save path.
+    if (envelope.ciphertext_scheme === CHAT_RECEIPT_SCHEME) {
+      try {
+        const receipt = decodeChatReceiptEnvelope(envelope);
+        if (receipt !== null) {
+          await applyMessageReceipt(ownerCanonicalId, receipt.target_relay_message_id, {
+            delivered_at: receipt.delivered_at,
+            read_at: receipt.read_at
+          });
+        }
+      } catch { /* malformed — drop, still ACK below */ }
+      try {
+        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+          method: "POST",
+          headers: { accept: "application/json" }
+        });
+      } catch { /* ACK retry on next poll */ }
+      continue;
+    }
     const messageId = crypto.randomUUID();
     const plaintext = await decodeEnvelopeBody(envelope, options);
     const message: LocalMessage = {
@@ -235,7 +376,11 @@ export async function retrieveRelayInboxAfterLocalSave(
       created_at: envelope.created_at,
       updated_at: now,
       status: "delivered_to_recipient_device",
-      relay_message_id: envelope.message_id
+      relay_message_id: envelope.message_id,
+      reply_to_relay_message_id: typeof envelope.reply_to_relay_message_id === "string"
+        ? envelope.reply_to_relay_message_id
+        : undefined,
+      forwarded: envelope.is_forwarded === true ? true : undefined
     };
 
     try {
@@ -281,6 +426,24 @@ export async function retrieveRelayInboxAfterLocalSave(
     } catch {
       // Ignore ACK errors; the next poll will retry.
     }
+
+    // Emit a cross-user "delivered" receipt back to the original
+    // sender. Fire-and-forget — UI tick is a nicety; if the receipt
+    // fails to land the message still arrived correctly, the
+    // sender simply won't see the double-tick flip.
+    void sendChatReceipt(
+      ownerCanonicalId,
+      envelope.sender_canonical_id,
+      {
+        target_relay_message_id: envelope.message_id,
+        delivered_at: new Date().toISOString()
+      },
+      {
+        senderAccount: options.recipientAccount ?? null,
+        senderHandle: envelope.recipient_handle,
+        peerHandle: envelope.sender_handle
+      }
+    );
   }
 
   return saved;

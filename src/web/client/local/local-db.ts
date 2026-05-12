@@ -10,7 +10,7 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-export const LOCAL_DB_VERSION = 7;
+export const LOCAL_DB_VERSION = 8;
 
 export const localStoreNames = [
   "events",
@@ -404,6 +404,10 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     store.createIndex("by_owner", "owner_canonical_id");
     store.createIndex("by_owner_conversation", ["owner_canonical_id", "conversation_id"]);
     store.createIndex("by_owner_created_at", ["owner_canonical_id", "created_at"]);
+    // by_owner_relay lets the chat-receipt + cross-user-reply paths
+    // resolve a (owner, relay_message_id) pair back to the local row
+    // without scanning the whole conversation.
+    store.createIndex("by_owner_relay", ["owner_canonical_id", "relay_message_id"]);
   }
 
   // Contacts: composite primary key [owner_canonical_id, canonical_id]
@@ -480,6 +484,13 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
       keyPath: ["owner_canonical_id", "conversation_id"]
     });
     store.createIndex("by_owner", "owner_canonical_id");
+  }
+
+  // v8: add by_owner_relay index on messages so the chat-receipt
+  // pipeline and cross-user reply renderer can resolve a peer's
+  // relay_message_id back to our local row in O(1).
+  if (oldVersion < 8 && upgrade !== null) {
+    ensureIndex(upgrade, "messages", "by_owner_relay", ["owner_canonical_id", "relay_message_id"]);
   }
 
   // v7: conversation_settings + conversation_system_events.

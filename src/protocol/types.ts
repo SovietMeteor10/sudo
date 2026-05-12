@@ -121,6 +121,18 @@ export type RelayEnvelope = {
   expires_at: string;
   status: RelayEnvelopeStatus;
   sender_signature: Signature;
+  // Optional cross-user reply linkage. When the sender is replying
+  // to a message they received, this carries the ORIGINAL envelope's
+  // message_id (which both sides stamp on the row as `relay_message_id`).
+  // The receiver resolves it back to their local message via a
+  // by-relay-id lookup so the quote line renders even though sender
+  // and receiver assign different local message_ids on store.
+  reply_to_relay_message_id?: string;
+  // Optional flag marking the body as a forward of an earlier message.
+  // The body is the forwarded text; metadata (sender of original,
+  // original timestamp) is intentionally omitted — the receiver just
+  // sees "forwarded" + the body, no hidden routing trail.
+  is_forwarded?: boolean;
 };
 
 export type LegacyEncryptedMessageEnvelope = {
