@@ -163,7 +163,6 @@
       </div>
     </header>
     <aside class="chat-popup__sidebar" id="chat-popup-sidebar" hidden aria-label="other conversations">
-      <div class="chat-popup__sidebar-title">chats</div>
       <div class="chat-popup__sidebar-search">
         <label class="sr-only" for="chat-popup-sidebar-search">search chats</label>
         <input
@@ -243,6 +242,26 @@
       <div class="signup-dialog__actions">
         <button class="text-button" id="remove-connection-cancel" type="button">cancel</button>
         <button class="text-button text-button--danger" id="remove-connection-confirm" type="button">remove</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="signup-dialog signup-dialog--confirm" id="unlock-dialog" aria-labelledby="unlock-title" aria-describedby="unlock-hint">
+    <form class="signup-dialog__panel" id="unlock-form" method="dialog" autocomplete="off">
+      <div class="signup-dialog__title" id="unlock-title">unlock this device</div>
+      <p class="signup-dialog__hint" id="unlock-hint">unlock this device to continue.</p>
+      <label class="sr-only" for="unlock-passphrase-input">account passphrase</label>
+      <input
+        id="unlock-passphrase-input"
+        class="lookup__input"
+        type="password"
+        autocomplete="current-password"
+        spellcheck="false"
+      >
+      <div class="signup-dialog__state is-muted" id="unlock-feedback" aria-live="polite"></div>
+      <div class="signup-dialog__actions">
+        <button class="text-button" id="unlock-cancel" type="button">cancel</button>
+        <button class="text-button text-button--primary" id="unlock-submit" type="button">unlock</button>
       </div>
     </form>
   </dialog>

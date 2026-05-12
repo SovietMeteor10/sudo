@@ -441,6 +441,31 @@ async function waitForPopupContains(page, needle) {
     }
     document.querySelector(".chat-row")?.click();
   }, { canonical: canonicalB, handle: `@${handleB}` });
+  // After reload, the crypto account is locked — restoreStoredSession
+  // restores the identity but not the keys. Outbound encrypted
+  // actions (send a message, change settings, link/revoke) will
+  // prompt for the passphrase via the global #unlock-dialog. The
+  // suite uses that dialog by typing the passphrase and clicking
+  // unlock. This is a NEW invariant added in Phase 4.
+  await pageA.evaluate(async (pw) => {
+    const mod = await import("/client/main.js");
+    if (mod.isAccountLocked && mod.isAccountLocked()) {
+      // Open the dialog by triggering a request. The action callback
+      // is empty — we only want the dialog to appear.
+      mod.requestUnlock(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    const input = document.getElementById("unlock-passphrase-input");
+    if (input instanceof HTMLInputElement) {
+      input.value = pw;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    document.getElementById("unlock-submit")?.click();
+  }, PASSPHRASE);
+  await waitFor(pageA, () => {
+    const dlg = document.getElementById("unlock-dialog");
+    return !(dlg instanceof HTMLDialogElement) || !dlg.open;
+  }, 4000);
   if (!await waitFor(pageA, () => {
     const b = document.getElementById("chat-popup-ttl-badge");
     return b instanceof HTMLElement && !b.hidden && /1h/.test(b.textContent ?? "");
@@ -731,6 +756,31 @@ async function waitForPopupContains(page, needle) {
     fail("20b.active-row", `expected exactly 1 active row in sidebar, got ${sidebar.activeRow}`);
   } else {
     ok(`20b. sidebar highlights the active conversation`);
+  }
+
+  // 20c. The legacy "chats" heading is removed. Search input is the
+  //      first visible child of the sidebar.
+  const sidebarHead = await pageA.evaluate(() => {
+    const aside = document.getElementById("chat-popup-sidebar");
+    if (!(aside instanceof HTMLElement)) return null;
+    const text = (aside.innerText || "").toLowerCase();
+    const titleEl = aside.querySelector(".chat-popup__sidebar-title");
+    // First visible child (ignoring text-empty placeholders).
+    const firstChild = [...aside.children].find((el) => el instanceof HTMLElement && !el.hidden && window.getComputedStyle(el).display !== "none");
+    return {
+      hasTitleElement: !!titleEl,
+      hasChatsHeading: /^chats\b/m.test(text),
+      firstChildClass: firstChild instanceof HTMLElement ? firstChild.className : null
+    };
+  });
+  if (sidebarHead === null || sidebarHead.hasTitleElement) {
+    fail("20c.heading-element", `sidebar still contains a .chat-popup__sidebar-title element`);
+  } else if (sidebarHead.hasChatsHeading) {
+    fail("20c.heading-text", `sidebar still contains visible "chats" heading text`);
+  } else if (!String(sidebarHead.firstChildClass || "").includes("chat-popup__sidebar-search")) {
+    fail("20c.first-child", `expected sidebar-search to be first child, got '${sidebarHead.firstChildClass}'`);
+  } else {
+    ok(`20c. sidebar has no "chats" heading; search input is the first visible child`);
   }
 
   // ============================================================

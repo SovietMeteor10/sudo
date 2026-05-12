@@ -294,6 +294,11 @@ const devicePassphrasePrompt = getRequiredElement("device-passphrase-prompt");
 const devicePassphraseHint = getRequiredElement("device-passphrase-prompt-hint");
 const devicePassphraseInput = getRequiredInput("device-passphrase-input");
 const devicePassphraseFeedback = getRequiredElement("device-passphrase-prompt-feedback");
+const unlockDialog = getRequiredDialog("unlock-dialog");
+const unlockPassphraseInput = getRequiredInput("unlock-passphrase-input");
+const unlockFeedback = getRequiredElement("unlock-feedback");
+const unlockSubmit = getRequiredButton("unlock-submit");
+const unlockCancel = getRequiredButton("unlock-cancel");
 const devicePassphraseCancel = getRequiredButton("device-passphrase-cancel");
 const devicePassphraseSubmit = getRequiredButton("device-passphrase-submit");
 const linkDeviceDialog = getRequiredDialog("link-device-dialog");
@@ -798,6 +803,24 @@ devicePassphraseInput.addEventListener("keydown", (event) => {
     event.preventDefault();
     void submitDevicePassphrase();
   }
+});
+
+unlockSubmit.addEventListener("click", () => {
+  void submitUnlockDialog();
+});
+unlockCancel.addEventListener("click", () => {
+  closeUnlockDialog();
+});
+unlockPassphraseInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    void submitUnlockDialog();
+  }
+});
+unlockDialog.addEventListener("close", () => {
+  // Escape / outside-click closes the dialog — drop any pending
+  // action so a later unrelated unlock doesn't trigger it.
+  pendingUnlockAction = null;
 });
 
 pairingCardCancel.addEventListener("click", () => {
@@ -2680,6 +2703,7 @@ async function submitDevicePassphrase(): Promise<void> {
       passphrase
     );
     currentCryptoAccount = account;
+    activateCoordinatorAfterUnlock();
     const pending = pendingDeviceAction;
     hideDevicePassphrasePrompt();
     if (pending?.type === "link") {
@@ -2692,6 +2716,108 @@ async function submitDevicePassphrase(): Promise<void> {
       error instanceof Error ? error.message : "could not unlock account";
   } finally {
     devicePassphraseSubmit.disabled = false;
+  }
+}
+
+// ============================================================
+// Generic "unlock this device" prompt + pending-action resume.
+// ============================================================
+//
+// The device-passphrase-prompt above is wired specifically for the
+// devices dialog. After a reload, OTHER user-triggered actions
+// (sending a message, deleting a message, changing a conversation
+// setting) also fail to encrypt+sign because the local crypto
+// account is locked. Instead of silently no-op'ing inside the
+// outbound sync helpers, those entry points call requestUnlock(...)
+// which either runs immediately (when the keys are already
+// available) or routes through the global #unlock-dialog and
+// resumes after a successful unlock.
+
+export function isAccountLocked(): boolean {
+  // "Locked" specifically means: identity is restored from the
+  // server session token, but the local crypto account hasn't been
+  // unlocked (so encryption + signing aren't possible). Distinct
+  // from "signed out" which means there is no identity at all.
+  return currentIdentityDocument !== null && currentCryptoAccount === null;
+}
+
+let pendingUnlockAction: (() => Promise<void> | void) | null = null;
+
+function openUnlockDialog(): void {
+  unlockFeedback.textContent = "";
+  unlockPassphraseInput.value = "";
+  if (!unlockDialog.open) unlockDialog.showModal();
+  // Defer focus so the click that triggered the prompt doesn't
+  // steal it back.
+  window.setTimeout(() => unlockPassphraseInput.focus(), 0);
+}
+
+function closeUnlockDialog(): void {
+  pendingUnlockAction = null;
+  if (unlockDialog.open) unlockDialog.close();
+}
+
+// Call this for any user-triggered action that needs the crypto
+// account. The action runs immediately if keys are available; if
+// locked, the prompt is shown and the action runs after a
+// successful unlock. If the user cancels, the action does NOT run.
+export function requestUnlock(action: () => Promise<void> | void): void {
+  if (!isAccountLocked()) {
+    void action();
+    return;
+  }
+  pendingUnlockAction = action;
+  openUnlockDialog();
+}
+
+async function submitUnlockDialog(): Promise<void> {
+  if (currentIdentityDocument === null) {
+    closeUnlockDialog();
+    return;
+  }
+  const passphrase = unlockPassphraseInput.value;
+  if (passphrase.length === 0) {
+    unlockFeedback.textContent = "enter your passphrase";
+    return;
+  }
+  unlockSubmit.disabled = true;
+  unlockFeedback.textContent = "unlocking…";
+  try {
+    const account = await unlockBrowserCryptoAccountByHandle(
+      currentIdentityDocument.canonical_id,
+      passphrase
+    );
+    currentCryptoAccount = account;
+    activateCoordinatorAfterUnlock();
+    const resume = pendingUnlockAction;
+    pendingUnlockAction = null;
+    closeUnlockDialog();
+    if (resume !== null) {
+      try { await resume(); }
+      catch (e) { console.warn("[unlock] pending action failed", e instanceof Error ? e.message : e); }
+    }
+  } catch (error) {
+    unlockFeedback.textContent =
+      error instanceof Error ? error.message : "could not unlock";
+  } finally {
+    unlockSubmit.disabled = false;
+  }
+}
+
+// Reactivate the sync coordinator after any unlock path completes
+// successfully. The in-memory `active` slot in the coordinator is
+// cleared on every page load, so without this hook outbound writes
+// (notifyMessageUpsert, applyMessageDelete, watermark advances)
+// would continue to silently no-op even after the user typed the
+// passphrase. Idempotent — safe to call twice.
+function activateCoordinatorAfterUnlock(): void {
+  if (currentCryptoAccount === null) return;
+  if (currentDeviceId === null) return;
+  setActiveCoordinator(currentCryptoAccount, currentDeviceId);
+  startContactSyncPolling();
+  // Best-effort tombstone GC once the coordinator can sign + post.
+  if (currentIdentityDocument !== null) {
+    void runTombstoneGc(currentIdentityDocument.canonical_id);
   }
 }
 
@@ -3183,6 +3309,13 @@ async function retryPendingBackfills(ownerCanonicalId: string): Promise<void> {
     pending = await listPendingBackfills(ownerCanonicalId);
   } catch { return; }
   if (pending.length === 0) return;
+  // Backfill replays each local row as a fresh sync event, which
+  // needs to sign + encrypt with the crypto account. If the keys
+  // are locked (post-reload) we can't make progress yet — bail out
+  // quietly and try again on the next entry to setSignedIn /
+  // openSettingsDialog. The retry-attempt counter is NOT bumped
+  // because we never actually attempted a wire send.
+  if (isAccountLocked()) return;
   const now = Date.now();
   for (const row of pending) {
     if (row.attempts >= MAX_BACKFILL_ATTEMPTS) continue;
@@ -6134,11 +6267,22 @@ function clearReplyContext(): void {
 async function handleChatMessageDelete(messageId: string): Promise<void> {
   if (currentIdentityDocument === null) return;
   const owner = currentIdentityDocument.canonical_id;
+  // Delete always does the LOCAL tombstone first — that doesn't need
+  // the crypto keys. If the broadcast to peers fails because the
+  // keys are locked, surface that explicitly rather than silently
+  // letting the action half-succeed.
+  let broadcastOk = false;
   try {
-    await applyMessageDeleteWithBroadcast(owner, messageId);
+    const result = await applyMessageDeleteWithBroadcast(owner, messageId);
+    broadcastOk = result.broadcast;
   } catch (error) {
     console.warn("[chat] delete failed", error instanceof Error ? error.message : error);
     flashFeedback("could not delete message");
+  }
+  if (!broadcastOk && isAccountLocked()) {
+    // Local tombstone landed; the cross-device sync did not. Tell
+    // the user, and offer to unlock so the broadcast can fire.
+    requestUnlock(() => applyMessageDeleteWithBroadcast(owner, messageId).then(() => undefined));
   }
   if (chatTarget !== null) {
     await renderChatPopupBody(chatTarget.canonical);
@@ -6360,6 +6504,13 @@ async function sendChatPopupMessage(): Promise<void> {
   if (chatTarget === null) return;
   if (currentIdentityDocument === null) {
     flashFeedback("sign in to send messages");
+    return;
+  }
+  // Reload-locked state: identity is restored but the crypto account
+  // is locked. Defer the send until the user types their passphrase;
+  // the composer keeps its text so the resume can grab it back.
+  if (isAccountLocked()) {
+    requestUnlock(() => sendChatPopupMessage());
     return;
   }
   const body = chatPopupInput.value.trim();
