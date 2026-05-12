@@ -61,6 +61,12 @@ import { applyMessageDeleteWithBroadcast, notifyMessageUpsert } from "./sync/mes
 // module and the projector never registers, so peers can't apply
 // inbound draft events.
 import "./sync/draftSync.js";
+// Side-effect import: registers the tombstone-watermark slice
+// projector. Without this, peers' tombstone_watermark.set events
+// would be ignored locally and stale message.upsert replays could
+// resurrect deleted plaintext.
+import "./sync/tombstoneWatermarkSync.js";
+import { readLastGcMeta, runTombstoneGc } from "./local/tombstoneGc.js";
 import { applyProfileUpsertWithBroadcast } from "./sync/profileSync.js";
 import { notifyReadStateUpsert } from "./sync/readStateSync.js";
 import { notifyConversationSettingsUpsert } from "./sync/conversationSettingsSync.js";
@@ -275,6 +281,7 @@ const localStateStatus = getRequiredElement("local-storage-status");
 const deviceCurrentStatus = getRequiredElement("device-current-status");
 const deviceList = getRequiredElement("device-list");
 const deviceLinkStart = getRequiredButton("device-link-start");
+const deviceHistoryRetainedSince = getRequiredElement("device-history-retained-since");
 const devicePanelFeedback = getRequiredElement("device-panel-feedback");
 const pairingCard = getRequiredElement("pairing-card");
 const pairingCardCode = getRequiredElement("pairing-card-code");
@@ -2415,6 +2422,30 @@ async function refreshDevicePanel(): Promise<void> {
     currentDeviceId = metadata.device_id;
   }
 
+  // Advanced disclosure: "history retained since YYYY-MM". This is
+  // the local last-GC timestamp, formatted month-by-month. Until a
+  // GC has ever run it stays at em-dash; user reads "—" as "the full
+  // history is locally retained, nothing has been purged".
+  const owner = currentIdentityDocument?.canonical_id ?? null;
+  if (owner === null) {
+    deviceHistoryRetainedSince.textContent = "—";
+  } else {
+    const meta = await readLastGcMeta(owner).catch(() => null);
+    if (meta?.last_gc_at) {
+      const d = new Date(meta.last_gc_at);
+      if (Number.isFinite(d.valueOf())) {
+        // YYYY-MM format. Locale-independent so the smoke can match.
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+        deviceHistoryRetainedSince.textContent = `${year}-${month}`;
+      } else {
+        deviceHistoryRetainedSince.textContent = "—";
+      }
+    } else {
+      deviceHistoryRetainedSince.textContent = "—";
+    }
+  }
+
   const localDevices = currentIdentityDocument === null
     ? []
     : await listTrustedDevices(currentIdentityDocument.canonical_id).catch(() => []);
@@ -2441,7 +2472,6 @@ async function refreshDevicePanel(): Promise<void> {
   deviceCurrentStatus.textContent = currentIdentityDocument === null
     ? "not signed in"
     : `signed in as ${currentIdentityDocument.handle}`;
-  const owner = currentIdentityDocument?.canonical_id ?? null;
   const rows = await Promise.all(devices.map(async (device) => {
     if (owner === null) {
       return {
@@ -4923,6 +4953,12 @@ function setSignedIn(handle: string): void {
   // UI (not wired yet — first ask is deferred to a settings toggle).
   if (currentIdentityDocument !== null) {
     void ensurePushSubscription({ ownerCanonicalId: currentIdentityDocument.canonical_id });
+    // Best-effort tombstone GC. Gated internally by count threshold +
+    // 7d cooldown so heavy accounts don't sweep on every signin and
+    // light accounts don't sweep at all. On a successful sweep this
+    // also emits a tombstone_watermark.set event so peers stop
+    // accepting replays of our retired sequences.
+    void runTombstoneGc(currentIdentityDocument.canonical_id);
   }
   if (currentIdentityDocument !== null) {
     // Resume any backfill that was left pending or failed by a

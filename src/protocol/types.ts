@@ -355,7 +355,7 @@ export type SignedDeviceMembership = SignableDeviceMembership & {
 // on the device that wrote it. The rationale (sync loops, accidental
 // secret propagation, cross-device UX confusion) is documented in
 // docs/SECURITY.md → "Sync is explicit, not automatic".
-export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile" | "read_state" | "conversation_settings";
+export type SyncEventSlice = "contact" | "subscription" | "message" | "draft" | "profile" | "read_state" | "conversation_settings" | "tombstone_watermark";
 export type SyncEventKind =
   | "contact.upsert"
   | "contact.delete"
@@ -367,7 +367,8 @@ export type SyncEventKind =
   | "draft.delete"
   | "profile.upsert"
   | "read_state.upsert"
-  | "conversation_settings.upsert";
+  | "conversation_settings.upsert"
+  | "tombstone_watermark.set";
 
 export type SignableSyncEvent = {
   type: "sudo_sync_event";
@@ -385,6 +386,13 @@ export type SignableSyncEvent = {
   // base64url(AES-GCM ciphertext envelope) over the canonical
   // contact-shaped payload. The server never decrypts this field.
   encrypted_payload: string;
+  // Only present on tombstone_watermark.set events. Declares the
+  // highest sequence (inclusive) from origin_device_id whose
+  // corresponding events have been permanently retired by that
+  // device. Server gates message.upsert events at or below this
+  // sequence; client projector also enforces locally. Plaintext +
+  // signed by the origin device.
+  purged_before_sequence?: number;
 };
 
 export type SignedSyncEvent = SignableSyncEvent & {

@@ -118,12 +118,21 @@ export async function postSyncEvent(
   throw new Error(body.error ?? `sync post failed: ${response.status}`);
 }
 
+export type TombstoneWatermarkSnapshotEntry = {
+  origin_device_id: string;
+  purged_before_sequence: number;
+};
+
 export async function listSyncEvents(
   ownerCanonicalId: string,
   recipientDeviceId: string,
   sinceCursor: number,
   limit = 50
-): Promise<{ events: { server_seq: number; signed_event: SignedSyncEvent }[]; next_cursor: number }> {
+): Promise<{
+  events: { server_seq: number; signed_event: SignedSyncEvent }[];
+  next_cursor: number;
+  watermarks: TombstoneWatermarkSnapshotEntry[];
+}> {
   const url = new URL(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync`, window.location.origin);
   url.searchParams.set("device_id", recipientDeviceId);
   url.searchParams.set("since", String(sinceCursor));
@@ -133,10 +142,15 @@ export async function listSyncEvents(
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error ?? `sync list failed: ${response.status}`);
   }
-  const body = await response.json() as { events?: { server_seq: number; signed_event: SignedSyncEvent }[]; next_cursor?: number };
+  const body = await response.json() as {
+    events?: { server_seq: number; signed_event: SignedSyncEvent }[];
+    next_cursor?: number;
+    watermarks?: TombstoneWatermarkSnapshotEntry[];
+  };
   return {
     events: Array.isArray(body.events) ? body.events : [],
-    next_cursor: typeof body.next_cursor === "number" ? body.next_cursor : sinceCursor
+    next_cursor: typeof body.next_cursor === "number" ? body.next_cursor : sinceCursor,
+    watermarks: Array.isArray(body.watermarks) ? body.watermarks : []
   };
 }
 

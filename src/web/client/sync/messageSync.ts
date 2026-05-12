@@ -24,6 +24,7 @@ import {
 } from "../local/local-store.js";
 import type { LocalMessage } from "../local/local-types.js";
 import type { RelayEnvelopeStatus } from "../../../protocol/types.js";
+import { getLocalWatermark } from "./tombstoneWatermarkSync.js";
 
 // Best-effort broadcast of a freshly-saved local message. Callers
 // that mutate the messages store (sent and received paths in
@@ -141,6 +142,17 @@ function serializeMessageForSync(message: LocalMessage): MessageSyncPayload | nu
 // the cursor doesn't advance past a malformed event we couldn't apply.
 registerSliceProjector("message", async (account, event, payload) => {
   if (event.kind === "message.upsert") {
+    // Tombstone-watermark gate: any message.upsert from origin D at
+    // sequence S where S ≤ watermark[owner, D] is stale by definition
+    // — D has declared its events ≤ that sequence permanently retired,
+    // and the message may have been tombstoned and GC'd locally on D's
+    // side. Dropping the event prevents resurrection of deleted
+    // plaintext from a stale backfill or replay. We still return true
+    // so the cursor advances past it.
+    const watermark = await getLocalWatermark(account.canonical_id, event.origin_device_id);
+    if (watermark > 0 && event.sequence <= watermark) {
+      return true;
+    }
     const candidate = payload as Partial<MessageSyncPayload>;
     if (
       typeof candidate.message_id !== "string"

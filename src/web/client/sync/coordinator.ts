@@ -26,6 +26,18 @@ import type {
   SignedSyncEvent
 } from "../types.js";
 
+// Watermark-snapshot apply hook. Filled in by tombstoneWatermarkSync's
+// module init (registerWatermarkSnapshotApplier). Lives here to avoid
+// a circular import between coordinator and tombstoneWatermarkSync.
+type WatermarkSnapshotApplier = (
+  ownerCanonicalId: string,
+  snapshot: Array<{ origin_device_id: string; purged_before_sequence: number }>
+) => Promise<void>;
+let watermarkSnapshotApplier: WatermarkSnapshotApplier | null = null;
+export function registerWatermarkSnapshotApplier(fn: WatermarkSnapshotApplier): void {
+  watermarkSnapshotApplier = fn;
+}
+
 const PROTOCOL_VERSION = "0.1.0";
 const MEMBERSHIP_CACHE_TTL_MS = 5_000;
 
@@ -198,15 +210,27 @@ async function writeCursor(ownerCanonicalId: string, deviceId: string, value: nu
 
 // -- outbound: build + sign + post --
 
+type BuildOptions = {
+  // When true, this emission is a tombstone_watermark.set event. The
+  // event's `purged_before_sequence` field is computed inside the
+  // lock as (reserved_sequence - 1), so the act of declaring the
+  // watermark is atomic with reserving the sequence. The server
+  // validates `purged_before_sequence < event.sequence`; this
+  // formula always satisfies it.
+  advanceWatermarkToCurrent?: boolean;
+};
+
 async function buildSignedEventLocked(
   coordinator: Coordinator,
   slice: SignableSyncEvent["slice"],
   kind: SignableSyncEvent["kind"],
-  plaintext: object
+  plaintext: object,
+  options: BuildOptions = {}
 ): Promise<SignedSyncEvent> {
   // Caller already holds the per-(owner, device) origin lock.
   const { account, deviceId } = coordinator;
   const encryptedPayload = await encryptSyncPayload(JSON.stringify(plaintext), account.account_sync_sym_key);
+  const sequence = await reserveOriginSequenceUnlocked(account.canonical_id, deviceId);
   const signable: SignableSyncEvent = {
     type: "sudo_sync_event",
     protocol_version: PROTOCOL_VERSION,
@@ -215,10 +239,17 @@ async function buildSignedEventLocked(
     origin_device_id: deviceId,
     slice,
     kind,
-    sequence: await reserveOriginSequenceUnlocked(account.canonical_id, deviceId),
+    sequence,
     created_at: new Date().toISOString(),
     encrypted_payload: encryptedPayload
   };
+  if (options.advanceWatermarkToCurrent === true) {
+    // Watermark covers events with sequence STRICTLY LESS THAN the
+    // current event's sequence. So purged_before_sequence = sequence - 1
+    // is correct: we are retiring everything before this watermark
+    // declaration itself.
+    signable.purged_before_sequence = sequence - 1;
+  }
   const signature = await browserSignSyncEvent(signable, account.device_key, account.identity_key_type);
   return { ...signable, signature };
 }
@@ -226,14 +257,34 @@ async function buildSignedEventLocked(
 // Slice modules use this to build, sign, encrypt, and POST their
 // slice's sync event. Best-effort: errors are logged and swallowed
 // so user-driven local writes never block on relay failures.
-// Returns true if the POST landed, false if it failed; fire-and-forget
-// callers ignore the return, but backfill checks it to decide whether
-// to mark a slice as partial and retry later.
-export async function buildAndPostSyncEvent(
+// Returns a discriminated result so the rare caller that needs the
+// reserved sequence (e.g. the tombstone watermark emitter) can read
+// it without an extra round-trip. Boolean-shaped callers should
+// continue to ignore the extra fields.
+export type BuildAndPostResult =
+  | { ok: true; sequence: number; originDeviceId: string; purgedBeforeSequence?: number }
+  | { ok: false };
+
+// Most callers want a simple boolean — keep that shape for them, but
+// expose a `*WithDetails` variant for the cases that need the
+// reserved sequence back.
+export function buildAndPostSyncEvent(
   slice: SignableSyncEvent["slice"],
   kind: SignableSyncEvent["kind"],
   plaintext: object
-): Promise<boolean> {
+): Promise<boolean>;
+export function buildAndPostSyncEvent(
+  slice: SignableSyncEvent["slice"],
+  kind: SignableSyncEvent["kind"],
+  plaintext: object,
+  options: BuildOptions
+): Promise<BuildAndPostResult>;
+export async function buildAndPostSyncEvent(
+  slice: SignableSyncEvent["slice"],
+  kind: SignableSyncEvent["kind"],
+  plaintext: object,
+  options?: BuildOptions
+): Promise<boolean | BuildAndPostResult> {
   if (active === null) return false;
   const coordinator = active;
   // Wrap the entire build + sign + post in the origin lock so
@@ -241,13 +292,27 @@ export async function buildAndPostSyncEvent(
   // a fast post for seq N+1 could overtake a slow post for seq N
   // and the second post would be rejected as sequence_regression
   // until a retry.
-  return withOriginLock(coordinator.account.canonical_id, coordinator.deviceId, async () => {
+  return withOriginLock(coordinator.account.canonical_id, coordinator.deviceId, async (): Promise<boolean | BuildAndPostResult> => {
     try {
-      const event = await buildSignedEventLocked(coordinator, slice, kind, plaintext);
+      const event = await buildSignedEventLocked(coordinator, slice, kind, plaintext, options);
       await postSyncEvent(coordinator.account.canonical_id, event);
+      // When the caller asked for the rich shape (via passing
+      // options), return it; otherwise keep the boolean contract
+      // existing callers depend on.
+      if (options && options.advanceWatermarkToCurrent === true) {
+        return {
+          ok: true,
+          sequence: event.sequence,
+          originDeviceId: coordinator.deviceId,
+          purgedBeforeSequence: event.purged_before_sequence
+        };
+      }
       return true;
     } catch (error) {
       console.warn(`[sync] ${slice}/${kind} post failed`, error instanceof Error ? error.message : error);
+      if (options && options.advanceWatermarkToCurrent === true) {
+        return { ok: false };
+      }
       return false;
     }
   });
@@ -305,6 +370,15 @@ async function runPollCycle(coordinator: Coordinator): Promise<void> {
     // 403 (recipient_not_authorized) lands here once the local
     // device is revoked. Stop polling silently.
     return;
+  }
+  // Watermark snapshot is applied BEFORE iterating events. A fresh
+  // device's first /sync pull contains the current per-origin
+  // watermarks at the top, so any stale message.upsert events in the
+  // same response are dropped on the first pass — they never get
+  // projected into local state. The applier is wired by
+  // tombstoneWatermarkSync at module load.
+  if (response.watermarks.length > 0 && watermarkSnapshotApplier !== null) {
+    await watermarkSnapshotApplier(account.canonical_id, response.watermarks);
   }
   if (response.events.length === 0) return;
 

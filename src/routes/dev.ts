@@ -2,6 +2,10 @@ import type { Request, RequestHandler, Response } from "express";
 import { Router } from "express";
 import { listSyncCounts, summarizeSyncStats } from "../devices/syncStore.js";
 import {
+  listAllTombstoneWatermarks,
+  readStaleUpsertRejectionCount
+} from "../devices/tombstone-watermark.store.js";
+import {
   handleIdentitySearch,
   handleIdentitySession
 } from "../identity/identity-auth.handlers.js";
@@ -59,4 +63,23 @@ devRouter.get("/api/admin/sync/stats", (_request: Request, response: Response) =
     return;
   }
   response.json(summarizeSyncStats());
+});
+
+// Operator/dev diagnostic: tombstone purge watermark state. Exposes
+// the per-(owner, origin_device) `purged_before_sequence` snapshot
+// alongside the process-local counter of message.upsert events the
+// server has rejected for falling below an origin's watermark. Owner
+// canonical IDs are PLAINTEXT in this response (the listing is for
+// operators to diagnose convergence lag), so it's gated to
+// development the same way as the other diagnostic routes. No
+// message bodies or ciphertext are exposed.
+devRouter.get("/api/admin/tombstone-watermarks", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  response.json({
+    watermarks: listAllTombstoneWatermarks(),
+    stale_upserts_rejected: readStaleUpsertRejectionCount()
+  });
 });

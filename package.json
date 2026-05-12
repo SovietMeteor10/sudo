@@ -39,6 +39,7 @@
     "smoke:stale-session-replay": "node scripts/stale-session-replay-smoke.cjs",
     "smoke:replayed-challenge": "node scripts/replayed-challenge-smoke.cjs",
     "smoke:cross-tab-sequence": "node scripts/cross-tab-sequence-smoke.cjs",
+    "smoke:purge-watermark": "node scripts/purge-watermark-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",

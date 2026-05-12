@@ -280,6 +280,114 @@ async function collectAccountOnPage(page, code) {
     ok(`9. fresh C received tombstone (body blanked, deleted_at=${cRow.deleted_at})`);
   }
 
+  // 13-15: Tombstone GC + server-side watermark + Settings UI line.
+  //         Runs BEFORE the reload because A needs an unlocked crypto
+  //         account to sign + encrypt the tombstone_watermark.set
+  //         event. After a reload restoreStoredSession does NOT re-
+  //         unlock the account (the user would have to re-enter the
+  //         passphrase) — that's an existing UX limitation we are not
+  //         changing in this smoke.
+  try {
+    const gcResult = await pageA.evaluate(async (ownerCanonicalId) => {
+      // Bulk-insert 600 synthetic tombstones older than 12 months
+      // so they're all eligible for GC.
+      const oldDeletedAt = new Date(Date.now() - 13 * 30 * 24 * 60 * 60 * 1000).toISOString();
+      function openDb() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open("sudo_local_state");
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+      }
+      const db = await openDb();
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("messages", "readwrite");
+        const store = tx.objectStore("messages");
+        for (let i = 0; i < 600; i++) {
+          store.put({
+            message_id: `gc-tomb-${i}-${Math.random().toString(36).slice(2)}`,
+            owner_canonical_id: ownerCanonicalId,
+            conversation_id: "smoke",
+            direction: "sent",
+            sender_canonical_id: ownerCanonicalId,
+            recipient_canonical_id: ownerCanonicalId,
+            body: "",
+            status: "acked",
+            created_at: oldDeletedAt,
+            updated_at: oldDeletedAt,
+            deleted_at: oldDeletedAt
+          });
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      // Clear any prior gc_meta key so cooldown doesn't block.
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction("settings", "readwrite");
+        tx.objectStore("settings").delete(`tombstone.gc_meta:${ownerCanonicalId}`);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+
+      const mod = await import("/client/local/tombstoneGc.js");
+      const res = await mod.runTombstoneGc(ownerCanonicalId);
+      const coord = await import("/client/sync/coordinator.js");
+      res.__coord_active = coord.activeAccount() !== null;
+      return res;
+    }, canonicalA);
+
+    if (gcResult.ran !== true || (gcResult.removed ?? 0) < 600 || gcResult.watermark_advanced_to === null) {
+      fail("13.gc-run", `expected ran=true removed≥600 watermark advanced, got ${JSON.stringify(gcResult)}`);
+    } else {
+      ok(`13. GC removed ${gcResult.removed} tombstones, advanced watermark to ${gcResult.watermark_advanced_to}`);
+    }
+
+    // 14. Server now reports a watermark for A's device.
+    await new Promise((r) => setTimeout(r, 250));
+    const wmResp = await fetch(`${BASE}/api/admin/tombstone-watermarks`, { headers: { accept: "application/json" } });
+    const wmBody = wmResp.ok ? await wmResp.json() : { watermarks: [] };
+    const wmEntry = (wmBody.watermarks || []).find((w) => w.owner_canonical_id === canonicalA);
+    if (!wmEntry || typeof wmEntry.purged_before_sequence !== "number" || wmEntry.purged_before_sequence < 1) {
+      fail("14.server-watermark", `no watermark on server for owner: ${JSON.stringify(wmEntry)}`);
+    } else {
+      ok(`14. server watermark for owner = purged_before_sequence ${wmEntry.purged_before_sequence}`);
+    }
+
+    // 15. The GC meta is stored in IDB under
+    //     `tombstone.gc_meta:<owner>`. The settings dialog formats
+    //     this as YYYY-MM; we verify the underlying data + format
+    //     contract directly (the refresh hook only fires when the
+    //     user opens the dialog manually, which is hard to drive
+    //     without clicking through the account menu).
+    const gcMeta = await pageA.evaluate(async (ownerCanonicalId) => {
+      const req = indexedDB.open("sudo_local_state");
+      const db = await new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction("settings", "readonly");
+        const r = tx.objectStore("settings").get(`tombstone.gc_meta:${ownerCanonicalId}`);
+        r.onsuccess = () => resolve(r.result ? r.result.value : null);
+        r.onerror = () => reject(r.error);
+      });
+    }, canonicalA);
+    if (!gcMeta || typeof gcMeta.last_gc_at !== "string") {
+      fail("15.gc-meta", `no gc meta written: ${JSON.stringify(gcMeta)}`);
+    } else {
+      const d = new Date(gcMeta.last_gc_at);
+      const formatted = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      if (!/^\d{4}-\d{2}$/.test(formatted)) {
+        fail("15.format", `expected YYYY-MM, got '${formatted}'`);
+      } else {
+        ok(`15. "history retained since" data + format = ${formatted}`);
+      }
+    }
+  } catch (error) {
+    fail("13-15.gc", error instanceof Error ? error.message : String(error));
+  }
+
   // ===== Reload — tombstone persists on A, B, C =====
   // Direct IDB read; we don't need the auth UI to be unlocked to
   // assert the row is still there.

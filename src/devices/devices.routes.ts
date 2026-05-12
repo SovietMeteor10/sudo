@@ -34,6 +34,12 @@ import {
   listSyncEventsSince,
   setRecipientCursor
 } from "./syncStore.js";
+import {
+  getTombstoneWatermark,
+  listTombstoneWatermarksForOwner,
+  noteStaleUpsertRejected,
+  upsertTombstoneWatermark
+} from "./tombstone-watermark.store.js";
 
 export const devicesRouter = Router();
 
@@ -463,10 +469,55 @@ devicesRouter.post("/:ownerCanonicalId/sync", (request, response) => {
     return;
   }
 
+  // Watermark gating: a message.upsert from origin D at sequence S
+  // must satisfy S > watermark[owner, D]. The originating device
+  // declared its own watermark; the relay refuses to accept its old
+  // replays so stale plaintext cannot resurrect after tombstone GC.
+  if (event.slice === "message" && event.kind === "message.upsert") {
+    const watermark = getTombstoneWatermark(ownerCanonicalId, event.origin_device_id);
+    if (watermark !== null && event.sequence <= watermark.purged_before_sequence) {
+      noteStaleUpsertRejected();
+      response.status(409).json({
+        ok: false,
+        error: "stale_below_watermark",
+        purged_before_sequence: watermark.purged_before_sequence
+      });
+      return;
+    }
+  }
+
+  // Watermark declarations: only the originating device can advance
+  // its own watermark. Validate the field, then persist.
+  if (event.slice === "tombstone_watermark" && event.kind === "tombstone_watermark.set") {
+    const announced = event.purged_before_sequence;
+    if (typeof announced !== "number" || !Number.isInteger(announced) || announced < 0) {
+      response.status(400).json({ ok: false, error: "invalid_watermark" });
+      return;
+    }
+    // The announced watermark must be strictly less than the event's
+    // own sequence — you can't retroactively purge yourself.
+    if (announced >= event.sequence) {
+      response.status(400).json({ ok: false, error: "watermark_not_below_event_sequence" });
+      return;
+    }
+  }
+
   const result = insertSyncEvent(event);
   if (!result.ok) {
     response.status(409).json({ ok: false, error: result.error });
     return;
+  }
+
+  // Post-insert bookkeeping. The watermark store has a "never regress"
+  // guard so an out-of-order older watermark event cannot undo a newer
+  // one. The (event.origin_device_id, announced) pair has already
+  // been validated.
+  if (event.slice === "tombstone_watermark" && event.kind === "tombstone_watermark.set") {
+    upsertTombstoneWatermark(
+      ownerCanonicalId,
+      event.origin_device_id,
+      event.purged_before_sequence as number
+    );
   }
 
   response.status(result.created ? 201 : 200).json({
@@ -502,7 +553,18 @@ devicesRouter.get("/:ownerCanonicalId/sync", (request, response) => {
 
   const events = listSyncEventsSince(ownerCanonicalId, sinceCursor, limit);
   const nextCursor = events.length > 0 ? events[events.length - 1]!.server_seq : sinceCursor;
-  response.json({ events, next_cursor: nextCursor });
+  // Tombstone purge watermark snapshot. A fresh device pulling its
+  // first /sync page receives the current per-origin-device
+  // watermarks BEFORE the historical events, so it can drop any
+  // stale message.upsert events it sees during backfill instead of
+  // re-projecting them and then having to re-tombstone. Mature
+  // clients re-fetch every page anyway, so the snapshot is small +
+  // cheap to include on every response.
+  const watermarks = listTombstoneWatermarksForOwner(ownerCanonicalId).map((row) => ({
+    origin_device_id: row.origin_device_id,
+    purged_before_sequence: row.purged_before_sequence
+  }));
+  response.json({ events, next_cursor: nextCursor, watermarks });
 });
 
 // POST /api/devices/:ownerCanonicalId/sync/ack
@@ -656,6 +718,7 @@ function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "profile") return kind === "profile.upsert";
   if (slice === "read_state") return kind === "read_state.upsert";
   if (slice === "conversation_settings") return kind === "conversation_settings.upsert";
+  if (slice === "tombstone_watermark") return kind === "tombstone_watermark.set";
   return false;
 }
 

@@ -206,6 +206,26 @@ export const schemaSql = `
     PRIMARY KEY (owner_canonical_id, recipient_device_id)
   );
 
+  -- Per-(owner, origin_device) tombstone purge watermark. Once a device
+  -- emits a tombstone_watermark.set event with purged_before_sequence=N,
+  -- it has declared "I have GC'd everything below N and will not retain
+  -- the corresponding tombstones any longer". The relay then refuses to
+  -- accept message.upsert events with sequence ≤ N (per origin_device).
+  -- This is a soft coordination signal — the per-event signature is
+  -- still the security boundary; the watermark just stops stale
+  -- replays from resurrecting plaintext after its tombstone has been
+  -- garbage-collected.
+  CREATE TABLE IF NOT EXISTS tombstone_watermarks (
+    owner_canonical_id TEXT NOT NULL,
+    origin_device_id TEXT NOT NULL,
+    purged_before_sequence INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_canonical_id, origin_device_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS tombstone_watermarks_owner_idx
+    ON tombstone_watermarks(owner_canonical_id);
+
   -- Web Push subscriptions. One row per (owner, device, endpoint). The
   -- server holds only the opaque PushSubscription material (endpoint,
   -- p256dh, auth) that the browser handed to the client during
