@@ -2742,6 +2742,167 @@ body[data-auth-state="auth-restore"] .landing {
 }
 .chat-popup__typing[hidden] { display: none; }
 
+/* Composer attachment paperclip + upload-progress line. */
+.chat-popup__attach {
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font-size: 18px;
+  padding: 4px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+.chat-popup__attach:hover { color: var(--focus); }
+.chat-popup__attach:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-popup__attachment-status {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.chat-popup__attachment-status[hidden] { display: none; }
+.chat-popup__attachment-status .chat-popup__attachment-cancel,
+.chat-popup__attachment-status .chat-popup__attachment-retry {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 3px;
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+/* Attachment renders inside a .chat-message row, BELOW the
+   .chat-message__bubble (which carries text body, if any). */
+.chat-message__attachment {
+  margin-top: 4px;
+  max-width: 100%;
+}
+.chat-message__attachment-image {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 4px;
+  cursor: zoom-in;
+  display: block;
+  /* Keep transparency under control while the blob decrypts and
+     loads. Background uses panel-soft so a slow-decode looks
+     deliberate, not blank. */
+  background: var(--panel-soft);
+  min-height: 80px;
+}
+.chat-message__attachment-image.is-loading {
+  cursor: progress;
+}
+.chat-message__attachment-video {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 4px;
+  display: block;
+  background: var(--panel-soft);
+}
+.chat-message__attachment-file {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-soft);
+  font-size: 13px;
+  min-width: 200px;
+  max-width: 100%;
+}
+.chat-message__attachment-file__ext {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 6px;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+.chat-message__attachment-file__name {
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.chat-message__attachment-file__size {
+  font-size: 11px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.chat-message__attachment-file__download {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  flex: 0 0 auto;
+  min-height: 32px;
+}
+.chat-message__attachment-error {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 4px 0;
+}
+.chat-message__attachment-placeholder {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  padding: 4px 0;
+}
+
+/* Full-screen media viewer. Dark overlay, image centered, Escape /
+   close button dismiss. No pinch zoom in v1. */
+.media-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 9;
+  background: rgba(0, 0, 0, 0.92);
+  display: flex;
+  flex-direction: column;
+}
+.media-viewer[hidden] { display: none; }
+.media-viewer__stage {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 16px;
+}
+.media-viewer__img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.media-viewer__close {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top));
+  right: 8px;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 16px;
+  border-radius: 50%;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  z-index: 1;
+}
+
 .chat-popup__form {
   display: flex;
   align-items: flex-end;

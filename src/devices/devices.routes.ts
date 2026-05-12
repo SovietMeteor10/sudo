@@ -720,6 +720,7 @@ function isKnownSliceKind(slice: unknown, kind: unknown): boolean {
   if (slice === "conversation_settings") return kind === "conversation_settings.upsert";
   if (slice === "tombstone_watermark") return kind === "tombstone_watermark.set";
   if (slice === "message_reaction") return kind === "message_reaction.upsert";
+  if (slice === "message_attachment") return kind === "message_attachment.upsert";
   return false;
 }
 

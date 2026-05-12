@@ -60,11 +60,29 @@ import {
   notifyReactionUpsert,
   postReactionRelayEnvelope
 } from "./sync/messageReactionSync.js";
-import type { LocalMessageReaction } from "./local/local-types.js";
+import type { LocalMessageAttachment, LocalMessageReaction } from "./local/local-types.js";
 import {
+  getLocalMessage,
+  listLocalAttachmentsForOwner,
   listLocalReactionsForOwner,
   listLocalReactionsForRelayMessageId
 } from "./local/local-store.js";
+import {
+  notifyAttachmentUpsert,
+  postAttachmentRelayEnvelope
+} from "./sync/messageAttachmentSync.js";
+import {
+  decryptDownloadedBlob,
+  encryptBlobForUpload,
+  unwrapMediaKeyFromPeer,
+  unwrapMediaKeyFromSelf,
+  wrapMediaKeyForPeer,
+  wrapMediaKeyForSelf
+} from "./crypto/media.js";
+import {
+  downloadEncryptedMediaBlob,
+  uploadEncryptedMediaBlob
+} from "./api.js";
 // Side-effect import: registers the draft slice projector at module
 // load. The broadcast wrappers (applyDraftUpsertWithBroadcast,
 // applyDraftDeleteWithBroadcast) aren't called from main yet because
@@ -77,6 +95,7 @@ import "./sync/draftSync.js";
 // would be ignored locally and stale message.upsert replays could
 // resurrect deleted plaintext.
 import "./sync/tombstoneWatermarkSync.js";
+import "./sync/messageAttachmentSync.js";
 import { readLastGcMeta, runTombstoneGc } from "./local/tombstoneGc.js";
 import {
   notifyComposerInput,
@@ -314,6 +333,12 @@ const devicePassphraseHint = getRequiredElement("device-passphrase-prompt-hint")
 const devicePassphraseInput = getRequiredInput("device-passphrase-input");
 const devicePassphraseFeedback = getRequiredElement("device-passphrase-prompt-feedback");
 const chatPopupTyping = getRequiredElement("chat-popup-typing");
+const chatPopupAttach = getRequiredButton("chat-popup-attach");
+const chatPopupAttachmentInput = getRequiredInput("chat-popup-attachment-input");
+const chatPopupAttachmentStatus = getRequiredElement("chat-popup-attachment-status");
+const mediaViewer = getRequiredElement("media-viewer");
+const mediaViewerImg = getRequiredElement("media-viewer-img") as HTMLImageElement;
+const mediaViewerClose = getRequiredButton("media-viewer-close");
 const unlockDialog = getRequiredDialog("unlock-dialog");
 const unlockPassphraseInput = getRequiredInput("unlock-passphrase-input");
 const unlockFeedback = getRequiredElement("unlock-feedback");
@@ -6093,6 +6118,14 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
       reactionsByRelay.set(r.relay_message_id, list);
     }
   } catch { /* missing IDB → render without pills */ }
+
+  // Same for attachments. Keyed by relay_message_id (1:1 with the
+  // carrier chat message).
+  const attachmentsByRelay = new Map<string, LocalMessageAttachment>();
+  try {
+    const ownerAttachments = await listLocalAttachmentsForOwner(currentIdentityDocument.canonical_id);
+    for (const a of ownerAttachments) attachmentsByRelay.set(a.relay_message_id, a);
+  } catch { /* missing IDB → render without media */ }
   // Merge timeline: interleave messages and system events by created_at.
   type Entry = { at: string; kind: "message"; m: ChatMessageView } | { at: string; kind: "system"; text: string };
   const entries: Entry[] = [];
@@ -6103,7 +6136,8 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
   for (const entry of entries) {
     if (entry.kind === "message") {
       const rel = typeof entry.m.relay_message_id === "string" ? reactionsByRelay.get(entry.m.relay_message_id) ?? [] : [];
-      fragment.append(renderChatMessage(entry.m, messageById, messageByRelayId, rel));
+      const att = typeof entry.m.relay_message_id === "string" ? attachmentsByRelay.get(entry.m.relay_message_id) ?? null : null;
+      fragment.append(renderChatMessage(entry.m, messageById, messageByRelayId, rel, att));
     } else fragment.append(renderChatSystem(entry.text));
   }
   chatPopupBody.replaceChildren(fragment);
@@ -6130,7 +6164,8 @@ function renderChatMessage(
   message: ChatMessageView,
   messageById: Map<string, ChatMessageView>,
   messageByRelayId: Map<string, ChatMessageView>,
-  reactions: LocalMessageReaction[] = []
+  reactions: LocalMessageReaction[] = [],
+  attachment: LocalMessageAttachment | null = null
 ): HTMLElement {
   const wrapper = document.createElement("div");
   wrapper.className = `chat-message chat-message--${message.direction}`;
@@ -6226,6 +6261,86 @@ function renderChatMessage(
     meta.append(tick);
   }
   wrapper.append(bubble, meta);
+
+  // Attachment render. Three modes (image / video / file) +
+  // tombstoned placeholder. The blob isn't fetched here — we paint
+  // a host element and kick off a lazy decrypt that swaps in the
+  // object URL once it lands. Tombstoned messages show a clear
+  // "attachment deleted" placeholder (spec).
+  if (attachment !== null) {
+    const host = document.createElement("div");
+    host.className = "chat-message__attachment";
+    if (tombstoned) {
+      const ph = document.createElement("div");
+      ph.className = "chat-message__attachment-placeholder";
+      ph.textContent = "attachment deleted";
+      host.append(ph);
+    } else {
+      const cls = mediaClassOf(attachment.mime);
+      if (cls === "image") {
+        const img = document.createElement("img");
+        img.className = "chat-message__attachment-image is-loading";
+        img.alt = attachment.filename;
+        img.dataset["relayMessageId"] = attachment.relay_message_id;
+        img.addEventListener("click", () => {
+          if (img.src.length > 0) openMediaViewer(img.src);
+        });
+        host.append(img);
+        // Lazy decrypt + paint.
+        void loadAttachmentObjectUrl(attachment).then((url) => {
+          img.src = url;
+          img.classList.remove("is-loading");
+        }).catch((err) => {
+          img.replaceWith(buildAttachmentError(err));
+        });
+      } else if (cls === "video") {
+        const video = document.createElement("video");
+        video.className = "chat-message__attachment-video";
+        video.controls = true;
+        video.preload = "metadata";
+        host.append(video);
+        void loadAttachmentObjectUrl(attachment).then((url) => {
+          video.src = url;
+        }).catch((err) => {
+          video.replaceWith(buildAttachmentError(err));
+        });
+      } else {
+        const card = document.createElement("div");
+        card.className = "chat-message__attachment-file";
+        const ext = attachment.filename.includes(".")
+          ? attachment.filename.split(".").pop()!.slice(0, 6)
+          : "file";
+        const extEl = document.createElement("span");
+        extEl.className = "chat-message__attachment-file__ext";
+        extEl.textContent = ext.toLowerCase();
+        const name = document.createElement("span");
+        name.className = "chat-message__attachment-file__name";
+        name.textContent = attachment.filename;
+        name.title = attachment.filename;
+        const size = document.createElement("span");
+        size.className = "chat-message__attachment-file__size";
+        size.textContent = formatBytes(attachment.size_bytes);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "chat-message__attachment-file__download";
+        btn.textContent = "open";
+        btn.addEventListener("click", () => {
+          void loadAttachmentObjectUrl(attachment).then((url) => {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = attachment.filename;
+            a.click();
+          }).catch((err) => {
+            const errEl = buildAttachmentError(err);
+            card.replaceWith(errEl);
+          });
+        });
+        card.append(extEl, name, size, btn);
+        host.append(card);
+      }
+    }
+    wrapper.append(host);
+  }
 
   // Reaction pills. Compact aggregate per emoji. Hidden when the
   // message has no active reactions. Clicking my-own pill removes
@@ -6826,6 +6941,326 @@ async function sendChatPopupMessage(): Promise<void> {
     chatPopupBody.append(makeChatEmpty(message));
     flashFeedback(`send failed: ${message}`);
   }
+}
+
+// ============================================================
+// Attachments (Phase 8).
+// ============================================================
+
+function buildAttachmentError(err: unknown): HTMLElement {
+  const el = document.createElement("div");
+  el.className = "chat-message__attachment-error";
+  el.textContent = `attachment unavailable: ${err instanceof Error ? err.message : "unknown"}`;
+  return el;
+}
+
+function mediaClassOf(mime: string): "image" | "video" | "file" {
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  return "file";
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+let activeUpload: { abort: AbortController; file: File; sentBytes: number; totalBytes: number } | null = null;
+
+function setAttachmentStatus(opts: { hidden: true } | { hidden: false; text: string; showCancel?: boolean; showRetry?: boolean; onCancel?: () => void; onRetry?: () => void }): void {
+  chatPopupAttachmentStatus.replaceChildren();
+  if (opts.hidden) {
+    chatPopupAttachmentStatus.hidden = true;
+    return;
+  }
+  chatPopupAttachmentStatus.hidden = false;
+  const text = document.createElement("span");
+  text.textContent = opts.text;
+  chatPopupAttachmentStatus.append(text);
+  if (opts.showCancel) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-popup__attachment-cancel";
+    btn.textContent = "cancel";
+    btn.addEventListener("click", () => { try { opts.onCancel?.(); } catch { /* ignore */ } });
+    chatPopupAttachmentStatus.append(btn);
+  }
+  if (opts.showRetry) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-popup__attachment-retry";
+    btn.textContent = "retry";
+    btn.addEventListener("click", () => { try { opts.onRetry?.(); } catch { /* ignore */ } });
+    chatPopupAttachmentStatus.append(btn);
+  }
+}
+
+async function readFileAsBytes(file: File): Promise<Uint8Array> {
+  const buf = await file.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
+async function readImageDimensions(file: File): Promise<{ width: number; height: number } | null> {
+  if (!file.type.startsWith("image/")) return null;
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      URL.revokeObjectURL(url);
+      resolve({ width: w, height: h });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+    img.src = url;
+  });
+}
+
+// Public entry: user picked a file in the composer. Fail-closed if
+// the keys are locked, the recipient's messaging public key isn't
+// fetchable, or the file exceeds the per-class size cap.
+async function handleAttachmentPick(file: File): Promise<void> {
+  if (chatTarget === null) { flashFeedback("open a chat first"); return; }
+  if (currentIdentityDocument === null) { flashFeedback("sign in first"); return; }
+  if (isAccountLocked() || currentCryptoAccount === null) {
+    requestUnlock(() => handleAttachmentPick(file));
+    return;
+  }
+  // Per-class size validation (mirrors server enforcement so we
+  // fail fast and don't waste an upload round-trip).
+  const mediaClass = mediaClassOf(file.type);
+  const cap = mediaClass === "image" ? 10 * 1024 * 1024 : mediaClass === "video" ? 50 * 1024 * 1024 : 25 * 1024 * 1024;
+  if (file.size > cap) {
+    flashFeedback(`${mediaClass} too large (max ${formatBytes(cap)})`);
+    return;
+  }
+
+  // Fetch the recipient's identity document so we can pull their
+  // messaging public key. Fail closed if missing.
+  let recipientDoc: import("./types.js").IdentityDocument;
+  try {
+    recipientDoc = await fetchIdentityProfile(chatTarget.canonical);
+  } catch (e) {
+    flashFeedback(`recipient lookup failed: ${e instanceof Error ? e.message : "unknown"}`);
+    return;
+  }
+  const recipientMessagingPublicKey = recipientDoc.keys?.messaging?.public_key;
+  const recipientMessagingKeyType = recipientDoc.keys?.messaging?.type;
+  if (typeof recipientMessagingPublicKey !== "string"
+      || recipientMessagingPublicKey.length === 0
+      || (recipientMessagingKeyType !== "x25519" && recipientMessagingKeyType !== "ecdh-p256")) {
+    flashFeedback("recipient has no messaging key — can't encrypt media");
+    return;
+  }
+
+  await doUpload(file, mediaClass, {
+    senderAccount: currentCryptoAccount,
+    recipientCanonicalId: chatTarget.canonical,
+    recipientHandle: chatTarget.handle,
+    recipientMessagingPublicKey,
+    recipientMessagingKeyType,
+    senderHandle: currentIdentityDocument.handle ?? undefined
+  });
+}
+
+async function doUpload(file: File, mediaClass: "image" | "video" | "file", ctx: {
+  senderAccount: import("./crypto/key-storage.js").BrowserCryptoAccount;
+  recipientCanonicalId: string;
+  recipientHandle: string;
+  recipientMessagingPublicKey: string;
+  recipientMessagingKeyType: "x25519" | "ecdh-p256";
+  senderHandle?: string;
+}): Promise<void> {
+  if (currentIdentityDocument === null || chatTarget === null) return;
+  // Cancel any prior in-flight upload before starting a new one.
+  if (activeUpload !== null) {
+    try { activeUpload.abort.abort(); } catch { /* ignore */ }
+  }
+  const abort = new AbortController();
+  activeUpload = { abort, file, sentBytes: 0, totalBytes: file.size };
+  setAttachmentStatus({ hidden: false, text: `encrypting ${file.name}…`, showCancel: true, onCancel: () => abort.abort() });
+  try {
+    const plain = await readFileAsBytes(file);
+    const dims = await readImageDimensions(file);
+    const { ciphertext, key_b64, iv_b64 } = await encryptBlobForUpload(plain);
+    setAttachmentStatus({ hidden: false, text: `uploading ${file.name} (0%)`, showCancel: true, onCancel: () => abort.abort() });
+    const upload = await uploadEncryptedMediaBlob({
+      ciphertext,
+      mediaClass,
+      signal: abort.signal,
+      onProgress: (sent, total) => {
+        const pct = total > 0 ? Math.floor((sent / total) * 100) : 0;
+        setAttachmentStatus({ hidden: false, text: `uploading ${file.name} (${pct}%)`, showCancel: true, onCancel: () => abort.abort() });
+      }
+    });
+    if (upload.ok !== true) {
+      setAttachmentStatus({
+        hidden: false,
+        text: `upload failed: ${upload.error}`,
+        showRetry: true,
+        onRetry: () => { void doUpload(file, mediaClass, ctx); }
+      });
+      activeUpload = null;
+      return;
+    }
+    // Wrap the media key two ways. account_sync_sym_key is already
+    // an unlocked CryptoKey on the in-memory account record.
+    const wrappedForSelfJson = await wrapMediaKeyForSelf({ key_b64, iv_b64, syncSymKey: ctx.senderAccount.account_sync_sym_key });
+    const wrappedForPeer = await wrapMediaKeyForPeer({
+      key_b64,
+      iv_b64,
+      senderPrivateMessagingKey: ctx.senderAccount.messaging_key,
+      senderMessagingKeyType: ctx.senderAccount.messaging_key_type,
+      recipientMessagingPublicKey: ctx.recipientMessagingPublicKey,
+      recipientMessagingKeyType: ctx.recipientMessagingKeyType
+    });
+
+    // Send the carrier chat message first to mint a relay_message_id
+    // we can pin the attachment row to.
+    const carrierBody = `[${mediaClass}] ${file.name}`;
+    const result = await queueAndSubmitLocalMessage({
+      senderCanonicalId: ctx.senderAccount.canonical_id,
+      recipientCanonicalId: ctx.recipientCanonicalId,
+      senderHandle: ctx.senderHandle,
+      recipientHandle: ctx.recipientHandle,
+      body: carrierBody,
+      senderAccount: ctx.senderAccount,
+      recipientMessagingPublicKey: ctx.recipientMessagingPublicKey,
+      recipientMessagingKeyType: ctx.recipientMessagingKeyType
+    });
+    if (!result.ok) {
+      setAttachmentStatus({ hidden: false, text: `message send failed`, showRetry: true, onRetry: () => { void doUpload(file, mediaClass, ctx); } });
+      activeUpload = null;
+      return;
+    }
+    // Look up the local message we just stored to get its relay_message_id.
+    const localCarrier = await getLocalMessage(result.message_id);
+    const relayMessageId = typeof localCarrier?.relay_message_id === "string" && localCarrier.relay_message_id.length > 0
+      ? localCarrier.relay_message_id
+      : result.message_id;
+    const now = new Date().toISOString();
+    const attachment: LocalMessageAttachment = {
+      owner_canonical_id: ctx.senderAccount.canonical_id,
+      relay_message_id: relayMessageId,
+      blob_id: upload.blob_id,
+      mime: file.type || "application/octet-stream",
+      filename: file.name,
+      size_bytes: file.size,
+      wrapped_key_for_self: wrappedForSelfJson,
+      created_at: now,
+      updated_at: now
+    };
+    if (dims !== null) { attachment.width = dims.width; attachment.height = dims.height; }
+    await notifyAttachmentUpsert(attachment);
+    void postAttachmentRelayEnvelope({
+      senderAccount: ctx.senderAccount,
+      senderHandle: ctx.senderHandle,
+      recipientCanonicalId: ctx.recipientCanonicalId,
+      recipientHandle: ctx.recipientHandle,
+      attachment,
+      wrappedKeyForPeerJson: JSON.stringify(wrappedForPeer)
+    });
+    setAttachmentStatus({ hidden: true });
+    activeUpload = null;
+    await renderChatPopupBody(chatTarget.canonical, { forceScrollToBottom: true });
+    await refreshLocalChats();
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      setAttachmentStatus({ hidden: true });
+    } else {
+      const msg = e instanceof Error ? e.message : "unknown";
+      setAttachmentStatus({ hidden: false, text: `attachment failed: ${msg}`, showRetry: true, onRetry: () => { void doUpload(file, mediaClass, ctx); } });
+    }
+    activeUpload = null;
+  }
+}
+
+// Wiring: paperclip button + hidden file input.
+chatPopupAttach.addEventListener("click", () => {
+  chatPopupAttachmentInput.value = "";
+  chatPopupAttachmentInput.click();
+});
+chatPopupAttachmentInput.addEventListener("change", () => {
+  const files = chatPopupAttachmentInput.files;
+  if (files === null || files.length === 0) return;
+  const file = files[0]!;
+  void handleAttachmentPick(file);
+});
+
+// ============================================================
+// Media viewer (fullscreen image).
+// ============================================================
+let currentViewerObjectUrl: string | null = null;
+function openMediaViewer(blobUrl: string): void {
+  if (currentViewerObjectUrl !== null) {
+    try { URL.revokeObjectURL(currentViewerObjectUrl); } catch { /* ignore */ }
+    currentViewerObjectUrl = null;
+  }
+  currentViewerObjectUrl = blobUrl;
+  mediaViewerImg.src = blobUrl;
+  mediaViewer.hidden = false;
+}
+function closeMediaViewer(): void {
+  mediaViewer.hidden = true;
+  mediaViewerImg.removeAttribute("src");
+  if (currentViewerObjectUrl !== null) {
+    try { URL.revokeObjectURL(currentViewerObjectUrl); } catch { /* ignore */ }
+    currentViewerObjectUrl = null;
+  }
+}
+mediaViewerClose.addEventListener("click", () => closeMediaViewer());
+document.addEventListener("keydown", (event) => {
+  if (mediaViewer.hidden) return;
+  if (event.key === "Escape") { event.preventDefault(); closeMediaViewer(); }
+});
+
+// ============================================================
+// Resolve + decrypt attachment for render.
+// Returns an object URL the caller is responsible for revoking.
+// ============================================================
+async function decryptAttachmentForRender(attachment: LocalMessageAttachment): Promise<string> {
+  if (currentCryptoAccount === null) throw new Error("account locked");
+  // Choose whichever wrap is available.
+  let key_b64: string;
+  let iv_b64: string;
+  if (typeof attachment.wrapped_key_for_self === "string") {
+    const wk = await unwrapMediaKeyFromSelf({ envelopeJson: attachment.wrapped_key_for_self, syncSymKey: currentCryptoAccount.account_sync_sym_key });
+    key_b64 = wk.key_b64;
+    iv_b64 = wk.iv_b64;
+  } else if (typeof attachment.wrapped_key_for_peer === "string"
+             && typeof attachment.sender_canonical_id === "string"
+             && (attachment.sender_messaging_key_type === "x25519" || attachment.sender_messaging_key_type === "ecdh-p256")) {
+    const sender = await fetchIdentityProfile(attachment.sender_canonical_id);
+    const senderMessagingPublicKey = sender.keys?.messaging?.public_key;
+    if (typeof senderMessagingPublicKey !== "string") throw new Error("sender messaging key missing");
+    const encrypted = JSON.parse(attachment.wrapped_key_for_peer);
+    const wk = await unwrapMediaKeyFromPeer({
+      encrypted,
+      recipientPrivateMessagingKey: currentCryptoAccount.messaging_key,
+      senderMessagingPublicKey,
+      senderMessagingKeyType: attachment.sender_messaging_key_type
+    });
+    key_b64 = wk.key_b64;
+    iv_b64 = wk.iv_b64;
+  } else {
+    throw new Error("no wrapped media key available");
+  }
+  const ciphertext = await downloadEncryptedMediaBlob(attachment.blob_id);
+  const plain = await decryptDownloadedBlob(ciphertext, key_b64, iv_b64);
+  return URL.createObjectURL(new Blob([plain.buffer as ArrayBuffer], { type: attachment.mime || "application/octet-stream" }));
+}
+
+// Used by the render path to lazily decrypt + paint an image
+// thumbnail. We keep a small Map<relay_id, objectUrl> so the same
+// row painted twice in a single session reuses the decrypted blob.
+const decryptedAttachmentUrls = new Map<string, string>();
+async function loadAttachmentObjectUrl(attachment: LocalMessageAttachment): Promise<string> {
+  const cached = decryptedAttachmentUrls.get(attachment.relay_message_id);
+  if (cached !== undefined) return cached;
+  const url = await decryptAttachmentForRender(attachment);
+  decryptedAttachmentUrls.set(attachment.relay_message_id, url);
+  return url;
 }
 
 async function renderStreamWhenReady(): Promise<void> {

@@ -277,3 +277,37 @@ export type LocalMessageReaction = {
   updated_at: string;
   removed_at?: string;
 };
+
+// Media-attachment metadata. The actual file bytes live on the
+// server as opaque AES-GCM ciphertext at /api/media/<blob_id>;
+// this row is what lets a local device decrypt + render. Two key
+// fields hold the wrapped AES key:
+//   - wrapped_key_for_self: encrypted to the account's
+//     sync_sym_key. Populated for events that arrived from one of
+//     our own linked devices via message_attachment.upsert.
+//   - wrapped_key_for_peer: encrypted to OUR messaging key (i.e.
+//     the cross-user envelope addressed AT us). Populated when the
+//     peer's relay envelope landed in our inbox.
+// Either one is enough to decrypt; whichever lands first wins.
+// The renderer reads whichever is non-null.
+export type LocalMessageAttachment = {
+  owner_canonical_id: string;
+  relay_message_id: string;
+  blob_id: string;
+  mime: string;
+  filename: string;
+  size_bytes: number;
+  width?: number;
+  height?: number;
+  // Exactly one of these (or both, if cross-user + self-sync
+  // arrive). Each is a JSON string carrying enough material to
+  // unwrap the media key.
+  wrapped_key_for_self?: string;     // EncryptedSyncEnvelope JSON
+  wrapped_key_for_peer?: string;     // BrowserEncryptedMessage JSON
+  // Useful for the peer-unwrap path to know whose messaging public
+  // key to derive against.
+  sender_canonical_id?: string;
+  sender_messaging_key_type?: "x25519" | "ecdh-p256";
+  created_at: string;
+  updated_at: string;
+};

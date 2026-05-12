@@ -10,11 +10,12 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // v4: account isolation — every private store now stamps and indexes
 // owner_canonical_id; contacts moves to a composite key so two accounts on
 // the same browser can each have their own row for the same external id.
-// v9: message_reactions store. One row per (owner, relay_message_id,
-// reactor_canonical_id). Monotonic by updated_at; removed_at preserves
-// the row as a tombstone-equivalent so a late replay of the prior
-// emoji can't resurrect it.
-export const LOCAL_DB_VERSION = 9;
+// v10: message_attachments store. Phase 8 — one row per (owner,
+// relay_message_id) carrying the wrapped media key + metadata
+// (blob_id, mime, filename, size, optional width/height). The
+// blob itself is opaque ciphertext on the server; this row is
+// what lets the receiving device decrypt + render.
+export const LOCAL_DB_VERSION = 10;
 
 export const localStoreNames = [
   "events",
@@ -32,7 +33,8 @@ export const localStoreNames = [
   "read_state",
   "conversation_settings",
   "conversation_system_events",
-  "message_reactions"
+  "message_reactions",
+  "message_attachments"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -542,6 +544,18 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
     });
     store.createIndex("by_owner", "owner_canonical_id");
     store.createIndex("by_owner_relay", ["owner_canonical_id", "relay_message_id"]);
+  }
+
+  // v10: message_attachments. One row per (owner, relay_message_id).
+  // The wrapped media key is what the spec calls a "two-wrap"
+  // mechanism — same plaintext key encrypted twice (once for the
+  // peer, once for our own linked devices). updated_at lets us
+  // converge when both wraps land in different orders.
+  if (!db.objectStoreNames.contains("message_attachments")) {
+    const store = db.createObjectStore("message_attachments", {
+      keyPath: ["owner_canonical_id", "relay_message_id"]
+    });
+    store.createIndex("by_owner", "owner_canonical_id");
   }
 
   // ---- v3 → v4: account isolation ----

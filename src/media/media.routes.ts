@@ -1,0 +1,207 @@
+// Opaque media blob storage.
+//
+// Wire contract:
+//   POST /api/media/upload
+//     Content-Type: application/octet-stream
+//     Body: raw ciphertext bytes (already AES-GCM encrypted by the
+//           sender; server never sees plaintext bytes).
+//     Headers:
+//       x-sudo-media-class: "image" | "video" | "file"
+//           — chooses the size cap. Defaults to "file".
+//     -> { ok: true, blob_id }
+//
+//   GET /api/media/:blob_id
+//     -> 200 application/octet-stream + the ciphertext bytes
+//     -> 404 if missing
+//
+// Privacy invariants enforced here:
+//   - blob_id is a random 32-hex string; never the original
+//     filename or any user-supplied data.
+//   - the on-disk filename is the blob_id (no extension); the
+//     original filename never appears in any path the server
+//     touches.
+//   - per-IP rate limit + per-mime-class size cap.
+//   - no mime sniffing, no thumbnail generation, no content
+//     scanning. The server treats every byte as opaque.
+
+import express from "express";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, statSync, chmodSync } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
+import { resolve } from "node:path";
+import { emitRateLimited } from "../devices/rate-limit-response.js";
+import { readNodeRuntimeConfig } from "../node/node.config.js";
+
+export const mediaRouter = express.Router();
+
+// Size caps per the Phase 8 spec. Enforced by stripping the request
+// stream once it overshoots — we never buffer beyond the cap.
+const SIZE_LIMITS: Record<string, number> = {
+  image: 10 * 1024 * 1024,
+  video: 50 * 1024 * 1024,
+  file: 25 * 1024 * 1024
+};
+const DEFAULT_LIMIT = SIZE_LIMITS.file!;
+
+function mediaDir(): string {
+  const dir = resolve(readNodeRuntimeConfig().dataDir, "media");
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+    try { chmodSync(dir, 0o700); } catch { /* best-effort */ }
+  }
+  return dir;
+}
+
+// 32-hex (16 bytes). Random enough to be unguessable; short enough
+// to fit comfortably in URLs.
+function newBlobId(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function isValidBlobId(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
+}
+
+// ---- Rate limit (per-IP) -------------------------------------------------
+
+const RATE_WINDOW_MS = 60_000;
+const RATE_LIMIT_UPLOAD = 30; // ~one large file per 2s, comfortable headroom
+const RATE_LIMIT_DOWNLOAD = 300; // image inline preview can hammer this; be generous
+const uploadHits = new Map<string, number[]>();
+const downloadHits = new Map<string, number[]>();
+function rateCheck(buckets: Map<string, number[]>, ip: string, limit: number, now: number): { ok: true } | { ok: false; scope: "ip"; retry_after_seconds: number } {
+  const key = ip.length > 0 ? ip : "unknown";
+  const hits = buckets.get(key) ?? [];
+  const cutoff = now - RATE_WINDOW_MS;
+  const fresh = hits.filter((t) => t > cutoff);
+  if (fresh.length >= limit) {
+    const oldest = fresh[0]!;
+    return { ok: false, scope: "ip", retry_after_seconds: Math.max(1, Math.ceil((oldest + RATE_WINDOW_MS - now) / 1000)) };
+  }
+  fresh.push(now);
+  buckets.set(key, fresh);
+  return { ok: true };
+}
+function resolveIp(request: express.Request): string {
+  const real = request.get("x-real-ip");
+  if (typeof real === "string" && real.length > 0) return real;
+  return request.ip ?? "";
+}
+
+// ---- Upload --------------------------------------------------------------
+//
+// We deliberately do NOT use express.raw() here because the global
+// JSON middleware in app.ts is configured with a 64kb limit. Instead
+// we stream the request body directly to disk, capping reads at the
+// per-class size limit.
+mediaRouter.post("/upload", (request, response) => {
+  const rate = rateCheck(uploadHits, resolveIp(request), RATE_LIMIT_UPLOAD, Date.now());
+  if (!rate.ok) { emitRateLimited(response, rate); return; }
+
+  const mediaClass = String(request.get("x-sudo-media-class") ?? "file").toLowerCase();
+  const limit = SIZE_LIMITS[mediaClass] ?? DEFAULT_LIMIT;
+
+  const blobId = newBlobId();
+  const dir = mediaDir();
+  const path = resolve(dir, blobId);
+  const writer = createWriteStream(path, { mode: 0o600 });
+
+  let bytesWritten = 0;
+  let oversize = false;
+  let finalized = false;
+
+  function finalize(status: number, body: object): void {
+    if (finalized) return;
+    finalized = true;
+    try { writer.destroy(); } catch { /* ignore */ }
+    response.status(status).json(body);
+  }
+
+  request.on("data", (chunk: Buffer) => {
+    if (finalized || oversize) return;
+    bytesWritten += chunk.length;
+    if (bytesWritten > limit) {
+      oversize = true;
+      try {
+        writer.destroy();
+        // Best-effort cleanup of the partial file.
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const fs = require("node:fs");
+        if (existsSync(path)) fs.unlinkSync(path);
+      } catch { /* ignore */ }
+      finalize(413, { ok: false, error: "payload_too_large", limit_bytes: limit, media_class: mediaClass });
+      return;
+    }
+    writer.write(chunk);
+  });
+
+  request.on("end", () => {
+    if (finalized) return;
+    writer.end(() => {
+      if (bytesWritten === 0) {
+        // Empty body — clean up + reject.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const fs = require("node:fs");
+          if (existsSync(path)) fs.unlinkSync(path);
+        } catch { /* ignore */ }
+        finalize(400, { ok: false, error: "empty_body" });
+        return;
+      }
+      finalize(200, { ok: true, blob_id: blobId, size_bytes: bytesWritten });
+    });
+  });
+
+  request.on("error", () => {
+    if (finalized) return;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const fs = require("node:fs");
+      if (existsSync(path)) fs.unlinkSync(path);
+    } catch { /* ignore */ }
+    finalize(500, { ok: false, error: "upload_failed" });
+  });
+});
+
+// ---- Download -----------------------------------------------------------
+
+mediaRouter.get("/:blob_id", (request, response) => {
+  const rate = rateCheck(downloadHits, resolveIp(request), RATE_LIMIT_DOWNLOAD, Date.now());
+  if (!rate.ok) { emitRateLimited(response, rate); return; }
+
+  const blobId = request.params.blob_id;
+  if (!isValidBlobId(blobId)) {
+    response.status(400).json({ ok: false, error: "invalid_blob_id" });
+    return;
+  }
+  const dir = mediaDir();
+  const path = resolve(dir, blobId);
+  // Guard against path traversal — resolve must still be inside dir.
+  if (!path.startsWith(dir)) {
+    response.status(400).json({ ok: false, error: "invalid_blob_id" });
+    return;
+  }
+  if (!existsSync(path)) {
+    response.status(404).json({ ok: false, error: "not_found" });
+    return;
+  }
+  const stat = statSync(path);
+  response.setHeader("Content-Type", "application/octet-stream");
+  response.setHeader("Content-Length", String(stat.size));
+  // No CDN, no proxy caching, no SW caching — every fetch hits the
+  // origin. The bytes are encrypted so leaking them is harmless, but
+  // a stale cache could outlive a tombstone delete.
+  response.setHeader("Cache-Control", "no-store");
+  // The blob is opaque ciphertext; the server has no original
+  // filename. Recipients render with metadata they decrypted from
+  // the envelope, not from headers.
+  const stream = createReadStream(path);
+  stream.on("error", () => response.status(500).end());
+  stream.pipe(response);
+});
+
+// ---- Test-only helpers --------------------------------------------------
+export function __resetMediaStateForTests(): void {
+  uploadHits.clear();
+  downloadHits.clear();
+}

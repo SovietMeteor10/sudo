@@ -584,6 +584,63 @@ export async function deletePushSubscription(input: { device_id: string; endpoin
   }
 }
 
+// Media: upload pre-encrypted blob, return opaque blob_id.
+// Caller passes Uint8Array of CIPHERTEXT only — the server never
+// sees plaintext bytes. mediaClass picks the size cap server-side
+// (10MB image / 50MB video / 25MB file).
+export type MediaUploadResult = { ok: true; blob_id: string; size_bytes: number } | { ok: false; error: string };
+export async function uploadEncryptedMediaBlob(input: {
+  ciphertext: Uint8Array;
+  mediaClass: "image" | "video" | "file";
+  signal?: AbortSignal;
+  onProgress?: (sentBytes: number, totalBytes: number) => void;
+}): Promise<MediaUploadResult> {
+  // Use XHR so we can hook upload-progress events (fetch has no
+  // standard upload progress in browsers).
+  const total = input.ciphertext.byteLength;
+  return new Promise<MediaUploadResult>((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/media/upload");
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.setRequestHeader("x-sudo-media-class", input.mediaClass);
+    xhr.responseType = "json";
+    if (typeof input.onProgress === "function") {
+      const cb = input.onProgress;
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) cb(e.loaded, e.total);
+        else cb(e.loaded, total);
+      };
+    }
+    if (input.signal !== undefined) {
+      input.signal.addEventListener("abort", () => { try { xhr.abort(); } catch { /* ignore */ } });
+    }
+    xhr.onload = () => {
+      const body = xhr.response as { ok?: boolean; blob_id?: string; size_bytes?: number; error?: string } | null;
+      if (body !== null && body.ok === true && typeof body.blob_id === "string" && typeof body.size_bytes === "number") {
+        resolve({ ok: true, blob_id: body.blob_id, size_bytes: body.size_bytes });
+      } else {
+        resolve({ ok: false, error: body?.error ?? `upload failed: ${xhr.status}` });
+      }
+    };
+    xhr.onerror = () => resolve({ ok: false, error: "network_error" });
+    xhr.onabort = () => resolve({ ok: false, error: "aborted" });
+    // Copy into a fresh ArrayBuffer so the TS dom lib accepts it as
+    // BufferSource. Uint8Array.buffer can be a SharedArrayBuffer
+    // under some configurations which the stricter type rejects.
+    const out = new ArrayBuffer(input.ciphertext.byteLength);
+    new Uint8Array(out).set(input.ciphertext);
+    xhr.send(out);
+  });
+}
+
+// Download an opaque ciphertext blob by id.
+export async function downloadEncryptedMediaBlob(blobId: string, signal?: AbortSignal): Promise<Uint8Array> {
+  const r = await fetch(`/api/media/${encodeURIComponent(blobId)}`, { signal, headers: { accept: "application/octet-stream" } });
+  if (!r.ok) throw new Error(`media download failed: ${r.status}`);
+  const buf = await r.arrayBuffer();
+  return new Uint8Array(buf);
+}
+
 // Typing indicators are ephemeral — fire-and-forget. We do NOT
 // surface fetch errors to the user; if the relay can't accept a
 // typing ping the worst that happens is the peer doesn't see "is

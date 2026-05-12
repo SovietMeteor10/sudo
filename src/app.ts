@@ -12,6 +12,7 @@ import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
 import { pushRouter } from "./push/push.routes.js";
 import { relayRouter } from "./relay/relay.routes.js";
 import { typingRouter } from "./typing/typing.routes.js";
+import { mediaRouter } from "./media/media.routes.js";
 import { devRouter } from "./routes/dev.js";
 import { fingerRouter } from "./routes/finger.js";
 import { inboxRouter } from "./routes/inbox.js";
@@ -41,6 +42,14 @@ export function createApp() {
     response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
     next();
   });
+  // /api/media MUST be mounted BEFORE the JSON body middleware.
+  // Uploads stream raw ciphertext octets up to 50MB; the JSON
+  // parser would otherwise consume the body (and reject with 413
+  // because the limit is 64kb). Downloads + the rate-limit error
+  // response are JSON-shaped, but the router emits them through
+  // response.json() directly without needing the parser.
+  app.use("/api/media", mediaRouter);
+
   app.use(express.json({ limit: "64kb" }));
 
   app.get("/health", (_request, response) => {

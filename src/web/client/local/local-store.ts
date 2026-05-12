@@ -9,6 +9,7 @@ import type {
   LocalEvent,
   LocalIdentityRecord,
   LocalMessage,
+  LocalMessageAttachment,
   LocalMessageReaction,
   LocalReadState,
   LocalSetting,
@@ -576,7 +577,20 @@ export async function runConversationTtlGc(
         created_at: message.created_at,
         deleted_at: new Date(now).toISOString()
       });
-      if (result.written) conversationTombstoned++;
+      if (result.written) {
+        conversationTombstoned++;
+        // Spec: TTL GC purges attachment metadata + cached blobs
+        // together with the message. Distinct from a user-driven
+        // delete, which keeps the metadata around so the renderer
+        // can show the "attachment deleted" placeholder. After
+        // TTL expiry the row is just gone — no placeholder, no
+        // dangling blob_id reference.
+        if (typeof message.relay_message_id === "string" && message.relay_message_id.length > 0) {
+          try {
+            await deleteLocalMessageAttachment(ownerCanonicalId, message.relay_message_id);
+          } catch { /* best-effort */ }
+        }
+      }
     }
     if (conversationTombstoned > 0) {
       tombstoned += conversationTombstoned;
@@ -995,6 +1009,79 @@ export async function listLocalReactionsForRelayMessageId(
 
 export async function listLocalReactionsForOwner(ownerCanonicalId: string): Promise<LocalMessageReaction[]> {
   return getAllByIndex<LocalMessageReaction>("message_reactions", "by_owner", ownerCanonicalId);
+}
+
+// ---- message_attachments -----------------------------------------------
+
+// Merge an incoming attachment record with whatever's already in
+// the store. updated_at is the monotonic tiebreaker. wrapped_key_for_*
+// fields merge in a "first non-null wins" sense — once we have a
+// wrap path, we don't overwrite it with a later (potentially older)
+// arrival. The renderer is happy with either wrap.
+export async function upsertLocalMessageAttachmentMonotonic(
+  attachment: LocalMessageAttachment
+): Promise<{ written: boolean; row: LocalMessageAttachment }> {
+  const db = await openLocalDb();
+  return new Promise<{ written: boolean; row: LocalMessageAttachment }>((resolve, reject) => {
+    const tx = db.transaction("message_attachments", "readwrite");
+    const store = tx.objectStore("message_attachments");
+    const key: [string, string] = [attachment.owner_canonical_id, attachment.relay_message_id];
+    const get = store.get(key);
+    get.onsuccess = () => {
+      const existing = get.result as LocalMessageAttachment | undefined;
+      const merged: LocalMessageAttachment = existing === undefined
+        ? attachment
+        : {
+            ...existing,
+            // Metadata always tracks the newest write.
+            ...(Date.parse(attachment.updated_at) > Date.parse(existing.updated_at) ? attachment : {}),
+            // But wrapped keys are sticky — once present, keep them
+            // so a late same-owner sync can't clobber a peer wrap or
+            // vice-versa.
+            wrapped_key_for_self: existing.wrapped_key_for_self ?? attachment.wrapped_key_for_self,
+            wrapped_key_for_peer: existing.wrapped_key_for_peer ?? attachment.wrapped_key_for_peer,
+            owner_canonical_id: existing.owner_canonical_id,
+            relay_message_id: existing.relay_message_id
+          };
+      const put = store.put(merged);
+      put.onsuccess = () => resolve({ written: true, row: merged });
+      put.onerror = () => reject(put.error ?? new Error("attachment put failed"));
+    };
+    get.onerror = () => reject(get.error ?? new Error("attachment get failed"));
+  }).then((result) => {
+    broadcastLocalStateChange("messages", attachment.owner_canonical_id);
+    return result;
+  });
+}
+
+export async function getLocalMessageAttachment(
+  ownerCanonicalId: string,
+  relayMessageId: string
+): Promise<LocalMessageAttachment | null> {
+  const db = await openLocalDb();
+  return new Promise<LocalMessageAttachment | null>((resolve, reject) => {
+    const tx = db.transaction("message_attachments", "readonly");
+    const r = tx.objectStore("message_attachments").get([ownerCanonicalId, relayMessageId]);
+    r.onsuccess = () => resolve((r.result as LocalMessageAttachment | undefined) ?? null);
+    r.onerror = () => reject(r.error ?? new Error("attachment get failed"));
+  });
+}
+
+export async function listLocalAttachmentsForOwner(
+  ownerCanonicalId: string
+): Promise<LocalMessageAttachment[]> {
+  return getAllByIndex<LocalMessageAttachment>("message_attachments", "by_owner", ownerCanonicalId);
+}
+
+export async function deleteLocalMessageAttachment(
+  ownerCanonicalId: string,
+  relayMessageId: string
+): Promise<void> {
+  const db = await openLocalDb();
+  const tx = db.transaction("message_attachments", "readwrite");
+  tx.objectStore("message_attachments").delete([ownerCanonicalId, relayMessageId]);
+  await txDone(tx);
+  broadcastLocalStateChange("messages", ownerCanonicalId);
 }
 
 async function getAllRecords<T>(storeName: LocalStoreName): Promise<T[]> {

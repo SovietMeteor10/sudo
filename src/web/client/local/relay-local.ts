@@ -18,6 +18,11 @@ import {
   applyIncomingReactionFromRelay,
   decodeReactionEnvelopeBody
 } from "../sync/messageReactionSync.js";
+import {
+  ATTACHMENT_CIPHERTEXT_SCHEME,
+  applyIncomingAttachmentFromRelay,
+  decodeAttachmentEnvelopeBody
+} from "../sync/messageAttachmentSync.js";
 
 const SUDO_PROTOCOL_VERSION = "0.1.0";
 
@@ -354,6 +359,32 @@ export async function retrieveRelayInboxAfterLocalSave(
           await applyMessageReceipt(ownerCanonicalId, receipt.target_relay_message_id, {
             delivered_at: receipt.delivered_at,
             read_at: receipt.read_at
+          });
+        }
+      } catch { /* malformed — drop, still ACK below */ }
+      try {
+        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+          method: "POST",
+          headers: { accept: "application/json" }
+        });
+      } catch { /* ACK retry on next poll */ }
+      continue;
+    }
+    // Attachment envelopes carry encrypted media metadata + a
+    // wrapped key addressed to OUR messaging key. The blob itself
+    // lives at /api/media/<blob_id>; this row is the renderer's
+    // entry point. Skip the message-save path — the visible chat
+    // row is the SEPARATE message.upsert that the sender posted
+    // alongside this envelope.
+    if (envelope.ciphertext_scheme === ATTACHMENT_CIPHERTEXT_SCHEME) {
+      try {
+        const body = decodeAttachmentEnvelopeBody(envelope.ciphertext);
+        if (body !== null) {
+          await applyIncomingAttachmentFromRelay(ownerCanonicalId, {
+            sender_canonical_id: envelope.sender_canonical_id,
+            relay_message_id: envelope.message_id,
+            body,
+            created_at: envelope.created_at
           });
         }
       } catch { /* malformed — drop, still ACK below */ }

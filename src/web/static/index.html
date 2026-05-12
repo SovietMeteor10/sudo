@@ -183,8 +183,11 @@
       <div class="chat-popup__reply-snippet" id="chat-popup-reply-snippet"></div>
       <button class="chat-popup__reply-cancel" id="chat-popup-reply-cancel" type="button" aria-label="cancel reply" title="cancel reply">×</button>
     </div>
+    <div class="chat-popup__attachment-status" id="chat-popup-attachment-status" hidden aria-live="polite"></div>
     <form class="chat-popup__form" id="chat-popup-form" autocomplete="off">
       <label class="sr-only" for="chat-popup-input">message</label>
+      <input type="file" id="chat-popup-attachment-input" class="sr-only" accept="image/*,video/*,*/*" aria-label="attach a file">
+      <button class="chat-popup__attach" id="chat-popup-attach" type="button" aria-label="attach" title="attach">📎</button>
       <textarea
         id="chat-popup-input"
         class="chat-popup__input"
@@ -195,6 +198,13 @@
       ></textarea>
       <button class="chat-popup__send" type="submit" aria-label="send">send</button>
     </form>
+
+    <div class="media-viewer" id="media-viewer" hidden role="dialog" aria-label="image viewer">
+      <button class="media-viewer__close" id="media-viewer-close" type="button" aria-label="close">✕</button>
+      <div class="media-viewer__stage">
+        <img id="media-viewer-img" alt="" class="media-viewer__img">
+      </div>
+    </div>
   </section>
 
   <div class="message-menu" id="message-menu" hidden role="menu" aria-label="message actions">

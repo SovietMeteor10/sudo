@@ -43,7 +43,12 @@ export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
   `script-src 'self' ${importmapHash}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data:",
+  // blob: is needed for <img> and <video> sources that come from
+  // URL.createObjectURL() on decrypted attachment bytes. blob:
+  // URLs are scoped to the page that created them and can't be
+  // exfiltrated cross-origin, so they're safe to include.
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob:",
   "font-src 'self'",
   "connect-src 'self'",
   // Same-origin service worker + manifest. Push subscription endpoints live
