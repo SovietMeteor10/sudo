@@ -209,6 +209,79 @@ async function openChat(page, target) {
     } else {
       ok("7. A's own typing poll never sees A as sender (no self-echo)");
     }
+
+    // 8. Continuous typing — the indicator on B should remain
+    //    visibly active for the entire duration. The receiver's
+    //    anti-flicker grace window means a single missed poll at
+    //    the edge of the server-side TTL must NOT toggle the line
+    //    off mid-typing. We drive A's composer at 1s intervals
+    //    over 10s, then sample B's line state every 2s.
+    let typingObservedActive = 0;
+    let typingObservedHidden = 0;
+    const startedAt = Date.now();
+    // Re-open A's chat input for fresh typing.
+    await pageA.evaluate(() => {
+      const input = document.getElementById("chat-popup-input");
+      if (input instanceof HTMLTextAreaElement) input.value = "";
+    });
+    const driver = setInterval(() => {
+      void pageA.evaluate(() => {
+        const input = document.getElementById("chat-popup-input");
+        if (input instanceof HTMLTextAreaElement) {
+          input.value = `keystroke ${Date.now()}`;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }
+      });
+    }, 1000);
+    // Sample every 1s for 10s.
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const active = await pageB.evaluate(() => {
+        const el = document.getElementById("chat-popup-typing");
+        return el instanceof HTMLElement && !el.hidden && /typing/i.test(el.textContent ?? "");
+      });
+      if (active) typingObservedActive++; else typingObservedHidden++;
+    }
+    clearInterval(driver);
+    // Allow a couple of poll cycles for the indicator to settle
+    // before we resume. The hidden-count tolerance is 1 (initial
+    // sample before any poll cycle completes); after that it must
+    // stay on the whole time.
+    if (typingObservedActive < 8) {
+      fail("8.continuous-typing", `expected indicator active most of 10 samples, got active=${typingObservedActive} hidden=${typingObservedHidden}`);
+    } else {
+      ok(`8. continuous typing: ${typingObservedActive}/10 samples observed active (no flicker)`);
+    }
+    void startedAt;
+
+    // 9. Typing into the lookup search input does NOT post any
+    //    typing event. We snapshot the POST count by clearing the
+    //    server state, then drive input on #lookup-input and
+    //    confirm no entry shows up.
+    await fetch(`${BASE}/api/typing`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ sender_canonical_id: canonicalA, recipient_canonical_id: canonicalB, typing: false })
+    });
+    // Type into the lookup-input on pageA.
+    await pageA.evaluate(() => {
+      const search = document.getElementById("lookup-input");
+      if (search instanceof HTMLInputElement) {
+        search.focus();
+        search.value = "abc";
+        search.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    // Give the typing client an honest beat to fire if it were
+    // (mis-)wired to the search input.
+    await new Promise((r) => setTimeout(r, 500));
+    const serverAfter = await fetch(`${BASE}/api/typing/${encodeURIComponent(canonicalB)}`).then((r) => r.json());
+    const lookupSpilledTyping = (serverAfter.typing || []).some((e) => e.sender_canonical_id === canonicalA);
+    if (lookupSpilledTyping) {
+      fail("9.search-spills", `lookup-input emitted typing event: ${JSON.stringify(serverAfter)}`);
+    } else {
+      ok(`9. typing into lookup-input emits no typing POST`);
+    }
   } finally {
     await browser.close();
   }

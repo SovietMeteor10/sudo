@@ -2595,8 +2595,35 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
+/* Mobile bottom-sheet mode for the message menu. Same trigger
+   conditions as the reaction picker bottom-sheet — phone-sized
+   viewport at long-press/kebab time. Items grow to ≥44px tall so
+   thumb taps don't miss-fire onto the wrong one. */
+.message-menu--bottom-sheet {
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0;
+  width: 100%;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+.message-menu--bottom-sheet .message-menu__item {
+  min-height: 44px;
+  font-size: 15px;
+  padding: 12px 16px;
+}
+
 /* Reaction picker — same visual family as message-menu but
-   horizontal, hosting the fixed 5-emoji set. */
+   horizontal, hosting the fixed 5-emoji set. Two modes:
+     - desktop (default): floating popover positioned near the
+       triggering kebab.
+     - mobile (--bottom-sheet modifier): full-width sheet anchored
+       to the bottom of the viewport with safe-area padding,
+       larger emoji buttons (≥44px hit area) for thumb input. */
 .reaction-picker {
   position: fixed;
   z-index: 7;
@@ -2617,11 +2644,43 @@ body[data-auth-state="auth-restore"] .landing {
   cursor: pointer;
   border-radius: 3px;
   line-height: 1;
+  /* Minimum tap target: 44×44px is the iOS HIG floor. The padded
+     emoji at the default size lands just under that on small
+     phones, so set min-width/min-height to guarantee thumb fit on
+     desktop too. */
+  min-width: 44px;
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 .reaction-picker__item:hover,
 .reaction-picker__item:focus-visible {
   background: var(--panel-soft);
   outline: none;
+}
+.reaction-picker--bottom-sheet {
+  /* Mobile mode: pin to the bottom of the viewport, full-width.
+     env(safe-area-inset-bottom) accounts for the iOS home-bar so
+     emoji don't sit under it on standalone PWA installs. */
+  left: 0 !important;
+  right: 0 !important;
+  top: auto !important;
+  bottom: 0;
+  padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  justify-content: space-around;
+  gap: 8px;
+}
+.reaction-picker--bottom-sheet .reaction-picker__item {
+  /* Phone-friendly emoji size; thumb-distance comfortable.
+     Buttons grow uniformly so all five take the row evenly. */
+  flex: 1;
+  font-size: 28px;
+  min-height: 56px;
 }
 
 /* Reaction pills appear directly below the message bubble. They
@@ -2632,6 +2691,11 @@ body[data-auth-state="auth-restore"] .landing {
   flex-wrap: wrap;
   gap: 4px;
   margin-top: 4px;
+  /* The row inherits the parent .chat-message's max-width: 75%
+     ceiling. Reactions with a dozen+ aggregates wrap to the next
+     line rather than push the bubble's container wider, which
+     would jitter the message's right-edge as new reactions land. */
+  max-width: 100%;
 }
 .chat-message__reaction-pill {
   display: inline-flex;
@@ -2645,6 +2709,16 @@ body[data-auth-state="auth-restore"] .landing {
   font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
+  /* Prevent a runaway emoji count text from forcing a pill wider
+     than its line — instead, the pill stays compact and the row
+     wraps. */
+  white-space: nowrap;
+  max-width: 100%;
+  /* On a touch device the pill is the toggle-off target for the
+     user's own reaction; sit at minimum thumb size on the cross
+     axis so the tap doesn't miss. Desktop still reads compact
+     because the inner content drives width. */
+  min-height: 28px;
 }
 .chat-message__reaction-pill.is-mine {
   border-color: var(--focus);

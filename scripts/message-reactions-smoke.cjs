@@ -266,6 +266,165 @@ async function readPillsForRelayId(page, relayMessageId) {
     } else {
       ok("5. react menu item disabled on tombstoned message");
     }
+    // Close the menu so the next checks have a clean DOM state.
+    await pageA.evaluate(() => {
+      document.getElementById("chat-popup-body")?.click();
+    });
+
+    // 6. Tombstoned message retains its aggregate. Seed 3 reactions
+    //    from synthetic reactors directly into A's IDB on the
+    //    tombstoned message's relay_message_id; render should show
+    //    3 disabled pills with the right counts.
+    const tombRelayId = await pageA.evaluate(() => {
+      const row = document.querySelector(".chat-message--sent.chat-message--deleted");
+      return row instanceof HTMLElement ? row.dataset.relayMessageId ?? null : null;
+    });
+    if (typeof tombRelayId !== "string") {
+      fail("6.tomb-relay", "no relay_message_id on the tombstoned row");
+    } else {
+      await pageA.evaluate(async (rid, owner) => {
+        const now = new Date().toISOString();
+        const reactions = [
+          { emoji: "👍", reactor: "sudo:ed25519:" + "1".repeat(64) },
+          { emoji: "❤️", reactor: "sudo:ed25519:" + "2".repeat(64) },
+          { emoji: "❤️", reactor: "sudo:ed25519:" + "3".repeat(64) }
+        ];
+        const req = indexedDB.open("sudo_local_state");
+        const db = await new Promise((resolve, reject) => {
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction("message_reactions", "readwrite");
+          for (const r of reactions) {
+            tx.objectStore("message_reactions").put({
+              owner_canonical_id: owner,
+              relay_message_id: rid,
+              reactor_canonical_id: r.reactor,
+              emoji: r.emoji,
+              updated_at: now
+            });
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }, tombRelayId, canonicalA);
+      // Re-render the chat body so the pills appear.
+      await pageA.evaluate((rid) => {
+        // The local-state broadcast on a sibling tab path won't
+        // fire same-tab unless we trigger a manual refresh; the
+        // simplest way is to re-open the chat.
+        const row = document.querySelector(`.chat-row[data-chat-canonical]`);
+        if (row instanceof HTMLElement) row.click();
+        void rid;
+      }, tombRelayId);
+      await new Promise((r) => setTimeout(r, 400));
+
+      const tombState = await pageA.evaluate((rid) => {
+        const row = document.querySelector(`.chat-message[data-relay-message-id="${rid}"]`);
+        if (!(row instanceof HTMLElement)) return null;
+        const pills = [...row.querySelectorAll(".chat-message__reaction-pill")];
+        return {
+          isDeleted: row.classList.contains("chat-message--deleted"),
+          pillCount: pills.length,
+          pillTexts: pills.map((p) => (p.textContent ?? "").trim()),
+          allDisabled: pills.every((p) => p instanceof HTMLButtonElement && p.disabled)
+        };
+      }, tombRelayId);
+      if (tombState === null || !tombState.isDeleted) {
+        fail("6.tomb-still-deleted", `row no longer tombstoned: ${JSON.stringify(tombState)}`);
+      } else if (tombState.pillCount !== 2) {
+        // Two distinct emojis (👍 from one reactor, ❤️ from two).
+        fail("6.tomb-pills", `expected 2 distinct pills, got ${JSON.stringify(tombState)}`);
+      } else if (!tombState.allDisabled) {
+        fail("6.tomb-disabled-pills", `tombstoned pills must be disabled, got ${JSON.stringify(tombState)}`);
+      } else if (!tombState.pillTexts.some((t) => /👍\s*1/.test(t)) || !tombState.pillTexts.some((t) => /❤️\s*2/.test(t))) {
+        fail("6.tomb-counts", `pill counts wrong: ${JSON.stringify(tombState)}`);
+      } else {
+        ok(`6. tombstoned message keeps aggregate visible (pills=${JSON.stringify(tombState.pillTexts)}, disabled=${tombState.allDisabled})`);
+      }
+    }
+
+    // 7. Aggregate wrapping: stuff a single live message with many
+    //    same-emoji reactions and confirm the .chat-message
+    //    wrapper width does not exceed its CSS max-width
+    //    (75% of body). Sending a fresh message first because the
+    //    delete from step 5 left the only sent row tombstoned.
+    await pageA.evaluate(() => {
+      const input = document.getElementById("chat-popup-input");
+      if (input instanceof HTMLTextAreaElement) {
+        input.value = "wrap-test";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      document.getElementById("chat-popup-form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    await waitFor(pageA, () => {
+      return [...document.querySelectorAll(".chat-message--sent:not(.chat-message--deleted)")]
+        .some((r) => (r.textContent ?? "").includes("wrap-test"));
+    }, 4000, 100);
+    const wrapTestRelayId = await pageA.evaluate(() => {
+      const row = [...document.querySelectorAll(".chat-message--sent:not(.chat-message--deleted)")]
+        .find((r) => (r.textContent ?? "").includes("wrap-test"));
+      return row instanceof HTMLElement ? row.dataset.relayMessageId ?? null : null;
+    });
+    if (typeof wrapTestRelayId !== "string") {
+      fail("7.wrap-setup", "no relay_message_id on wrap-test row");
+    } else {
+      await pageA.evaluate(async (rid, owner) => {
+        const now = new Date().toISOString();
+        const req = indexedDB.open("sudo_local_state");
+        const db = await new Promise((resolve, reject) => {
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => reject(req.error);
+        });
+        await new Promise((resolve, reject) => {
+          const tx = db.transaction("message_reactions", "readwrite");
+          // Insert ALL 5 emoji with multiple reactors so the row
+          // has 5 pills lined up.
+          const emojis = ["👍", "❤️", "😂", "😮", "😢"];
+          for (let i = 0; i < emojis.length; i++) {
+            for (let j = 0; j < 3; j++) {
+              tx.objectStore("message_reactions").put({
+                owner_canonical_id: owner,
+                relay_message_id: rid,
+                reactor_canonical_id: `sudo:ed25519:${("e" + i).padStart(2, "0")}${("r" + j).padStart(62, "0")}`,
+                emoji: emojis[i],
+                updated_at: now
+              });
+            }
+          }
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      }, wrapTestRelayId, canonicalA);
+      await pageA.evaluate(() => {
+        const row = document.querySelector(`.chat-row[data-chat-canonical]`);
+        if (row instanceof HTMLElement) row.click();
+      });
+      await new Promise((r) => setTimeout(r, 300));
+      const wrap = await pageA.evaluate((rid) => {
+        const row = document.querySelector(`.chat-message[data-relay-message-id="${rid}"]`);
+        const popup = document.getElementById("chat-popup");
+        if (!(row instanceof HTMLElement) || !(popup instanceof HTMLElement)) return null;
+        return {
+          msgWidth: row.getBoundingClientRect().width,
+          popupWidth: popup.getBoundingClientRect().width,
+          pillCount: row.querySelectorAll(".chat-message__reaction-pill").length
+        };
+      }, wrapTestRelayId);
+      if (wrap === null) {
+        fail("7.wrap-measure", "could not measure wrap-test row");
+      } else if (wrap.pillCount !== 5) {
+        fail("7.wrap-count", `expected 5 distinct emoji pills, got ${wrap.pillCount}`);
+      } else if (wrap.msgWidth > wrap.popupWidth * 0.85) {
+        // The .chat-message wrapper has max-width:75% of the
+        // body. A small breathing room (85%) is allowed because
+        // padding + scrollbar can take a few px.
+        fail("7.wrap-overflow", `chat-message ${wrap.msgWidth}px exceeds popup ${wrap.popupWidth}px ceiling`);
+      } else {
+        ok(`7. 5-emoji aggregate stays within row max-width (msg=${Math.round(wrap.msgWidth)} popup=${Math.round(wrap.popupWidth)})`);
+      }
+    }
   } finally {
     await browser.close();
   }

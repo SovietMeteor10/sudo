@@ -6324,10 +6324,16 @@ function attachLongPress(target: HTMLElement, handler: () => void): void {
     startX = event.clientX;
     startY = event.clientY;
     clear();
+    // 650ms threshold. iOS native text selection fires around
+    // ~500ms; sitting a beat above it means a brief tap-and-hold
+    // for selection wins, and a deliberate hold opens the menu.
+    // The previous 500ms threshold raced selection and lost on
+    // some devices, so users sometimes got both behaviours at
+    // once.
     timer = window.setTimeout(() => {
       timer = null;
       handler();
-    }, 500);
+    }, 650);
   });
   target.addEventListener("pointermove", (event) => {
     if (timer === null) return;
@@ -6341,6 +6347,14 @@ function attachLongPress(target: HTMLElement, handler: () => void): void {
 }
 
 function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
+  // Opening a fresh menu always closes any open reaction picker
+  // from a prior interaction. Spec: picker closes on opening
+  // another message menu.
+  if (!reactionPicker.hidden) closeReactionPicker();
+  // Mobile: render the message-menu as a bottom sheet too, with
+  // larger tap targets. CSS modifier handles layout.
+  const mobile = isMobileViewport();
+  messageMenu.classList.toggle("message-menu--bottom-sheet", mobile);
   messageMenuTarget = {
     message_id: message.message_id,
     relay_message_id: typeof message.relay_message_id === "string" ? message.relay_message_id : undefined,
@@ -6350,19 +6364,27 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
   };
   // Position: prefer above the trigger but flip below if the
   // anchored top would push the menu off-screen. Right-align with
-  // the trigger so the kebab and the menu read as paired.
+  // the trigger so the kebab and the menu read as paired. Mobile
+  // is bottom-sheet — CSS handles the positioning via the modifier
+  // class (the !important rules win), so we just clear the inline
+  // styles in that branch.
   messageMenu.hidden = false;
-  // Show first to measure
-  const menuRect = messageMenu.getBoundingClientRect();
-  const top = anchorRect.top - menuRect.height - 4;
-  const fitsAbove = top > 8;
-  const finalTop = fitsAbove ? top : anchorRect.bottom + 4;
-  const left = Math.min(
-    Math.max(8, anchorRect.right - menuRect.width),
-    window.innerWidth - menuRect.width - 8
-  );
-  messageMenu.style.top = `${Math.max(8, finalTop)}px`;
-  messageMenu.style.left = `${left}px`;
+  if (mobile) {
+    messageMenu.style.top = "";
+    messageMenu.style.left = "";
+  } else {
+    // Show first to measure
+    const menuRect = messageMenu.getBoundingClientRect();
+    const top = anchorRect.top - menuRect.height - 4;
+    const fitsAbove = top > 8;
+    const finalTop = fitsAbove ? top : anchorRect.bottom + 4;
+    const left = Math.min(
+      Math.max(8, anchorRect.right - menuRect.width),
+      window.innerWidth - menuRect.width - 8
+    );
+    messageMenu.style.top = `${Math.max(8, finalTop)}px`;
+    messageMenu.style.left = `${left}px`;
+  }
 
   // Enable/disable actions based on the targeted message.
   messageMenuReply.disabled = messageMenuTarget.deleted;
@@ -6387,6 +6409,7 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
 
 function closeMessageMenu(): void {
   messageMenu.hidden = true;
+  messageMenu.classList.remove("message-menu--bottom-sheet");
   messageMenuTarget = null;
 }
 
@@ -6394,19 +6417,28 @@ function closeMessageMenu(): void {
 // Reaction picker + toggle logic.
 // ============================================================
 function openReactionPicker(relayMessageId: string, anchor: { top: number; left: number }): void {
+  // Mobile: render as a full-width bottom sheet. The CSS modifier
+  // class wins over the inline top/left below via !important so we
+  // don't need to clear them.
+  const mobile = isMobileViewport();
+  reactionPicker.classList.toggle("reaction-picker--bottom-sheet", mobile);
   reactionPicker.hidden = false;
-  // Measure + clamp to viewport so we don't paint off-screen on
-  // tiny mobile widths.
-  const rect = reactionPicker.getBoundingClientRect();
-  const clampedLeft = Math.min(Math.max(8, anchor.left), window.innerWidth - rect.width - 8);
-  const clampedTop = Math.min(Math.max(8, anchor.top), window.innerHeight - rect.height - 8);
-  reactionPicker.style.top = `${clampedTop}px`;
-  reactionPicker.style.left = `${clampedLeft}px`;
+  if (!mobile) {
+    const rect = reactionPicker.getBoundingClientRect();
+    const clampedLeft = Math.min(Math.max(8, anchor.left), window.innerWidth - rect.width - 8);
+    const clampedTop = Math.min(Math.max(8, anchor.top), window.innerHeight - rect.height - 8);
+    reactionPicker.style.top = `${clampedTop}px`;
+    reactionPicker.style.left = `${clampedLeft}px`;
+  } else {
+    reactionPicker.style.top = "";
+    reactionPicker.style.left = "";
+  }
   reactionPicker.dataset["relayMessageId"] = relayMessageId;
 }
 
 function closeReactionPicker(): void {
   reactionPicker.hidden = true;
+  reactionPicker.classList.remove("reaction-picker--bottom-sheet");
   delete reactionPicker.dataset["relayMessageId"];
 }
 
@@ -6431,6 +6463,14 @@ document.addEventListener("click", (event) => {
     if (event.target.closest("#message-menu-react")) return;
   }
   closeReactionPicker();
+});
+
+document.addEventListener("keydown", (event) => {
+  if (reactionPicker.hidden) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeReactionPicker();
+  }
 });
 
 // User-driven add / remove. "Add" semantics: if the user already

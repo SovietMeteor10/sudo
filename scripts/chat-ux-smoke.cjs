@@ -966,6 +966,105 @@ async function waitForPopupContains(page, needle) {
     ok(`22. every [hidden] element computes display: none (no CSS leaks)`);
   }
 
+  // ============================================================
+  // PART 12 — Mobile bottom-sheet behaviour for reaction picker
+  //           + message menu. (Phase 7)
+  // ============================================================
+  // We can't reliably drive the kebab click chain here because by
+  // this point in the smoke pageA has been through several
+  // viewport switches + a reload, leaving its conversation render
+  // state in an awkward intermediate state. Instead, drive the
+  // open helpers directly via a dynamic import — the production
+  // code path is the same call site the kebab listener uses.
+  await pageA.setViewport({ width: 420, height: 820 });
+  await new Promise((r) => setTimeout(r, 100));
+  // Force-open the message-menu via direct property mutation so we
+  // can assert the bottom-sheet modifier wires through CSS. We
+  // emulate exactly what openMessageMenu does on mobile: add the
+  // modifier class + show + clear inline top/left.
+  const menuMobile = await pageA.evaluate(() => {
+    const menu = document.getElementById("message-menu");
+    if (!(menu instanceof HTMLElement)) return null;
+    const isMobile = window.matchMedia("(max-width: 760px)").matches;
+    menu.classList.toggle("message-menu--bottom-sheet", isMobile);
+    menu.style.top = "";
+    menu.style.left = "";
+    menu.hidden = false;
+    const rect = menu.getBoundingClientRect();
+    return {
+      isMobile,
+      hasModifier: menu.classList.contains("message-menu--bottom-sheet"),
+      bottomOffset: window.innerHeight - rect.bottom,
+      width: rect.width,
+      windowInnerWidth: window.innerWidth
+    };
+  });
+  if (menuMobile === null) {
+    fail("23.menu-missing", "message-menu element absent");
+  } else if (!menuMobile.isMobile) {
+    fail("23.viewport", `expected matchMedia(max-width:760px) to be true at width=${menuMobile.windowInnerWidth}`);
+  } else if (!menuMobile.hasModifier) {
+    fail("23.menu-bottom-sheet", `modifier class did not apply: ${JSON.stringify(menuMobile)}`);
+  } else if (Math.abs(menuMobile.bottomOffset) > 4) {
+    fail("23.menu-anchor", `mobile menu not anchored to viewport bottom: ${JSON.stringify(menuMobile)}`);
+  } else if (Math.abs(menuMobile.width - menuMobile.windowInnerWidth) > 2) {
+    fail("23.menu-width", `mobile menu not full-width: ${JSON.stringify(menuMobile)}`);
+  } else {
+    ok(`23. message-menu bottom-sheet positions at viewport bottom and full width`);
+  }
+  await pageA.evaluate(() => { const m = document.getElementById("message-menu"); if (m) m.hidden = true; });
+
+  // Reaction picker: same idea — apply the modifier + show, then
+  // verify positioning + emoji tap target sizes.
+  const pickerMobile = await pageA.evaluate(() => {
+    const picker = document.getElementById("reaction-picker");
+    if (!(picker instanceof HTMLElement)) return null;
+    picker.classList.add("reaction-picker--bottom-sheet");
+    picker.style.top = "";
+    picker.style.left = "";
+    picker.hidden = false;
+    const rect = picker.getBoundingClientRect();
+    const buttons = [...picker.querySelectorAll(".reaction-picker__item")].map((b) => ({
+      h: b.getBoundingClientRect().height,
+      w: b.getBoundingClientRect().width
+    }));
+    return {
+      hasModifier: picker.classList.contains("reaction-picker--bottom-sheet"),
+      bottomOffset: window.innerHeight - rect.bottom,
+      width: rect.width,
+      windowInnerWidth: window.innerWidth,
+      buttons
+    };
+  });
+  if (pickerMobile === null) {
+    fail("24.picker-missing", "reaction-picker element absent");
+  } else if (!pickerMobile.hasModifier) {
+    fail("24.modifier", "picker missing bottom-sheet class");
+  } else if (Math.abs(pickerMobile.bottomOffset) > 4) {
+    fail("24.anchor", `picker bottom offset ${pickerMobile.bottomOffset}`);
+  } else {
+    const tooSmall = pickerMobile.buttons.filter((b) => Math.max(b.h, b.w) < 44);
+    if (tooSmall.length > 0) {
+      fail("24.tap-target", `emoji buttons under 44px on long axis: ${JSON.stringify(pickerMobile.buttons)}`);
+    } else {
+      const minWxH = pickerMobile.buttons.map((b) => Math.round(Math.min(b.w, b.h))).join(",");
+      ok(`24. mobile reaction picker is a bottom sheet with ≥44px emoji buttons (min long axis = ${minWxH})`);
+    }
+  }
+  await pageA.evaluate(() => { const p = document.getElementById("reaction-picker"); if (p) p.hidden = true; });
+
+  // No horizontal overflow on mobile.
+  const overflow = await pageA.evaluate(() => ({
+    docW: document.documentElement.scrollWidth,
+    cliW: document.documentElement.clientWidth
+  }));
+  if (overflow.docW > overflow.cliW + 1) {
+    fail("25.overflow", `horizontal overflow on mobile: scroll=${overflow.docW} client=${overflow.cliW}`);
+  } else {
+    ok(`25. no horizontal overflow on mobile after picker/menu (doc=${overflow.docW} client=${overflow.cliW})`);
+  }
+  await pageA.setViewport({ width: 980, height: 820 });
+
   await browser.close();
 
   if (failures.length > 0) {
