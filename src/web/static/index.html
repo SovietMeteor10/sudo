@@ -155,6 +155,18 @@
     </header>
     <aside class="chat-popup__sidebar" id="chat-popup-sidebar" hidden aria-label="other conversations">
       <div class="chat-popup__sidebar-title">chats</div>
+      <div class="chat-popup__sidebar-search">
+        <label class="sr-only" for="chat-popup-sidebar-search">search chats</label>
+        <input
+          id="chat-popup-sidebar-search"
+          class="chat-popup__sidebar-input"
+          type="search"
+          placeholder="search chats..."
+          autocomplete="off"
+          spellcheck="false"
+          autocapitalize="none"
+        >
+      </div>
       <div class="chat-popup__sidebar-list" id="chat-popup-sidebar-list"></div>
     </aside>
     <div class="chat-popup__body" id="chat-popup-body" aria-live="polite"></div>

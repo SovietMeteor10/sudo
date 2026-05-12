@@ -251,6 +251,14 @@ export type ConversationSummary = {
   // tombstones never count. If no read_state row exists yet, every
   // incoming non-tombstone message in that conversation is unread.
   unreadCount: number;
+  // Direction of the latest non-tombstone message — drives the
+  // sidebar preview's tick when it's the user's own outgoing line.
+  lastDirection?: "sent" | "received";
+  // Receipt status of the latest *sent* message in the
+  // conversation. Mirrors the bubble-level ticks: sent / delivered
+  // / read. Absent when the latest line is incoming or when no
+  // sent message exists yet.
+  lastSentStatus?: "sent" | "delivered" | "read";
 };
 
 // Build a chat list keyed by conversation partner using only the signed-in
@@ -265,7 +273,21 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
     if (Number.isFinite(t)) lastReadByConversation.set(row.conversation_id, t);
   }
 
-  type Acc = { canonical: string; handle: string; lastLine: string; lastAt: string; fingerprint?: string; unreadCount: number };
+  type Acc = {
+    canonical: string;
+    handle: string;
+    lastLine: string;
+    lastAt: string;
+    fingerprint?: string;
+    unreadCount: number;
+    lastDirection?: "sent" | "received";
+    lastSentStatus?: "sent" | "delivered" | "read";
+    // Internal book-keeping for tracking the freshest sent-message
+    // status independently of "what's the latest line in the
+    // conversation" — a sent message's tick should keep tracking
+    // its receipts even after the peer sends a newer reply.
+    _latestSentAt?: string;
+  };
   const byPartner = new Map<string, Acc>();
 
   for (const message of messages) {
@@ -279,7 +301,10 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
       handle: existing?.handle ?? "(unknown)",
       lastLine: typeof message.deleted_at === "string" ? "message deleted" : previewLine(message.body),
       lastAt: message.updated_at || message.created_at,
-      unreadCount: existing?.unreadCount ?? 0
+      unreadCount: existing?.unreadCount ?? 0,
+      lastDirection: message.direction,
+      lastSentStatus: existing?.lastSentStatus,
+      _latestSentAt: existing?._latestSentAt
     };
     // Unread count: count incoming, non-tombstoned messages strictly
     // newer than last_read_at. We compute this per-message so the
@@ -292,12 +317,32 @@ export async function listConversations(ownerCanonicalId: string): Promise<Conve
         candidate.unreadCount = (existing?.unreadCount ?? 0) + 1;
       }
     }
+    // Track the freshest sent-message status separately from the
+    // "what was the latest line" check so the sidebar's tick stays
+    // attached to the user's own most-recent send regardless of
+    // whether the peer has replied since.
+    if (!isIncoming && typeof message.deleted_at !== "string") {
+      const sentAt = message.updated_at || message.created_at;
+      if (existing?._latestSentAt === undefined || existing._latestSentAt < sentAt) {
+        const status: "sent" | "delivered" | "read" =
+          typeof message.read_at === "string" ? "read"
+          : typeof message.delivered_at === "string" ? "delivered"
+          : "sent";
+        candidate.lastSentStatus = status;
+        candidate._latestSentAt = sentAt;
+      }
+    }
     if (existing === undefined || existing.lastAt < candidate.lastAt) {
       byPartner.set(partner, { ...existing, ...candidate, handle: existing?.handle ?? candidate.handle });
     } else if (candidate.unreadCount > (existing.unreadCount ?? 0)) {
       // We're not promoting the row (an older message), but we still
       // need to bump the unread count if this is an unread incoming.
       existing.unreadCount = candidate.unreadCount;
+    } else if (candidate.lastSentStatus !== undefined
+        && candidate._latestSentAt !== undefined
+        && (existing._latestSentAt === undefined || existing._latestSentAt < candidate._latestSentAt)) {
+      existing.lastSentStatus = candidate.lastSentStatus;
+      existing._latestSentAt = candidate._latestSentAt;
     }
   }
 

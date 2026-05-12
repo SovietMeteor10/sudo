@@ -449,4 +449,10 @@ export type ChatSummary = {
   // (e.g. caller didn't ask) and should be treated the same as 0
   // for rendering purposes.
   unreadCount?: number;
+  // Direction of the latest non-tombstone message in the
+  // conversation. Surfaces in the sidebar preview as a tick (sent
+  // → ✓ / delivered → ✓✓ / read → accent ✓✓) when the row is the
+  // user's own outgoing one, mirroring the bubble-level indicators.
+  lastDirection?: "sent" | "received";
+  lastSentStatus?: "sent" | "delivered" | "read";
 };

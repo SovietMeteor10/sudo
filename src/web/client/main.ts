@@ -233,6 +233,7 @@ const conversationSettingsSave = getRequiredButton("conversation-settings-save")
 const conversationSettingsCancel = getRequiredButton("conversation-settings-cancel");
 const chatPopupSidebar = getRequiredElement("chat-popup-sidebar");
 const chatPopupSidebarList = getRequiredElement("chat-popup-sidebar-list");
+const chatPopupSidebarSearch = getRequiredInput("chat-popup-sidebar-search");
 const forwardPickerDialog = getRequiredDialog("forward-picker-dialog");
 const forwardPickerPreview = getRequiredElement("forward-picker-preview");
 const forwardPickerList = getRequiredElement("forward-picker-list");
@@ -355,6 +356,12 @@ let chatTarget: { canonical: string; handle: string; fingerprint: string } | nul
 let chatFullscreen = false;
 let replyContext: { message_id: string; relay_message_id?: string; body: string; direction: "sent" | "received" } | null = null;
 let messageMenuTarget: { message_id: string; relay_message_id?: string; direction: "sent" | "received"; body: string; deleted: boolean } | null = null;
+// Sidebar search filter. Lives outside the render function so a
+// re-render (after refreshLocalChats, after switching the active
+// chat) preserves the user's typed query — the active chat is
+// always shown regardless of the filter to avoid stranding them
+// in a sidebar that no longer contains the row they're reading.
+let chatSidebarFilter = "";
 let brandFlickerTimeout: number | null = null;
 let brandFlickerTick: number | null = null;
 let brandFlickerActive = false;
@@ -1010,6 +1017,11 @@ forwardPickerCancel.addEventListener("click", () => {
   forwardPickerDialog.close();
 });
 
+chatPopupSidebarSearch.addEventListener("input", () => {
+  chatSidebarFilter = chatPopupSidebarSearch.value;
+  if (chatFullscreen && !chatPopupSidebar.hidden) renderChatPopupSidebar();
+});
+
 conversationSettingsSave.addEventListener("click", () => {
   void saveConversationSettings();
 });
@@ -1087,7 +1099,9 @@ async function refreshLocalChats(): Promise<void> {
       state: "draft" as const,
       lastLine: conversation.lastLine,
       fingerprint: conversation.fingerprint,
-      unreadCount: conversation.unreadCount
+      unreadCount: conversation.unreadCount,
+      lastDirection: conversation.lastDirection,
+      lastSentStatus: conversation.lastSentStatus
     }));
   } catch {
     localChats = [];
@@ -5512,35 +5526,99 @@ function setChatFullscreen(on: boolean): void {
 function renderChatPopupSidebar(): void {
   const owner = currentIdentityDocument?.canonical_id ?? null;
   const activeCanonical = chatTarget?.canonical ?? null;
-  const candidates = localChats.filter((chat) => owner === null || getChatCanonical(chat) !== owner);
+  // Drop self. The fullscreen sidebar is the list of *other*
+  // people the user has open conversations with.
+  const allChats = localChats.filter((chat) => owner === null || getChatCanonical(chat) !== owner);
+  const query = chatSidebarFilter.trim().toLowerCase();
+  // Filter rule: handle OR last-message preview contains the query.
+  // We always include the active chat regardless of filter — the
+  // user shouldn't lose visibility of the conversation they're
+  // currently reading just because their search excludes its row.
+  const matchesQuery = (chat: typeof allChats[number]): boolean => {
+    if (query.length === 0) return true;
+    const handle = (chat.handle ?? "").toLowerCase();
+    const preview = (chat.lastLine ?? "").toLowerCase();
+    return handle.includes(query) || preview.includes(query);
+  };
+  const filtered = allChats.filter((chat) => matchesQuery(chat) || getChatCanonical(chat) === activeCanonical);
+
   chatPopupSidebarList.replaceChildren();
-  if (candidates.length === 0) {
+  if (allChats.length === 0) {
     const empty = document.createElement("div");
     empty.className = "chat-popup__sidebar-empty";
-    empty.textContent = "no other chats";
+    empty.textContent = "no chats yet";
     chatPopupSidebarList.append(empty);
     return;
   }
-  for (const chat of candidates) {
-    const canonical = getChatCanonical(chat);
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "chat-popup__sidebar-row";
-    row.dataset["chatCanonical"] = canonical;
-    row.dataset["chatHandle"] = chat.handle ?? "";
-    if (canonical === activeCanonical) row.classList.add("is-active");
-    row.textContent = chat.handle || canonical;
-    row.addEventListener("click", () => {
-      if (canonical === activeCanonical) return;
-      // Switch the active conversation in place — preserve fullscreen.
-      void openChatPopup({
-        canonical,
-        handle: chat.handle ?? "",
-        fingerprint: chat.fingerprint ?? ""
-      });
-    });
-    chatPopupSidebarList.append(row);
+  if (filtered.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "chat-popup__sidebar-empty";
+    empty.textContent = "no matching chats";
+    chatPopupSidebarList.append(empty);
+    return;
   }
+  for (const chat of filtered) {
+    chatPopupSidebarList.append(renderChatPopupSidebarRow(chat, activeCanonical));
+  }
+}
+
+function renderChatPopupSidebarRow(
+  chat: typeof localChats[number],
+  activeCanonical: string | null
+): HTMLElement {
+  const canonical = getChatCanonical(chat);
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "chat-popup__sidebar-row";
+  row.dataset["chatCanonical"] = canonical;
+  row.dataset["chatHandle"] = chat.handle ?? "";
+  if (canonical === activeCanonical) row.classList.add("is-active");
+
+  const handle = document.createElement("div");
+  handle.className = "chat-popup__sidebar-row__handle";
+  handle.textContent = chat.handle || canonical;
+  row.append(handle);
+
+  const unread = typeof chat.unreadCount === "number" && chat.unreadCount > 0 ? chat.unreadCount : 0;
+  if (unread > 0) {
+    const badge = document.createElement("span");
+    badge.className = "chat-popup__sidebar-row__unread";
+    badge.dataset["unreadCount"] = String(unread);
+    badge.setAttribute("aria-label", `${unread} unread message${unread === 1 ? "" : "s"}`);
+    badge.textContent = unread > 99 ? "99+" : String(unread);
+    row.append(badge);
+  }
+
+  // Preview line — optional tick on sent rows + clipped last-line.
+  if ((chat.lastLine && chat.lastLine.length > 0) || chat.lastSentStatus !== undefined) {
+    const preview = document.createElement("div");
+    preview.className = "chat-popup__sidebar-row__preview";
+    if (chat.lastDirection === "sent" && typeof chat.lastSentStatus === "string") {
+      const tick = document.createElement("span");
+      tick.className = `chat-popup__sidebar-row__preview-tick chat-popup__sidebar-row__preview-tick--${chat.lastSentStatus}`;
+      tick.textContent = chat.lastSentStatus === "sent" ? "✓" : "✓✓";
+      tick.setAttribute("aria-label", chat.lastSentStatus);
+      tick.setAttribute("title", chat.lastSentStatus);
+      tick.dataset["messageStatus"] = chat.lastSentStatus;
+      preview.append(tick);
+    }
+    const text = document.createElement("span");
+    text.className = "chat-popup__sidebar-row__preview-text";
+    text.textContent = chat.lastLine ?? "";
+    preview.append(text);
+    row.append(preview);
+  }
+
+  row.addEventListener("click", () => {
+    if (canonical === activeCanonical) return;
+    // Switch the active conversation in place — preserve fullscreen.
+    void openChatPopup({
+      canonical,
+      handle: chat.handle ?? "",
+      fingerprint: chat.fingerprint ?? ""
+    });
+  });
+  return row;
 }
 
 async function markConversationRead(partnerCanonicalId: string): Promise<void> {
@@ -5615,6 +5693,10 @@ function closeChatPopup(): void {
   chatTarget = null;
   clearReplyContext();
   closeMessageMenu();
+  // Reset the sidebar's typed filter so the next session starts
+  // unfiltered. The user can re-type whatever they need.
+  chatSidebarFilter = "";
+  chatPopupSidebarSearch.value = "";
   for (const row of chatsRoot.querySelectorAll<HTMLElement>(".is-selected")) {
     row.classList.remove("is-selected");
   }

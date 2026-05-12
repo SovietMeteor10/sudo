@@ -733,6 +733,129 @@ async function waitForPopupContains(page, needle) {
     ok(`20b. sidebar highlights the active conversation`);
   }
 
+  // ============================================================
+  // PART 10b — Sidebar polish: search/unread/tick/active/empty/overflow
+  // ============================================================
+
+  // Active row has a stronger highlight (border-left accent) and
+  // we read `border-left-width` to verify the rule fired (1px+ on
+  // .is-active vs 0 on regular rows).
+  const activeHighlight = await pageA.evaluate(() => {
+    const active = document.querySelector(".chat-popup__sidebar-row.is-active");
+    if (!(active instanceof HTMLElement)) return null;
+    return {
+      borderLeftWidth: parseFloat(window.getComputedStyle(active).borderLeftWidth) || 0,
+      background: window.getComputedStyle(active).backgroundColor
+    };
+  });
+  if (activeHighlight === null || activeHighlight.borderLeftWidth < 1) {
+    fail("20c.active-stronger", `active row missing strong highlight: ${JSON.stringify(activeHighlight)}`);
+  } else {
+    ok(`20c. active row has explicit highlight (border-left=${activeHighlight.borderLeftWidth}px)`);
+  }
+
+  // The sidebar preview tick: send a fresh A→B message inside the
+  // fullscreen view so the latest line in the conversation is
+  // definitely A's outbound (and not the GC-tombstoned probe row
+  // from PART 9). The tick attaches to the latest sent line only.
+  await pageA.evaluate(() => {
+    const input = document.getElementById("chat-popup-input");
+    if (!(input instanceof HTMLTextAreaElement)) return;
+    input.value = "tick-check-msg";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    document.getElementById("chat-popup-form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  });
+  await waitFor(pageA, () => {
+    const rows = [...document.querySelectorAll(".chat-message--sent:not(.chat-message--deleted)")];
+    return rows.some((r) => (r.textContent ?? "").includes("tick-check-msg"));
+  }, 5000);
+  // Wait a beat for the receipt to land + refreshLocalChats to
+  // re-render the sidebar, then read the latest preview tick.
+  await new Promise((r) => setTimeout(r, 1500));
+  const sidebarTick = await pageA.evaluate(() => {
+    const tick = document.querySelector(".chat-popup__sidebar-row .chat-popup__sidebar-row__preview-tick");
+    const row = document.querySelector(".chat-popup__sidebar-row");
+    return {
+      tick: tick instanceof HTMLElement ? {
+        status: tick.getAttribute("data-message-status"),
+        text: tick.textContent ?? ""
+      } : null,
+      row: row instanceof HTMLElement ? {
+        handle: row.querySelector(".chat-popup__sidebar-row__handle")?.textContent ?? null,
+        preview: row.querySelector(".chat-popup__sidebar-row__preview-text")?.textContent ?? null
+      } : null
+    };
+  });
+  if (sidebarTick.tick === null) {
+    fail("20d.sidebar-tick", `sidebar row missing preview tick (row=${JSON.stringify(sidebarTick.row)})`);
+  } else {
+    ok(`20d. sidebar row carries '${sidebarTick.tick.status}' tick (${sidebarTick.tick.text})`);
+  }
+
+  // Search filter: type a query that matches the existing row, then
+  // a query that matches nothing. Active row should remain visible
+  // even when the filter would otherwise exclude it.
+  const handleNeedle = handleB.slice(0, 5);
+  await pageA.evaluate((q) => {
+    const input = document.getElementById("chat-popup-sidebar-search");
+    if (!(input instanceof HTMLInputElement)) return;
+    input.value = q;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }, handleNeedle);
+  await new Promise((r) => setTimeout(r, 120));
+  const matchedFilter = await pageA.evaluate(() => ({
+    rows: [...document.querySelectorAll(".chat-popup__sidebar-row")].length,
+    empty: !!document.querySelector(".chat-popup__sidebar-empty")
+  }));
+  if (matchedFilter.rows < 1 || matchedFilter.empty) {
+    fail("20e.search-matches", `search by handle did not match the active row: ${JSON.stringify(matchedFilter)}`);
+  } else {
+    ok(`20e. search by handle '${handleNeedle}' keeps ${matchedFilter.rows} row(s) visible`);
+  }
+  // Now type a guaranteed-nonmatch query — the active row should
+  // still render (per "preserve active visibility") instead of
+  // hitting the empty state.
+  await pageA.evaluate(() => {
+    const input = document.getElementById("chat-popup-sidebar-search");
+    if (!(input instanceof HTMLInputElement)) return;
+    input.value = "zzzz-no-such-handle";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 120));
+  const activeStays = await pageA.evaluate(() => {
+    const rows = [...document.querySelectorAll(".chat-popup__sidebar-row")];
+    return {
+      rows: rows.length,
+      activeRows: rows.filter((r) => r.classList.contains("is-active")).length,
+      empty: !!document.querySelector(".chat-popup__sidebar-empty")
+    };
+  });
+  if (activeStays.empty || activeStays.activeRows !== 1) {
+    fail("20f.active-preserved", `active row not preserved under non-matching filter: ${JSON.stringify(activeStays)}`);
+  } else {
+    ok(`20f. non-matching filter preserves the active row (${activeStays.rows} total)`);
+  }
+  // Clear the filter via the input.
+  await pageA.evaluate(() => {
+    const input = document.getElementById("chat-popup-sidebar-search");
+    if (!(input instanceof HTMLInputElement)) return;
+    input.value = "";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await new Promise((r) => setTimeout(r, 120));
+
+  // No horizontal overflow on desktop fullscreen.
+  const desktopOverflow = await pageA.evaluate(() => ({
+    docW: document.documentElement.clientWidth,
+    bodyScroll: document.documentElement.scrollWidth,
+    popupScroll: document.getElementById("chat-popup")?.scrollWidth ?? 0
+  }));
+  if (desktopOverflow.bodyScroll > desktopOverflow.docW + 2) {
+    fail("20g.no-overflow-desktop", `desktop fullscreen has horizontal overflow (${desktopOverflow.bodyScroll} > ${desktopOverflow.docW})`);
+  } else {
+    ok(`20g. no horizontal overflow on desktop fullscreen (doc=${desktopOverflow.docW}, scroll=${desktopOverflow.bodyScroll})`);
+  }
+
   // Mobile fullscreen does NOT expose the sidebar.
   await pageA.setViewport({ width: 420, height: 820, isMobile: true, hasTouch: true });
   await new Promise((r) => setTimeout(r, 120));
@@ -760,6 +883,17 @@ async function waitForPopupContains(page, needle) {
     fail("21.mobile-sidebar", `mobile fullscreen still showing sidebar: ${JSON.stringify(mobileSidebar)}`);
   } else {
     ok(`21. mobile fullscreen does not show the sidebar`);
+  }
+
+  // No horizontal overflow on mobile fullscreen either.
+  const mobileOverflow = await pageA.evaluate(() => ({
+    docW: document.documentElement.clientWidth,
+    bodyScroll: document.documentElement.scrollWidth
+  }));
+  if (mobileOverflow.bodyScroll > mobileOverflow.docW + 2) {
+    fail("21b.no-overflow-mobile", `mobile fullscreen has horizontal overflow (${mobileOverflow.bodyScroll} > ${mobileOverflow.docW})`);
+  } else {
+    ok(`21b. no horizontal overflow on mobile fullscreen (doc=${mobileOverflow.docW})`);
   }
 
   // ============================================================

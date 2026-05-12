@@ -2029,13 +2029,46 @@ body[data-auth-state="auth-restore"] .landing {
   border-bottom: 1px solid var(--line-soft);
 }
 
+.chat-popup__sidebar-search {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.chat-popup__sidebar-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+}
+
+.chat-popup__sidebar-input:focus {
+  border-color: var(--focus);
+}
+
+.chat-popup__sidebar-input::placeholder {
+  color: var(--dim);
+}
+
 .chat-popup__sidebar-list {
   flex: 1 1 auto;
   overflow-y: auto;
 }
 
+/* Sidebar row layout: handle on top, optional preview underneath,
+   unread badge anchored top-right. The row is a regular flex
+   column so the preview can flow to a second line; max-width
+   ellipsis handles overflow on either line. */
 .chat-popup__sidebar-row {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 6px;
+  row-gap: 0;
   width: 100%;
   background: transparent;
   border: 0;
@@ -2045,9 +2078,6 @@ body[data-auth-state="auth-restore"] .landing {
   cursor: pointer;
   font-size: 13px;
   border-bottom: 1px solid var(--line-soft);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .chat-popup__sidebar-row:hover,
@@ -2057,8 +2087,62 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 .chat-popup__sidebar-row.is-active {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.10);
+  border-left: 2px solid var(--focus);
+  padding-left: 10px;
+}
+
+.chat-popup__sidebar-row__handle {
+  grid-column: 1;
+  grid-row: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-popup__sidebar-row__unread {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  background: var(--focus);
+  color: var(--bg);
+  border-radius: 9px;
+}
+
+.chat-popup__sidebar-row__preview {
+  grid-column: 1;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+}
+
+.chat-popup__sidebar-row__preview-tick {
+  flex-shrink: 0;
+  letter-spacing: -0.5px;
+}
+
+.chat-popup__sidebar-row__preview-tick--sent { color: var(--dim); }
+.chat-popup__sidebar-row__preview-tick--delivered { color: var(--muted); }
+.chat-popup__sidebar-row__preview-tick--read { color: var(--focus); }
+
+.chat-popup__sidebar-row__preview-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .chat-popup__sidebar-empty {
