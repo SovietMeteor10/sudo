@@ -76,11 +76,28 @@ const TABLES_TO_WIPE = [
   "media_blobs"
 ];
 
+// One persistent readline interface. Creating a new rl per
+// question (the prior shape) hangs when stdin is piped: the first
+// rl closes stdin, the second rl opens stdin again and gets EOF
+// without ever firing question()'s callback. Sharing one rl keeps
+// stdin open for the entire confirmation flow.
+let sharedReadline = null;
+function rl() {
+  if (sharedReadline === null) {
+    sharedReadline = readline.createInterface({ input: process.stdin, output: process.stdout });
+  }
+  return sharedReadline;
+}
 function ask(question) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(question, (answer) => { rl.close(); resolve(answer); });
+    rl().question(question, (answer) => resolve(answer));
   });
+}
+function closeReadline() {
+  if (sharedReadline !== null) {
+    sharedReadline.close();
+    sharedReadline = null;
+  }
 }
 
 function log(line) { console.log(line); }
@@ -89,7 +106,13 @@ function err(line) { console.error(line); }
 
 async function confirmInteractive() {
   if (autoYes) {
-    if (process.env.SUDO_NODE_ENV === "production" && !forceFlag) {
+    // Production safety: refuse --yes when NODE_ENV=production
+    // unless the operator opts in with --i-know-what-im-doing.
+    // (Earlier versions checked SUDO_NODE_ENV — the actual env var
+    // set by the production systemd unit is NODE_ENV, so the check
+    // was a no-op against real prod. We now check both.)
+    const isProd = process.env.NODE_ENV === "production" || process.env.SUDO_NODE_ENV === "production";
+    if (isProd && !forceFlag) {
       err("refusing to use --yes against a production server without --i-know-what-im-doing");
       process.exit(2);
     }
@@ -245,22 +268,43 @@ async function run() {
   }
 
   // === Wipe SQLite ===
+  //
+  // FK awareness: identities has child rows in dev_sessions +
+  // identity_challenges. A single-pass DELETE inside one
+  // transaction fails on identities because the children still
+  // exist at the moment that statement runs. We do multiple
+  // passes: each pass retries any table that failed last time.
+  // Converges in two passes for the current schema.
   if (!dryRun) {
-    const tx = db.transaction(() => {
-      for (const t of TABLES_TO_WIPE) {
+    let remaining = [...TABLES_TO_WIPE];
+    let pass = 0;
+    while (remaining.length > 0 && pass < 5) {
+      pass++;
+      const stillFailing = [];
+      // Independent transactions per table so one FK failure
+      // doesn't roll back the rest of the pass.
+      for (const t of remaining) {
         try {
           db.prepare(`DELETE FROM ${t}`).run();
         } catch (e) {
-          warn(`could not wipe ${t}: ${e.message}`);
+          if (e.message.includes("FOREIGN KEY")) {
+            stillFailing.push(t);
+          } else {
+            warn(`could not wipe ${t}: ${e.message}`);
+          }
         }
       }
-    });
-    tx();
-    // Reclaim disk + force a fresh write-ahead checkpoint so nothing
-    // from the old generation survives in WAL pages.
+      if (stillFailing.length === 0) break;
+      if (stillFailing.length === remaining.length) {
+        // No progress — break to avoid infinite loop.
+        for (const t of stillFailing) warn(`could not wipe ${t}: FK constraint never satisfied`);
+        break;
+      }
+      remaining = stillFailing;
+    }
     try { db.pragma("wal_checkpoint(TRUNCATE)"); } catch { /* ignore */ }
     try { db.exec("VACUUM"); } catch { /* ignore */ }
-    log(`✓ wiped ${TABLES_TO_WIPE.length} table(s); VACUUM completed`);
+    log(`✓ wiped ${TABLES_TO_WIPE.length} table(s) in ${pass} pass(es); VACUUM completed`);
   } else {
     log(`· (dry-run) would wipe ${TABLES_TO_WIPE.length} tables`);
   }
@@ -313,10 +357,13 @@ async function run() {
   log("================================================================");
 }
 
-run().catch((e) => {
-  err(`fatal: ${e instanceof Error ? e.message : e}`);
-  if (fs.existsSync(MAINTENANCE_FLAG)) {
-    warn(`maintenance flag still present at ${MAINTENANCE_FLAG} — remove it manually before resuming service.`);
-  }
-  process.exit(1);
-});
+run()
+  .then(() => closeReadline())
+  .catch((e) => {
+    err(`fatal: ${e instanceof Error ? e.message : e}`);
+    if (fs.existsSync(MAINTENANCE_FLAG)) {
+      warn(`maintenance flag still present at ${MAINTENANCE_FLAG} — remove it manually before resuming service.`);
+    }
+    closeReadline();
+    process.exit(1);
+  });
