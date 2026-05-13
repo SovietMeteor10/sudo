@@ -215,6 +215,9 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
     <h1>dev diagnostics</h1>
     <p class="signup-dialog__hint">read-only mirror of this browser's local sudo state. development build only — this page is 404 in production.</p>
     <div class="diag-row"><div class="diag-row__label">online</div><div class="diag-row__value" id="diag-online">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">transport origin</div><div class="diag-row__value" id="diag-origin">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">onion detected</div><div class="diag-row__value" id="diag-onion">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">PWA standalone</div><div class="diag-row__value" id="diag-standalone">…</div></div>
     <div class="diag-row"><div class="diag-row__label">queue depth (pending_outbound)</div><div class="diag-row__value" id="diag-queue-depth">…</div></div>
     <div class="diag-row"><div class="diag-row__label">deferred decrypt depth (pending_decrypt)</div><div class="diag-row__value" id="diag-decrypt-depth">…</div></div>
     <div class="diag-row"><div class="diag-row__label">queue retry attempts (max)</div><div class="diag-row__value" id="diag-retry-max">…</div></div>
@@ -251,6 +254,13 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
     }
     async function load() {
       document.getElementById("diag-online").textContent = navigator.onLine ? "yes" : "no";
+      // Phase 12.1: transport diagnostics.
+      const origin = window.location.origin;
+      const isOnion = window.location.hostname.toLowerCase().endsWith(".onion");
+      document.getElementById("diag-origin").textContent = origin;
+      document.getElementById("diag-onion").textContent = isOnion ? "yes (.onion)" : "no";
+      const standalone = window.matchMedia && window.matchMedia("(display-mode: standalone)").matches;
+      document.getElementById("diag-standalone").textContent = standalone ? "yes (installed)" : "no (in browser tab)";
       // Try to read owner canonical from cookie / fallback to first crypto_account.
       let owner = "";
       try {

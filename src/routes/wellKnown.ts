@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { generateIdentityGrid } from "../crypto/index.js";
 import { getIdentityByHandle, normalizeHandle } from "../identity/registry.js";
-import { getNodeCapabilityDocument } from "../node/node.service.js";
+import { getNodeCapabilityDocumentForOrigin } from "../node/node.service.js";
 
 export const wellKnownRouter = Router();
 
@@ -30,6 +30,11 @@ wellKnownRouter.get("/.well-known/handles/:handle", (request, response) => {
   });
 });
 
-wellKnownRouter.get("/.well-known/sudo/node.json", (_request, response) => {
-  response.json(getNodeCapabilityDocument());
+wellKnownRouter.get("/.well-known/sudo/node.json", (request, response) => {
+  // Phase 12.1: serve an origin-aware capability doc. Onion requests
+  // get an onion-only relay list so the client never learns about a
+  // clearnet alternative. Clearnet requests get everything (so a
+  // Tor-using visitor can discover the .onion address).
+  const host = typeof request.hostname === "string" ? request.hostname : null;
+  response.json(getNodeCapabilityDocumentForOrigin(host));
 });
