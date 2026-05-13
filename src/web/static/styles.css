@@ -551,6 +551,17 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
+/* Phase 12.2: subtle "connected over Tor" indicator. Only visible
+   when the page is actually loaded on a .onion hostname. Sits in
+   the account-menu header so it's discoverable but never noisy. */
+.account-menu__transport {
+  margin-top: 4px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: #6db872;
+}
+.account-menu__transport[hidden] { display: none; }
+
 /* Inline passphrase prompt shown inside the linked-devices dialog
    when the user is signed in (identity restored) but the in-memory
    crypto account is locked — typically after a page reload. */

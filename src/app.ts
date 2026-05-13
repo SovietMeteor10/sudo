@@ -33,11 +33,33 @@ export function createApp() {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
     response.setHeader("X-Frame-Options", "DENY");
-    // Camera is allowed on this origin (camera=(self)) so the
-    // collect-account dialog can scan QR codes via BarcodeDetector +
-    // getUserMedia. Geolocation and microphone are still fully
-    // disabled — nothing in sudo needs them.
-    response.setHeader("Permissions-Policy", "geolocation=(), microphone=(), camera=(self)");
+    // Phase 12.2 — explicit deny list for every Permissions-Policy
+    // feature sudo doesn't use. Camera is allowed on this origin
+    // (for the collect-account QR scanner via BarcodeDetector +
+    // getUserMedia). Everything else is denied so a future bug or
+    // a malicious script via a hypothetical CSP bypass can't reach
+    // sensors / payment / USB / Bluetooth / the tracking-cohort APIs.
+    response.setHeader("Permissions-Policy", [
+      "geolocation=()",
+      "microphone=()",
+      "camera=(self)",
+      "payment=()",
+      "usb=()",
+      "bluetooth=()",
+      "magnetometer=()",
+      "gyroscope=()",
+      "accelerometer=()",
+      "display-capture=()",
+      "fullscreen=(self)",
+      "interest-cohort=()",
+      "browsing-topics=()"
+    ].join(", "));
+    // Phase 12.2 — cross-origin isolation. Sets up the page as
+    // origin-isolated so a malicious cross-origin window can't
+    // share the same process or read window.opener back. Safe to
+    // apply on both clearnet and .onion; Tor browsers honor it.
+    response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+    response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     response.setHeader("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
     response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
     next();

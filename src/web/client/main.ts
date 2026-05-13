@@ -242,6 +242,7 @@ const accountButtonHandle = getRequiredElement("account-button-handle");
 const accountMenu = getRequiredElement("account-menu");
 const accountMenuHandle = getRequiredElement("account-menu-handle");
 const accountMenuRecovery = getRequiredElement("account-menu-recovery");
+const accountMenuTransport = getRequiredElement("account-menu-transport");
 // recovery reminder banner removed in the new-device-link UX pass —
 // it was the yellow strip the user objected to. See the no-op
 // stubs further down.
@@ -5216,6 +5217,24 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
   await refreshLocalStorageStatus();
   flashFeedback("device reset");
 }
+
+// Phase 12.2: subtle "via Tor" indicator. Only shown when the page
+// is actually loaded on a .onion hostname — no fake reassurance on
+// clearnet, no noisy popup. Lives in the account-menu header so the
+// user sees it only when they open the dropdown.
+function refreshTransportIndicator(): void {
+  try {
+    const isOnion = window.location.hostname.toLowerCase().endsWith(".onion");
+    if (isOnion) {
+      accountMenuTransport.hidden = false;
+      accountMenuTransport.textContent = "connected over Tor";
+    } else {
+      accountMenuTransport.hidden = true;
+      accountMenuTransport.textContent = "";
+    }
+  } catch { /* ignore */ }
+}
+refreshTransportIndicator();
 
 function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): void {
   currentIdentityDocument = identity;

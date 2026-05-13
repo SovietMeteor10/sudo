@@ -68,6 +68,7 @@
     "smoke:onion-origin-generation": "node scripts/onion-origin-generation-smoke.cjs",
     "smoke:onion-origin-isolation": "node scripts/onion-origin-isolation-smoke.cjs",
     "smoke:onion-csp": "node scripts/onion-csp-smoke.cjs",
+    "smoke:onion-no-clearnet-leak": "node scripts/onion-no-clearnet-leak-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",
