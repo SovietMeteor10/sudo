@@ -130,12 +130,19 @@ async function openChat(page, target) {
 
     // 3. B's typing line appears within ~2-3s (B's poll interval).
     if (!await waitFor(pageB, () => {
-      const el = document.getElementById("chat-popup-typing");
-      if (!(el instanceof HTMLElement)) return false;
-      return !el.hidden && /typing/i.test(el.textContent ?? "");
+      // Phase 13.1: typing now lives in the chat header
+      // (chat-popup-header-typing) rather than a separate
+      // chat-popup-typing row. Keep checking the legacy element
+      // too for backwards compat — either visible signal counts.
+      const header = document.getElementById("chat-popup-header-typing");
+      const legacy = document.getElementById("chat-popup-typing");
+      const headerActive = header instanceof HTMLElement && !header.hidden && /typing/i.test(header.textContent ?? "");
+      const legacyActive = legacy instanceof HTMLElement && !legacy.hidden && /typing/i.test(legacy.textContent ?? "");
+      return headerActive || legacyActive;
     }, 8000)) {
       const peek = await pageB.evaluate(() => {
-        const el = document.getElementById("chat-popup-typing");
+        const el = document.getElementById("chat-popup-header-typing")
+          ?? document.getElementById("chat-popup-typing");
         return { hidden: el ? el.hidden : null, text: el ? el.textContent : null };
       });
       fail("3.typing-render", `B did not render typing line: ${JSON.stringify(peek)}`);
@@ -237,8 +244,11 @@ async function openChat(page, target) {
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 1000));
       const active = await pageB.evaluate(() => {
-        const el = document.getElementById("chat-popup-typing");
-        return el instanceof HTMLElement && !el.hidden && /typing/i.test(el.textContent ?? "");
+        const header = document.getElementById("chat-popup-header-typing");
+        const legacy = document.getElementById("chat-popup-typing");
+        const headerActive = header instanceof HTMLElement && !header.hidden && /typing/i.test(header.textContent ?? "");
+        const legacyActive = legacy instanceof HTMLElement && !legacy.hidden && /typing/i.test(legacy.textContent ?? "");
+        return headerActive || legacyActive;
       });
       if (active) typingObservedActive++; else typingObservedHidden++;
     }

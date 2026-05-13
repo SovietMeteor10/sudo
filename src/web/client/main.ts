@@ -295,6 +295,7 @@ const messageMenu = getRequiredElement("message-menu");
 const messageMenuReply = getRequiredButton("message-menu-reply");
 const messageMenuForward = getRequiredButton("message-menu-forward");
 const messageMenuReact = getRequiredButton("message-menu-react");
+const messageMenuResend = getRequiredButton("message-menu-resend");
 const messageMenuDelete = getRequiredButton("message-menu-delete");
 const reactionPicker = getRequiredElement("reaction-picker");
 const conversationSettingsDialog = getRequiredDialog("conversation-settings-dialog");
@@ -351,6 +352,7 @@ const devicePassphraseHint = getRequiredElement("device-passphrase-prompt-hint")
 const devicePassphraseInput = getRequiredInput("device-passphrase-input");
 const devicePassphraseFeedback = getRequiredElement("device-passphrase-prompt-feedback");
 const chatPopupTyping = getRequiredElement("chat-popup-typing");
+const chatPopupHeaderTyping = getRequiredElement("chat-popup-header-typing");
 const chatPopupAttach = getRequiredButton("chat-popup-attach");
 const chatPopupAttachmentInput = getRequiredInput("chat-popup-attachment-input");
 const chatPopupAttachmentStatus = getRequiredElement("chat-popup-attachment-status");
@@ -439,7 +441,7 @@ let chatTarget: { canonical: string; handle: string; fingerprint: string } | nul
 // close it cleanly.
 let chatFullscreen = false;
 let replyContext: { message_id: string; relay_message_id?: string; body: string; direction: "sent" | "received" } | null = null;
-let messageMenuTarget: { message_id: string; relay_message_id?: string; direction: "sent" | "received"; body: string; deleted: boolean } | null = null;
+let messageMenuTarget: { message_id: string; relay_message_id?: string; direction: "sent" | "received"; body: string; deleted: boolean; failed: boolean } | null = null;
 // Sidebar search filter. Lives outside the render function so a
 // re-render (after refreshLocalChats, after switching the active
 // chat) preserves the user's typed query — the active chat is
@@ -651,6 +653,34 @@ const handleFeedClick = (event: Event): void => {
   if (submit !== null && article !== null) {
     const replyTarget = submit.dataset["replyTarget"] ?? postId;
     void handleReplySubmit(postId, replyTarget, submit, article);
+    return;
+  }
+
+  // Phase 13.1: delete-own-post action. Two-step confirm: first
+  // click sets data-pending="1" + relabels to "delete?"; a second
+  // click within 3s fires the DELETE. Any other click clears
+  // pending state.
+  const deleteButton = target.closest<HTMLButtonElement>(".stream-post__action--delete");
+  if (deleteButton !== null) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (deleteButton.dataset["pending"] === "1") {
+      // Commit.
+      void handleDeleteOwnPost(postId, deleteButton);
+    } else {
+      // Arm.
+      deleteButton.dataset["pending"] = "1";
+      const originalText = deleteButton.textContent ?? "delete";
+      deleteButton.textContent = "delete?";
+      deleteButton.classList.add("stream-post__action--delete-armed");
+      window.setTimeout(() => {
+        if (deleteButton.dataset["pending"] === "1") {
+          delete deleteButton.dataset["pending"];
+          deleteButton.textContent = originalText;
+          deleteButton.classList.remove("stream-post__action--delete-armed");
+        }
+      }, 3000);
+    }
     return;
   }
 
@@ -1223,6 +1253,18 @@ messageMenuDelete.addEventListener("click", () => {
   closeMessageMenu();
   if (target === null || target.direction !== "sent" || target.deleted) return;
   void handleChatMessageDelete(target.message_id);
+});
+
+// Phase 13.1: kebab → resend. Calls the same retryFailedOutbound
+// helper that the inline recovery button uses. Reusing the local
+// row (no new local_id minted) means the optimistic bubble stays
+// in place; the row's status just transitions back through
+// queued → retrying → sent without a duplicate bubble appearing.
+messageMenuResend.addEventListener("click", () => {
+  const target = messageMenuTarget;
+  closeMessageMenu();
+  if (target === null || target.direction !== "sent") return;
+  void handleRetryFailedSend(target.message_id);
 });
 
 messageMenuReact.addEventListener("click", () => {
@@ -4529,6 +4571,47 @@ async function handleVoteCycle(postId: string, currentState: string): Promise<vo
   await refreshFeedPosts();
 }
 
+// Phase 13.1: delete one of the viewer's own feed posts. The
+// button click handler arms the two-step confirm; this fires on
+// commit. Uses the new DELETE /api/feeds/posts/:postId endpoint
+// with requester_canonical_id in the body so the server checks
+// ownership.
+async function handleDeleteOwnPost(postId: string, button: HTMLButtonElement): Promise<void> {
+  if (currentIdentityDocument === null) {
+    flashFeedback("sign in to delete");
+    return;
+  }
+  button.disabled = true;
+  try {
+    const r = await fetch(`/api/feeds/posts/${encodeURIComponent(postId)}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ requester_canonical_id: currentIdentityDocument.canonical_id })
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      flashFeedback(body?.error === "post_not_found" ? "post already gone" : "couldn't delete");
+      button.disabled = false;
+      delete button.dataset["pending"];
+      button.textContent = "delete";
+      button.classList.remove("stream-post__action--delete-armed");
+      return;
+    }
+    // Optimistic local removal — the next feed poll will confirm.
+    const article = button.closest<HTMLElement>(".stream-post");
+    if (article !== null) article.remove();
+    flashFeedback("post deleted");
+    // Force a feed refresh so server-side state syncs back.
+    void refreshFeedPosts();
+  } catch (error) {
+    flashFeedback("couldn't delete");
+    button.disabled = false;
+    delete button.dataset["pending"];
+    button.textContent = "delete";
+    button.classList.remove("stream-post__action--delete-armed");
+  }
+}
+
 async function handleRepost(postId: string): Promise<void> {
   if (currentIdentityDocument === null) {
     flashFeedback("sign in to repost");
@@ -5295,20 +5378,25 @@ async function clearLocalStateWithConfirmation(): Promise<void> {
   flashFeedback("device reset");
 }
 
-// Phase 12.2: subtle "via Tor" indicator. Only shown when the page
-// is actually loaded on a .onion hostname — no fake reassurance on
-// clearnet, no noisy popup. Lives in the account-menu header so the
-// user sees it only when they open the dropdown.
+// Phase 12.2 + 13.1: transport line in the account-menu dropdown.
+// The wording is honest about what we can and can't prove:
+//   - .onion host  → "connected over onion" (the address itself
+//                    authenticates the endpoint; transport is Tor
+//                    by construction).
+//   - clearnet host → "connected over clearnet" (we cannot prove
+//                    the user's traffic is going through Tor; the
+//                    browser/network controls that. Saying "via
+//                    Tor" here would overclaim).
+// Always visible — the user can verify at a glance.
 function refreshTransportIndicator(): void {
   try {
     const isOnion = window.location.hostname.toLowerCase().endsWith(".onion");
-    if (isOnion) {
-      accountMenuTransport.hidden = false;
-      accountMenuTransport.textContent = "connected over Tor";
-    } else {
-      accountMenuTransport.hidden = true;
-      accountMenuTransport.textContent = "";
-    }
+    accountMenuTransport.hidden = false;
+    accountMenuTransport.textContent = isOnion
+      ? "connected over onion"
+      : "connected over clearnet";
+    accountMenuTransport.classList.toggle("account-menu__transport--onion", isOnion);
+    accountMenuTransport.classList.toggle("account-menu__transport--clearnet", !isOnion);
   } catch { /* ignore */ }
 }
 refreshTransportIndicator();
@@ -6315,14 +6403,22 @@ async function openChatPopup(target: ChatTarget): Promise<void> {
       ownCanonicalId: currentIdentityDocument.canonical_id,
       peerCanonicalId: target.canonical,
       peerHandle: target.handle || target.canonical,
-      render: (active, handle) => {
+      render: (active, _handle) => {
+        // Phase 13.1: typing now lives in the chat header (inline
+        // next to the handle) + on the sidebar row, not as a
+        // separate message-list row. The legacy chat-popup-typing
+        // bar stays hidden to preserve the live-aria-region for
+        // a11y assistive tech.
+        chatPopupTyping.textContent = "";
+        chatPopupTyping.hidden = true;
         if (active) {
-          chatPopupTyping.textContent = `${handle ?? "someone"} is typing…`;
-          chatPopupTyping.hidden = false;
+          chatPopupHeaderTyping.hidden = false;
         } else {
-          chatPopupTyping.textContent = "";
-          chatPopupTyping.hidden = true;
+          chatPopupHeaderTyping.hidden = true;
         }
+        // Also flip the sidebar row's typing flag so the
+        // conversation list shows the state.
+        renderSidebarTypingFor(target.canonical, active);
       }
     });
   }
@@ -6432,6 +6528,36 @@ function renderChatPopupSidebar(): void {
   }
 }
 
+// Phase 13.1: per-conversation typing flag, populated by the
+// receive-typing loop and read by the sidebar row render. Cleared
+// when the typing indicator stops or the chat closes. Lives in
+// module scope so a re-render of the sidebar list preserves the
+// in-flight state.
+const sidebarTypingByCanonical = new Map<string, boolean>();
+function renderSidebarTypingFor(canonicalId: string, active: boolean): void {
+  const previousLast = sidebarTypingByCanonical.get(canonicalId);
+  if (active) sidebarTypingByCanonical.set(canonicalId, true);
+  else sidebarTypingByCanonical.delete(canonicalId);
+  // Surgically update the matching sidebar row if present rather
+  // than re-rendering the entire list (which would yank scroll +
+  // focus on a fast-typing peer).
+  const row = chatPopupSidebarList.querySelector<HTMLElement>(`.chat-popup__sidebar-row[data-chat-canonical="${cssEscape(canonicalId)}"]`);
+  if (row === null) return;
+  row.classList.toggle("is-typing", active);
+  // Swap the preview text to "typing…" when active. We stash the
+  // pre-typing preview on the element so we can restore it when
+  // typing ends, rather than triggering a full chat-list refresh.
+  const previewText = row.querySelector<HTMLElement>(".chat-popup__sidebar-row__preview-text");
+  if (previewText === null) return;
+  if (active) {
+    if (previousLast !== true) previewText.dataset["typingPrev"] = previewText.textContent ?? "";
+    previewText.textContent = "typing…";
+  } else if (typeof previewText.dataset["typingPrev"] === "string") {
+    previewText.textContent = previewText.dataset["typingPrev"];
+    delete previewText.dataset["typingPrev"];
+  }
+}
+
 function renderChatPopupSidebarRow(
   chat: typeof localChats[number],
   activeCanonical: string | null
@@ -6443,6 +6569,7 @@ function renderChatPopupSidebarRow(
   row.dataset["chatCanonical"] = canonical;
   row.dataset["chatHandle"] = chat.handle ?? "";
   if (canonical === activeCanonical) row.classList.add("is-active");
+  if (sidebarTypingByCanonical.get(canonical) === true) row.classList.add("is-typing");
 
   const handle = document.createElement("div");
   handle.className = "chat-popup__sidebar-row__handle";
@@ -6561,7 +6688,14 @@ function closeChatPopup(): void {
   // subsequent pushes for that peer aren't accidentally swallowed.
   if (chatTarget !== null) {
     unsuppressConversation(chatTarget.canonical);
+    // Phase 13.1: clear the sidebar's typing state for this peer so
+    // a stale "typing…" doesn't linger after the chat closes.
+    renderSidebarTypingFor(chatTarget.canonical, false);
   }
+  // Phase 13.1: also clear the header indicator. The receive loop
+  // would fire the render-callback again on next poll, but until
+  // then we want the header to be blank.
+  chatPopupHeaderTyping.hidden = true;
   // Tear down typing — both directions. Receive loop stops polling
   // + clears the indicator; sender side issues a final stop so the
   // peer's view goes blank on the next poll.
@@ -6783,6 +6917,17 @@ function renderChatMessage(
   const bubble = document.createElement("div");
   bubble.className = "chat-message__bubble";
   bubble.textContent = tombstoned ? "message deleted" : message.body;
+  // Phase 13.1: image messages get a preview-only treatment.
+  // The carrier text "[image] camera-output.jpg" used to render
+  // above the preview, which looked like spam. For image
+  // attachments on non-tombstoned rows we hide the bubble entirely
+  // — the preview IS the message. Video + file attachments keep
+  // their card UI (which has its own filename render), so they
+  // still get the bubble for any text portion the user typed.
+  if (!tombstoned && attachment !== null && mediaClassOf(attachment.mime) === "image") {
+    bubble.hidden = true;
+    bubble.classList.add("chat-message__bubble--image-only");
+  }
 
   const meta = document.createElement("div");
   meta.className = "chat-message__meta";
@@ -7088,7 +7233,8 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
     relay_message_id: typeof message.relay_message_id === "string" ? message.relay_message_id : undefined,
     direction: message.direction,
     body: typeof message.deleted_at === "string" ? "" : message.body,
-    deleted: typeof message.deleted_at === "string"
+    deleted: typeof message.deleted_at === "string",
+    failed: message.raw_status === "failed"
   };
   // Position: prefer above the trigger but flip below if the
   // anchored top would push the menu off-screen. Right-align with
@@ -7130,8 +7276,13 @@ function openMessageMenu(message: ChatMessageView, anchorRect: DOMRect): void {
   const canReact = !messageMenuTarget.deleted && typeof messageMenuTarget.relay_message_id === "string";
   messageMenuReact.disabled = !canReact;
   messageMenuReact.setAttribute("aria-disabled", String(!canReact));
+  // Phase 13.1: resend only appears on failed sent messages. It
+  // routes through retryFailedOutbound (same path as the inline
+  // recovery row), but lives in the kebab so it's discoverable
+  // without scrolling to find the inline retry button.
+  messageMenuResend.hidden = !(messageMenuTarget.failed && messageMenuTarget.direction === "sent");
   // Focus first enabled item for keyboard users.
-  const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuReact, messageMenuDelete].find((b) => !b.disabled);
+  const firstEnabled = [messageMenuReply, messageMenuForward, messageMenuReact, messageMenuResend, messageMenuDelete].find((b) => !b.disabled && !b.hidden);
   if (firstEnabled) firstEnabled.focus();
 }
 
@@ -7873,8 +8024,13 @@ async function doUpload(file: File, mediaClass: "image" | "video" | "file", ctx:
     });
 
     // Send the carrier chat message first to mint a relay_message_id
-    // we can pin the attachment row to.
-    const carrierBody = `[${mediaClass}] ${file.name}`;
+    // we can pin the attachment row to. Phase 13.1: for image
+    // attachments the carrier body is empty — the preview IS the
+    // visible content; "[image] camera-output.jpg" was ugly.
+    // Video + file attachments still carry their filename in the
+    // body so older clients that don't render attachment cards
+    // still see something readable.
+    const carrierBody = mediaClass === "image" ? "" : `[${mediaClass}] ${file.name}`;
     const result = await queueAndSubmitLocalMessage({
       senderCanonicalId: ctx.senderAccount.canonical_id,
       recipientCanonicalId: ctx.recipientCanonicalId,

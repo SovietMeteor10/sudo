@@ -64,7 +64,16 @@ feedRouter.get("/posts/:postId/replies", (request, response) => {
 
 feedRouter.delete("/posts/:postId", (request, response) => {
   try {
-    response.json({ ok: true, post: deleteFeedPost(request.params.postId) });
+    // Phase 13.1: pull requester canonical id from either the JSON
+    // body (preferred, matches createFeedPost shape) or a query
+    // param (for fetch-without-body callers). The service-level
+    // check returns 404 when the requester isn't the author.
+    const body = (request.body ?? {}) as { requester_canonical_id?: unknown };
+    const queryRequester = typeof request.query.requester_canonical_id === "string" ? request.query.requester_canonical_id : "";
+    const requester = typeof body.requester_canonical_id === "string" && body.requester_canonical_id.length > 0
+      ? body.requester_canonical_id
+      : queryRequester;
+    response.json({ ok: true, post: deleteFeedPost(request.params.postId, requester) });
   } catch (error) {
     sendFeedError(response, error);
   }

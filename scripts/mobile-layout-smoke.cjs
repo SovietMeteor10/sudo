@@ -182,23 +182,26 @@ async function noHorizontalOverflow(page) {
       if (!composerProbe.ok) fail("mobile-feed/composer", `composer not usable: ${JSON.stringify(composerProbe)}`);
       else ok(`mobile-feed: composer usable (${composerProbe.width.toFixed(0)}x${composerProbe.height.toFixed(0)})`);
 
-      // Notifications pane: empty state visible AND reachable.
+      // Phase 13.1: with zero notifications, the entire panel +
+      // heading are now hidden (no dead "no notifications"
+      // placeholder). The tab still navigates; the column body is
+      // just empty until a real notification arrives.
       await page.click(`[data-mobile-tab="notifications"]`);
       await new Promise((r) => setTimeout(r, 250));
       const notifsProbe = await page.evaluate(() => {
         const empty = document.getElementById("notifications-empty");
-        if (!(empty instanceof HTMLElement)) return { ok: false };
-        const visible = empty.offsetParent !== null;
-        const rect = empty.getBoundingClientRect();
-        return {
-          ok: visible && rect.left >= 0 && rect.right <= window.innerWidth + 1,
-          left: rect.left,
-          right: rect.right,
-          windowWidth: window.innerWidth
-        };
+        const panel = document.getElementById("notifications-panel");
+        const heading = document.getElementById("notifications-title");
+        const emptyVisible = empty instanceof HTMLElement && empty.offsetParent !== null;
+        const panelVisible = panel instanceof HTMLElement && panel.offsetParent !== null;
+        const headingVisible = heading instanceof HTMLElement && heading.offsetParent !== null;
+        return { emptyVisible, panelVisible, headingVisible };
       });
-      if (!notifsProbe.ok) fail("mobile-notifs/empty", `notifications empty state not reachable: ${JSON.stringify(notifsProbe)}`);
-      else ok(`mobile-notifs: empty state reachable`);
+      if (notifsProbe.emptyVisible || notifsProbe.panelVisible || notifsProbe.headingVisible) {
+        fail("mobile-notifs/zero-state", `notifications surface should be fully hidden when empty; got ${JSON.stringify(notifsProbe)}`);
+      } else {
+        ok(`mobile-notifs: empty state hides entire panel (no dead placeholder)`);
+      }
 
       // Chats pane: title visible.
       await page.click(`[data-mobile-tab="chats"]`);

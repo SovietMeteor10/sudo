@@ -109,14 +109,25 @@ export function renderNotificationsPanel(
   view: NotificationsViewModel,
   onAction: (notification: SocialNotification, action: NotificationActionKind) => void
 ): void {
+  // Phase 13.1: when the user has zero notifications, hide the
+  // entire panel (heading + container) instead of leaving a dead
+  // "no notifications" placeholder. The heading lives in a sibling
+  // element addressable via the panel's parent; we toggle both
+  // together so the layout stays clean.
+  const panel = list.closest<HTMLElement>(".notifications");
+  const heading = document.getElementById("notifications-title");
   if (view.notifications.length === 0) {
     list.replaceChildren();
     list.hidden = true;
-    empty.hidden = false;
+    empty.hidden = true;
+    if (panel !== null) panel.hidden = true;
+    if (heading !== null) heading.hidden = true;
     if (clearAllButton !== null) clearAllButton.hidden = true;
     return;
   }
 
+  if (heading !== null) heading.hidden = false;
+  if (panel !== null) panel.hidden = false;
   empty.hidden = true;
   list.hidden = false;
   if (clearAllButton !== null) clearAllButton.hidden = false;
@@ -725,6 +736,22 @@ function renderUnifiedFeedItem(item: UnifiedFeedItem): HTMLElement {
   // also rejects with cannot_repost_own_post if forced.
   if (item.viewer_is_author !== true) {
     actions.append(renderActionButton("repost", "↻", item.counts.repost, item.viewer_has_reposted === true));
+  }
+  // Phase 13.1: delete affordance for the viewer's own posts.
+  // Two-step: first click sets data-delete-pending="1" on the
+  // article; second click within ~3s actually fires the DELETE
+  // request. Click-out / blur resets the pending state. Main.ts
+  // handles the actual fetch + local row removal via its
+  // delegated click listener on the feed root.
+  if (item.viewer_is_author === true) {
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "stream-post__action stream-post__action--delete";
+    deleteBtn.dataset["action"] = "delete";
+    deleteBtn.textContent = "delete";
+    deleteBtn.title = "delete post";
+    deleteBtn.setAttribute("aria-label", "delete this post");
+    actions.append(deleteBtn);
   }
   article.append(actions);
 

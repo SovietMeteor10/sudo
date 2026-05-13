@@ -73,12 +73,12 @@
         <div class="lookup__result" id="lookup-result" aria-live="polite"></div>
       </div>
       <div class="column__bottom" data-mobile-region="notifications">
-        <div class="column__title column__title--row" id="notifications-title">
+        <div class="column__title column__title--row" id="notifications-title" hidden>
           <span>notifications</span>
           <button class="notifications__clear-all" id="notifications-clear-all" type="button" hidden>clear all</button>
         </div>
-        <div class="notifications" id="notifications-panel" aria-live="polite">
-          <div class="notifications__empty" id="notifications-empty">no notifications</div>
+        <div class="notifications" id="notifications-panel" aria-live="polite" hidden>
+          <div class="notifications__empty" id="notifications-empty" hidden>no notifications</div>
           <div class="notifications__list" id="notifications-list" hidden></div>
         </div>
       </div>
@@ -157,6 +157,7 @@
       <button class="chat-popup__icon chat-popup__back" id="chat-popup-back" type="button" aria-label="back to chat list" title="back to chat list">←</button>
       <div class="chat-popup__identity">
         <span class="chat-popup__handle" id="chat-popup-handle"></span>
+        <span class="chat-popup__header-typing" id="chat-popup-header-typing" hidden aria-live="polite">typing…</span>
         <span class="chat-popup__ttl-badge" id="chat-popup-ttl-badge" hidden aria-live="polite"></span>
       </div>
       <div class="chat-popup__controls">
@@ -214,6 +215,7 @@
     <button class="message-menu__item" id="message-menu-reply" type="button" role="menuitem">reply</button>
     <button class="message-menu__item" id="message-menu-forward" type="button" role="menuitem">forward</button>
     <button class="message-menu__item" id="message-menu-react" type="button" role="menuitem">react</button>
+    <button class="message-menu__item" id="message-menu-resend" type="button" role="menuitem" hidden>resend</button>
     <button class="message-menu__item message-menu__item--danger" id="message-menu-delete" type="button" role="menuitem">delete</button>
   </div>
 

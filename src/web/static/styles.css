@@ -551,15 +551,16 @@ body[data-auth-state="auth-restore"] .landing {
   color: #c66766;
 }
 
-/* Phase 12.2: subtle "connected over Tor" indicator. Only visible
-   when the page is actually loaded on a .onion hostname. Sits in
-   the account-menu header so it's discoverable but never noisy. */
+/* Phase 12.2 + 13.1: transport line in the account-menu dropdown.
+   Always visible (honest about both onion + clearnet). Onion gets
+   green, clearnet gets muted gray. */
 .account-menu__transport {
   margin-top: 4px;
   font-size: 11px;
   letter-spacing: 0.02em;
-  color: #6db872;
 }
+.account-menu__transport--onion { color: #6db872; }
+.account-menu__transport--clearnet { color: var(--muted); }
 .account-menu__transport[hidden] { display: none; }
 
 /* Inline passphrase prompt shown inside the linked-devices dialog
@@ -1040,6 +1041,18 @@ body[data-auth-state="auth-restore"] .landing {
 .stream-post__action-glyph {
   font-size: 14px;
   line-height: 1;
+}
+
+/* Phase 13.1: delete-own-post action. Sits on the right with calm
+   muted styling. The armed state (after first click) goes danger-
+   colored so the user knows the second click commits. */
+.stream-post__action--delete {
+  margin-left: auto;
+  font-size: 12px;
+}
+.stream-post__action--delete-armed {
+  color: #d9534f !important;
+  font-weight: 600;
 }
 
 .stream-post__action-count {
@@ -2875,15 +2888,23 @@ body[data-auth-state="auth-restore"] .landing {
   opacity: 0.7;
 }
 
-/* Typing indicator. Lives between the message body and the
-   composer; small muted line, never blocks scroll. */
-.chat-popup__typing {
-  padding: 4px 12px;
+/* Phase 13.1: typing indicator now lives inline in the chat header
+   next to the handle, plus a subtle "is-typing" state on sidebar
+   rows. The old between-body-and-composer bar is kept hidden via
+   display:none but retained as an aria-live region for future use
+   (assistive tech doesn't care about visual position). */
+.chat-popup__typing { display: none; }
+.chat-popup__header-typing {
+  margin-left: 8px;
   font-size: 12px;
   color: var(--muted);
   font-style: italic;
 }
-.chat-popup__typing[hidden] { display: none; }
+.chat-popup__header-typing[hidden] { display: none; }
+.chat-popup__sidebar-row.is-typing .chat-popup__sidebar-row__preview-text {
+  color: var(--muted);
+  font-style: italic;
+}
 
 /* Phase 10.2: onboarding carousel. Five steps; only one .is-active
    at a time. Dots track position. Skip lives next to next/back. */

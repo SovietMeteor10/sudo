@@ -445,7 +445,25 @@ export function getUserRssFeed(canonicalId: string, baseUrl: string): string {
   ].join("\n");
 }
 
-export function deleteFeedPost(postId: string): FeedPost {
+export function deleteFeedPost(postId: string, requesterCanonicalId?: string): FeedPost {
+  // Phase 13.1: enforce ownership. The author must match the
+  // requester. Same trust model as createFeedPost — not
+  // cryptographically authenticated, but at minimum prevents one
+  // user from deleting another user's posts by guessing IDs.
+  const existing = getFeedPost(postId);
+  if (existing === null) {
+    throw new FeedError("post_not_found", "feed post not found", 404);
+  }
+  if (typeof requesterCanonicalId === "string" && requesterCanonicalId.length > 0) {
+    if (existing.author_canonical_id !== requesterCanonicalId) {
+      // 404 (not 403) — don't leak that the post exists.
+      throw new FeedError("post_not_found", "feed post not found", 404);
+    }
+  } else {
+    // No requester id supplied — refuse the delete rather than
+    // performing it. Previously this path silently succeeded.
+    throw new FeedError("requester_required", "requester_canonical_id is required", 400);
+  }
   const deleted = softDeleteFeedPost(postId, new Date().toISOString());
   if (deleted === null) {
     throw new FeedError("post_not_found", "feed post not found", 404);
