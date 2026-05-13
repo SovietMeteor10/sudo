@@ -26,7 +26,7 @@
 
 import express from "express";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, statSync, chmodSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, chmodSync, renameSync, unlinkSync } from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
 import { resolve } from "node:path";
 import { emitRateLimited } from "../devices/rate-limit-response.js";
@@ -105,7 +105,21 @@ mediaRouter.post("/upload", (request, response) => {
   const rate = rateCheck(uploadHits, resolveIp(request), RATE_LIMIT_UPLOAD, Date.now());
   if (!rate.ok) { emitRateLimited(response, rate); return; }
 
-  const mediaClass = String(request.get("x-sudo-media-class") ?? "file").toLowerCase();
+  // Phase 11.2: stricter media-class validation. Phase 8 fell back to
+  // the file cap (25MB) for any unknown class value; that's a real
+  // hole because it lets a misbehaving client overpay for storage
+  // they shouldn't have access to. We now reject unknown classes
+  // outright with a stable error code so the client surfaces a clear
+  // message instead of silently uploading under the wrong cap.
+  // Empty / missing header falls back to "file" (the conservative
+  // default — same as Phase 8 behavior for unset header).
+  const headerValue = String(request.get("x-sudo-media-class") ?? "").trim().toLowerCase();
+  const rawClass = headerValue.length === 0 ? "file" : headerValue;
+  if (rawClass !== "image" && rawClass !== "video" && rawClass !== "file") {
+    response.status(400).json({ ok: false, error: "invalid_media_class", allowed: ["image", "video", "file"] });
+    return;
+  }
+  const mediaClass = rawClass;
   const limit = SIZE_LIMITS[mediaClass] ?? DEFAULT_LIMIT;
 
   // Phase 11.1: optional per-owner attestation. The client can pass
@@ -142,12 +156,15 @@ mediaRouter.post("/upload", (request, response) => {
   const blobId = newBlobId();
   const dir = mediaDir();
   const path = resolve(dir, blobId);
-  const writer = createWriteStream(path, { mode: 0o600 });
-  // Phase 11.1: silence ERR_STREAM_DESTROYED uncaught errors. The
-  // oversize path explicitly destroys the writer mid-stream, which
-  // Node would otherwise surface as an unhandled error event,
-  // crashing the process. We've already cleaned up the partial file
-  // above; this listener turns the error into a no-op.
+  // Phase 11.2 atomic writes: stream to a sibling .tmp file and
+  // rename(2) into place ONLY after the body finishes successfully.
+  // A crash mid-upload leaves a leftover .tmp file that the next
+  // orphan-blob GC sweep collects (it's an "untracked blob" in the
+  // operator diagnostic sense, never readable by the public route).
+  // Readers always see either: the blob is fully present, or it's
+  // missing — never half a file.
+  const tmpPath = `${path}.tmp`;
+  const writer = createWriteStream(tmpPath, { mode: 0o600 });
   writer.on("error", () => { /* expected on oversize/abort */ });
 
   let bytesWritten = 0;
@@ -168,10 +185,7 @@ mediaRouter.post("/upload", (request, response) => {
       oversize = true;
       try {
         writer.destroy();
-        // Best-effort cleanup of the partial file.
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const fs = require("node:fs");
-        if (existsSync(path)) fs.unlinkSync(path);
+        if (existsSync(tmpPath)) unlinkSync(tmpPath);
       } catch { /* ignore */ }
       finalize(413, { ok: false, error: "payload_too_large", limit_bytes: limit, media_class: mediaClass });
       return;
@@ -184,23 +198,19 @@ mediaRouter.post("/upload", (request, response) => {
     writer.end(() => {
       if (bytesWritten === 0) {
         // Empty body — clean up + reject.
-        try {
-          if (existsSync(path)) unlinkSync(path);
-        } catch { /* ignore */ }
+        try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
         finalize(400, { ok: false, error: "empty_body" });
         return;
       }
-      // Phase 11.1: record the blob for quota + GC bookkeeping AFTER
-      // the bytes are durably on disk. If the second-quota check
-      // (now-exact size known) fails, delete the file we just wrote
-      // and reject — never leaves a leftover blob the client can't
-      // address.
+      // Phase 11.1: post-write quota check (now we know the exact
+      // byte count). If it would push the uploader over their cap,
+      // discard the .tmp and reject — the final path never appears.
       if (uploaderCanonicalId !== null) {
         const quota = readNodeRuntimeConfig().ownerMediaQuotaBytes;
         if (quota > 0) {
           const used = getMediaBytesForUploader(uploaderCanonicalId);
           if (used + bytesWritten > quota) {
-            try { if (existsSync(path)) unlinkSync(path); } catch { /* ignore */ }
+            try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
             finalize(413, {
               ok: false,
               error: "owner_media_quota_exceeded",
@@ -211,6 +221,16 @@ mediaRouter.post("/upload", (request, response) => {
             return;
           }
         }
+      }
+      // Phase 11.2 atomic publish: rename the .tmp to the final
+      // blob_id path. After this point a 404 means the GC ran, not
+      // that the upload crashed.
+      try {
+        renameSync(tmpPath, path);
+      } catch (renameErr) {
+        try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
+        finalize(500, { ok: false, error: "upload_failed", reason: renameErr instanceof Error ? renameErr.message : "rename_failed" });
+        return;
       }
       const nowIso = new Date().toISOString();
       try {
@@ -232,11 +252,7 @@ mediaRouter.post("/upload", (request, response) => {
 
   request.on("error", () => {
     if (finalized) return;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const fs = require("node:fs");
-      if (existsSync(path)) fs.unlinkSync(path);
-    } catch { /* ignore */ }
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* ignore */ }
     finalize(500, { ok: false, error: "upload_failed" });
   });
 });

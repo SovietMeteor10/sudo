@@ -86,14 +86,15 @@ async function upload(opts) {
     }
   }
 
-  // ===== Part 3: a malformed media class falls back to the file
-  // cap (25MB), still rejecting oversize. =====
-  const oversizeFile = Buffer.alloc(30 * 1024 * 1024, 0x43);
-  const big = await upload({ mediaClass: "garbage", bytes: oversizeFile });
-  if (big.status !== 413) {
-    fail("3.bad-class-cap", `expected 413 for 30MB unknown-class upload, got ${big.status}`);
+  // ===== Part 3: Phase 11.2 changed the unknown-media-class
+  // behavior from "fall back to file cap" to "reject 400". The
+  // assertion now verifies the new behavior. =====
+  const tinyBytes = Buffer.alloc(64, 0x43);
+  const bad = await upload({ mediaClass: "garbage", bytes: tinyBytes });
+  if (bad.status !== 400 || bad.body?.error !== "invalid_media_class") {
+    fail("3.bad-class", `expected 400/invalid_media_class for unknown class, got ${bad.status} ${JSON.stringify(bad.body)}`);
   } else {
-    ok(`3. unknown media class falls back to file cap; 30MB rejected`);
+    ok(`3. unknown media class rejected with 400/invalid_media_class`);
   }
 
   // ===== Part 4: error response shape is stable. =====

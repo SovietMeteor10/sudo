@@ -7299,9 +7299,27 @@ async function sendChatPopupMessage(): Promise<void> {
 // ============================================================
 
 function buildAttachmentError(err: unknown): HTMLElement {
+  // Phase 11.2: friendlier placeholder copy. The server can return
+  // 404 for two distinct reasons — the blob was GC'd (orphan sweep,
+  // operator deleted) or the upload never completed (sender crashed
+  // mid-upload). The client can't always tell which, but the user
+  // experience is the same: "this attachment isn't available". We
+  // map the common error strings to plain copy and leave a
+  // technical hint as a title attribute for power users.
+  const message = err instanceof Error ? err.message : "unknown";
+  const lower = message.toLowerCase();
+  let label = "attachment unavailable";
+  if (lower.includes("404") || lower.includes("not found") || lower.includes("not_found")) {
+    label = "attachment expired or unavailable";
+  } else if (lower.includes("decrypt") || lower.includes("crypto")) {
+    label = "attachment could not be decrypted";
+  } else if (lower.includes("network") || lower.includes("fetch")) {
+    label = "couldn't load attachment — check your connection";
+  }
   const el = document.createElement("div");
-  el.className = "chat-message__attachment-error";
-  el.textContent = `attachment unavailable: ${err instanceof Error ? err.message : "unknown"}`;
+  el.className = "chat-message__attachment-error chat-message__attachment-placeholder";
+  el.textContent = label;
+  el.title = message;
   return el;
 }
 

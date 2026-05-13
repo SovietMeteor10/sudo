@@ -10,6 +10,7 @@ import {
   handleIdentitySession
 } from "../identity/identity-auth.handlers.js";
 import { listUntrackedBlobs, runOrphanBlobGc } from "../media/media.gc.js";
+import { __resetMediaStateForTests } from "../media/media.routes.js";
 import { summarizeMediaStorage } from "../media/media.store.js";
 import { readNodeRuntimeConfig } from "../node/node.config.js";
 import { runRelayRetentionSweep } from "../relay/relay.retention.js";
@@ -97,6 +98,20 @@ devRouter.get("/api/admin/tombstone-watermarks", (_request: Request, response: R
 // this is the path the orphan-blob-gc smoke uses to confirm the
 // retention math BEFORE asking the server to actually delete.
 
+// Phase 11.2: smoke-only rate-limit reset. The media route's
+// per-IP rate buckets are in-memory and survive between smokes;
+// when one smoke exhausts the burst limit, the next smoke can't
+// distinguish "feature broken" from "previous smoke left state
+// behind". This endpoint clears the buckets. Gated to development.
+devRouter.post("/api/admin/media/reset-rate-limits", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  __resetMediaStateForTests();
+  response.json({ ok: true });
+});
+
 devRouter.post("/api/admin/relay/retention-sweep", (_request: Request, response: Response) => {
   if (!readNodeRuntimeConfig().isLocalDevelopment) {
     response.status(404).type("text/plain").send("sudo: not found\n");
@@ -122,6 +137,45 @@ devRouter.get("/api/admin/media/summary", (_request: Request, response: Response
   response.json({
     ...summarizeMediaStorage(),
     untracked_blobs: listUntrackedBlobs()
+  });
+});
+
+// Phase 11.3: aggregate operator snapshot. Numeric/structural only —
+// no plaintext bodies, no envelope ciphertext, no message content of
+// any kind. Top-uploader canonical IDs are exposed (same as
+// /api/admin/sync/stats) so an operator can chase a runaway account;
+// production gating keeps the surface internal-only.
+devRouter.get("/api/admin/storage/snapshot", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const config = readNodeRuntimeConfig();
+  const media = summarizeMediaStorage();
+  const untracked = listUntrackedBlobs();
+  const dryGc = runOrphanBlobGc({ dryRun: true });
+  const sweep = runRelayRetentionSweep(new Date()); // run-as-side-effect ok in dev
+  response.json({
+    quotas: {
+      owner_media_quota_bytes: config.ownerMediaQuotaBytes,
+      owner_relay_envelope_quota: config.ownerRelayEnvelopeQuota,
+      media_retention_days: config.mediaRetentionDays
+    },
+    media: {
+      total_blobs: media.total_blobs,
+      total_bytes: media.total_bytes,
+      by_class: media.by_class,
+      top_uploaders: media.top_uploaders,
+      untracked_blob_count: untracked.length,
+      orphan_candidates: {
+        candidates_found: dryGc.candidates_found,
+        bytes_to_free: dryGc.bytes_freed,
+        tmp_files_pending: dryGc.tmp_files_deleted,
+        cutoff_iso: dryGc.cutoff_iso
+      }
+    },
+    retention_sweep_last_run: sweep
   });
 });
 
@@ -169,6 +223,14 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
     <div class="diag-row"><div class="diag-row__label">service worker</div><div class="diag-row__value" id="diag-sw">…</div></div>
     <div class="diag-row"><div class="diag-row__label">storage estimate</div><div class="diag-row__value" id="diag-storage">…</div></div>
     <div class="diag-row"><div class="diag-row__label">IDB record counts</div><div class="diag-row__value" id="diag-idb">…</div></div>
+    <h1 style="margin-top: 24px">server storage snapshot</h1>
+    <div class="diag-row"><div class="diag-row__label">quotas</div><div class="diag-row__value" id="diag-quotas">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">media: total</div><div class="diag-row__value" id="diag-media-total">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">media: by class</div><div class="diag-row__value" id="diag-media-by-class">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">media: top uploaders</div><div class="diag-row__value" id="diag-media-top">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">media: orphan candidates</div><div class="diag-row__value" id="diag-media-orphans">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">untracked blobs on disk</div><div class="diag-row__value" id="diag-media-untracked">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">retention sweep (last run)</div><div class="diag-row__value" id="diag-retention">…</div></div>
   </div>
   <script type="module">
     async function getAllByIndex(store, indexName, owner) {
@@ -260,8 +322,45 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
         document.getElementById("diag-idb").textContent = "err: " + e.message;
       }
     }
+    async function loadServerSnapshot() {
+      try {
+        const r = await fetch("/api/admin/storage/snapshot");
+        if (!r.ok) {
+          document.getElementById("diag-quotas").textContent = "(server error: " + r.status + ")";
+          return;
+        }
+        const snap = await r.json();
+        document.getElementById("diag-quotas").textContent =
+          "media=" + (snap.quotas.owner_media_quota_bytes / (1024 * 1024)).toFixed(0) + " MB"
+          + ", envelopes=" + snap.quotas.owner_relay_envelope_quota
+          + ", retention=" + snap.quotas.media_retention_days + "d";
+        document.getElementById("diag-media-total").textContent =
+          snap.media.total_blobs + " blob(s), "
+          + (snap.media.total_bytes / (1024 * 1024)).toFixed(2) + " MB";
+        document.getElementById("diag-media-by-class").textContent =
+          snap.media.by_class.map((c) => c.media_class + "=" + c.count + " (" + (c.bytes / (1024 * 1024)).toFixed(2) + " MB)").join(", ") || "(none)";
+        document.getElementById("diag-media-top").textContent =
+          snap.media.top_uploaders.length === 0 ? "(none)" :
+          snap.media.top_uploaders.slice(0, 5).map((u) => u.canonical_id.slice(0, 24) + "… (" + u.count + " blob(s), " + (u.bytes / (1024 * 1024)).toFixed(2) + " MB)").join("; ");
+        const o = snap.media.orphan_candidates;
+        document.getElementById("diag-media-orphans").textContent =
+          o.candidates_found + " candidate(s), " + (o.bytes_to_free / (1024 * 1024)).toFixed(2) + " MB to free, "
+          + o.tmp_files_pending + " .tmp leftover(s) (cutoff=" + o.cutoff_iso + ")";
+        document.getElementById("diag-media-untracked").textContent = String(snap.media.untracked_blob_count);
+        const rs = snap.retention_sweep_last_run;
+        document.getElementById("diag-retention").textContent =
+          "pairing=" + rs.pairing_tokens_pruned
+          + ", challenges=" + rs.identity_challenges_pruned
+          + ", sessions=" + rs.dev_sessions_pruned
+          + ", envelopes=" + rs.expired_envelopes_hard_deleted;
+      } catch (e) {
+        document.getElementById("diag-quotas").textContent = "err: " + e.message;
+      }
+    }
     load();
+    loadServerSnapshot();
     setInterval(load, 5000);
+    setInterval(loadServerSnapshot, 5000);
   </script>
 </body>
 </html>

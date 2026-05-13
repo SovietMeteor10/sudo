@@ -461,3 +461,144 @@ Account recovery on a new device is the encrypted backup-file
 flow: export `.sudo-backup.json` from the running portal, carry
 it to the new device, restore with the backup passphrase. The
 server holds nothing that could authenticate the user.
+
+## Phase 11.1 — storage lifecycle, quotas, and cleanup
+
+A sudo node has three storage surfaces that need active operator
+attention: the SQLite database, the encrypted media blob store, and
+the various short-lived auxiliary tables (pairing codes, identity
+challenges, dev sessions). Phase 11.1 added per-owner quotas and
+periodic sweepers; this section describes what an operator needs to
+know.
+
+### Configurable quotas
+
+Three env vars tune the storage caps. Defaults are generous and
+suitable for a small node (~100 users).
+
+| Variable | Default | What it caps |
+| --- | --- | --- |
+| `SUDO_OWNER_MEDIA_QUOTA_BYTES` | `524288000` (500 MB) | Total ciphertext bytes one account can store across all media. Server tally is bytes-on-disk for `(uploader_canonical_id = $you)`. |
+| `SUDO_OWNER_RELAY_ENVELOPE_QUOTA` | `5000` | Number of pending relay envelopes one sender can have in flight (across all recipients). Catches runaway clients. |
+| `SUDO_MEDIA_RETENTION_DAYS` | `30` | A blob whose `last_accessed_at` is older than this is a GC candidate. Downloads bump the timestamp, so active media is never collected. |
+
+Per-class size caps remain hard-coded in `media.routes.ts`: image
+10 MB, video 50 MB, file 25 MB. These are the per-upload caps, not
+the per-owner cap.
+
+### Lifecycle sweepers
+
+Three periodic timers run inside the node process:
+
+- **every 5 minutes** — `expireRelayEnvelopes()` marks past-TTL
+  envelopes as `expired` and blanks their ciphertext.
+- **every 60 minutes** — `runRelayRetentionSweep()` hard-deletes
+  pairing tokens, identity challenges, dev sessions, and envelopes
+  that have been in the `expired` state for more than 72h.
+- **every 60 minutes** — `runOrphanBlobGc()` deletes media blobs
+  whose `last_accessed_at` is past the retention window, and
+  reaps `.tmp` files older than 1h (crash leftovers from
+  interrupted uploads).
+
+The sweeps log to stdout only when they actually delete something,
+so a quiet log is the desired state.
+
+### Operator-only diagnostic endpoints
+
+Gated to development mode (`SUDO_NODE_ENV` ≠ `production`). All
+return 404 in prod.
+
+- `GET  /api/admin/storage/snapshot` — aggregated quota state +
+  top uploaders + orphan candidate counts. Numeric/structural only,
+  no plaintext bodies or ciphertext.
+- `GET  /api/admin/media/summary` — per-class blob counts +
+  bytes, and the list of files on disk that have no SQLite row
+  (untracked / legacy).
+- `POST /api/admin/media/gc` — fire the orphan-blob GC. Pass
+  `?dry_run=1` to preview which blobs would be collected without
+  actually deleting them.
+- `POST /api/admin/relay/retention-sweep` — fire the relay
+  retention sweep on demand.
+- `GET  /dev/diagnostics` — operator HTML page that auto-refreshes
+  the snapshot above. Also surfaces client-side IDB state when
+  loaded inside a signed-in browser.
+
+### Manual storage cleanup
+
+If a node hits disk-pressure unexpectedly:
+
+```bash
+# Preview which blobs the next GC would delete (no changes).
+curl -s -X POST http://127.0.0.1:3000/api/admin/media/gc?dry_run=1 | jq
+
+# Run the live sweep.
+curl -s -X POST http://127.0.0.1:3000/api/admin/media/gc | jq
+
+# Force the relay retention pass too.
+curl -s -X POST http://127.0.0.1:3000/api/admin/relay/retention-sweep | jq
+
+# Aggregated view of where the bytes are.
+curl -s http://127.0.0.1:3000/api/admin/storage/snapshot | jq
+```
+
+For a deeper purge — when an account leaves and you want their
+blobs gone before the retention window — directly UPDATE
+`last_accessed_at` to a far-past date in `media_blobs` and run
+the GC.
+
+### Backup guidance
+
+The SQLite file `${SUDO_DATA_DIR}/sudo.sqlite` (default
+`./data/sudo.sqlite`) and the media directory
+`${SUDO_DATA_DIR}/media/` are the two on-disk surfaces. A
+consistent snapshot is a `.backup` of the SQLite file plus a
+rsync/tar of the media dir taken AFTER the SQLite backup
+completes — that ordering means any media blob referenced in the
+DB exists on disk; the reverse (a blob without a DB row) is
+benign and the next GC will reap it.
+
+For per-user backup the operator does nothing; users export
+`.sudo-backup.json` from the portal, which is an encrypted blob
+of their account keys and conversation state. The server holds
+nothing that could decrypt these backups.
+
+### VAPID rotation
+
+Web Push uses a VAPID keypair stored in
+`${SUDO_DATA_DIR}/keys/vapid.json`. Rotating it invalidates every
+push subscription bound to the prior public key, so:
+
+- announce maintenance, then stop the node;
+- delete `keys/vapid.json` and restart — the node mints a fresh
+  pair on first boot;
+- expect a brief period where existing signed-in browsers can't
+  receive push until each device re-subscribes (handled
+  automatically by `push.client.ts` on next visit).
+
+### Onion deployment prerequisites
+
+Before exposing a sudo node over Tor:
+
+1. Set `SUDO_ONION_BASE_URL=http://<your.onion>` in the runtime
+   env. The portal advertises this in the relay capability list.
+2. Set `SUDO_PREFER_ONION_RELAYS=true` so clients on .onion talk
+   to .onion relays.
+3. Configure `torrc` to forward `HiddenServicePort 80 127.0.0.1:3000`
+   onto the loopback bind of the node.
+4. Verify CSP and headers still pass — `bash scripts/smoke.sh`
+   against your .onion address should return all `ok`s.
+
+### Disaster recovery notes
+
+The dev-friendly drop-everything reset is just `rm -rf
+${SUDO_DATA_DIR}`. In production:
+
+- DO NOT delete `keys/` unless you're rebuilding the node from
+  scratch; you'd lose the node identity AND every signed-in
+  user's session-bearer trust.
+- DB corruption: try `sqlite3 sudo.sqlite '.recover' >
+  recovered.sql` first. The schema has no destructive cascades,
+  so partial restores are safe.
+- Lost media: there is no recovery if the on-disk blob is gone
+  and no peer has cached it. Document this clearly with users —
+  sudo is not a backup service.

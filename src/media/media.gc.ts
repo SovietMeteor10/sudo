@@ -36,8 +36,15 @@ export type OrphanGcResult = {
   bytes_freed: number;
   rows_deleted: number;
   files_deleted: number;
+  // Phase 11.2: orphaned .tmp leftovers from crashed mid-uploads.
+  // These never appeared at a public URL (the rename(2) is what
+  // publishes the blob) but they DO take up disk. The hourly GC
+  // sweeps them whenever they're older than 1h.
+  tmp_files_deleted: number;
   errors: number;
 };
+
+const TMP_FILE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour — any longer is a crash leftover
 
 // Sweep one batch of stale blobs. Returns counts so the caller (a
 // timer or the dev diagnostics view) can summarize the work.
@@ -61,14 +68,51 @@ export function runOrphanBlobGc(options: { dryRun?: boolean } = {}): OrphanGcRes
     bytes_freed: 0,
     rows_deleted: 0,
     files_deleted: 0,
+    tmp_files_deleted: 0,
     errors: 0
   };
   if (dryRun) {
     for (const row of stale) result.bytes_freed += row.size_bytes;
+    // Count (but don't delete) old .tmp leftovers so the operator
+    // can see them.
+    try {
+      const dir = resolve(config.dataDir, "media");
+      if (existsSync(dir)) {
+        const cutoff = Date.now() - TMP_FILE_MAX_AGE_MS;
+        for (const name of readdirSync(dir)) {
+          if (!name.endsWith(".tmp")) continue;
+          const p = resolve(dir, name);
+          try {
+            const stat = statSync(p);
+            if (stat.mtimeMs < cutoff) result.tmp_files_deleted++;
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
     return result;
   }
 
   const dir = resolve(config.dataDir, "media");
+  // Phase 11.2: reap crashed-upload .tmp leftovers older than 1h.
+  // These never made it to the rename(2) step so they're never
+  // addressable by blob_id, but they still take up disk.
+  try {
+    if (existsSync(dir)) {
+      const cutoff = Date.now() - TMP_FILE_MAX_AGE_MS;
+      for (const name of readdirSync(dir)) {
+        if (!name.endsWith(".tmp")) continue;
+        const p = resolve(dir, name);
+        if (!p.startsWith(dir)) continue;
+        try {
+          const stat = statSync(p);
+          if (stat.mtimeMs < cutoff) {
+            unlinkSync(p);
+            result.tmp_files_deleted++;
+          }
+        } catch { /* ignore */ }
+      }
+    }
+  } catch { /* ignore */ }
   for (const row of stale) {
     // Defense in depth: the blob_id regex is a tight fixed alphabet
     // so path traversal is impossible, but rebuild the resolved path
