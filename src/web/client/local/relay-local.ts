@@ -896,12 +896,16 @@ export async function retrieveRelayInboxAfterLocalSave(
       senderMessagingPublicKey: senderKey?.public_key,
       senderMessagingKeyType: senderKey?.type
     });
-    // Phase 11.6: when decrypt fails on an unlocked account, treat
-    // it as a transient failure and stash for retry (drainer will
-    // refetch the sender key and try once more) rather than burning
-    // a permanent placeholder. Only true corruption / unsupported
-    // scheme falls through to the placeholder render below.
-    if (isChatScheme && !decoded.decryption_ok && options.recipientAccount !== undefined && options.recipientAccount !== null) {
+    // Phase 11.6: when decrypt fails on an unlocked account, only
+    // defer-and-retry if the sender key was MISSING (i.e. we
+    // couldn't fetch it just now). If the sender key WAS present
+    // and decrypt still failed, the ciphertext is the problem —
+    // render the permanent placeholder here so the user sees
+    // "couldn't decrypt" instead of a silent hang. The
+    // encrypted-chat-envelope smoke's malformed-envelope path
+    // depends on this distinction.
+    const senderKeyMissing = senderKey === null || senderKey === undefined;
+    if (isChatScheme && !decoded.decryption_ok && options.recipientAccount !== undefined && options.recipientAccount !== null && senderKeyMissing) {
       try {
         await savePendingDecrypt({
           local_id: crypto.randomUUID(),
