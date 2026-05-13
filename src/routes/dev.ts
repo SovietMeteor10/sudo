@@ -216,6 +216,7 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
     <p class="signup-dialog__hint">read-only mirror of this browser's local sudo state. development build only — this page is 404 in production.</p>
     <div class="diag-row"><div class="diag-row__label">online</div><div class="diag-row__value" id="diag-online">…</div></div>
     <div class="diag-row"><div class="diag-row__label">queue depth (pending_outbound)</div><div class="diag-row__value" id="diag-queue-depth">…</div></div>
+    <div class="diag-row"><div class="diag-row__label">deferred decrypt depth (pending_decrypt)</div><div class="diag-row__value" id="diag-decrypt-depth">…</div></div>
     <div class="diag-row"><div class="diag-row__label">queue retry attempts (max)</div><div class="diag-row__value" id="diag-retry-max">…</div></div>
     <div class="diag-row"><div class="diag-row__label">last sync</div><div class="diag-row__value" id="diag-last-sync">…</div></div>
     <div class="diag-row"><div class="diag-row__label">linked devices</div><div class="diag-row__value" id="diag-devices">…</div></div>
@@ -261,12 +262,17 @@ devRouter.get("/dev/diagnostics", (_request: Request, response: Response) => {
       } catch (e) { /* no IDB yet */ }
       if (owner.length === 0) {
         document.getElementById("diag-queue-depth").textContent = "(not signed in)";
+        document.getElementById("diag-decrypt-depth").textContent = "(not signed in)";
         document.getElementById("diag-retry-max").textContent = "(not signed in)";
         document.getElementById("diag-last-sync").textContent = "(not signed in)";
         document.getElementById("diag-devices").textContent = "(not signed in)";
       } else {
         const pending = await getAllByIndex("pending_outbound", "by_owner", owner);
         document.getElementById("diag-queue-depth").textContent = String(pending.length);
+        try {
+          const pendingDecrypt = await getAllByIndex("pending_decrypt", "by_owner", owner);
+          document.getElementById("diag-decrypt-depth").textContent = String(pendingDecrypt.length);
+        } catch { document.getElementById("diag-decrypt-depth").textContent = "?"; }
         const maxAttempts = pending.reduce((m, p) => Math.max(m, p.attempts || 0), 0);
         document.getElementById("diag-retry-max").textContent = String(maxAttempts);
         try {

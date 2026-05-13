@@ -8,10 +8,13 @@ import { selectRelayForRecipient } from "../transport/relay-transport.js";
 import {
   appendLocalEvent,
   applyMessageReceipt,
+  deletePendingDecrypt,
   deletePendingOutboundByQueueId,
   getLocalMessage as loadLocalMessageById,
+  listPendingDecrypt,
   listPendingOutbound,
   saveLocalMessage,
+  savePendingDecrypt,
   savePendingOutbound
 } from "./local-store.js";
 import type { LocalMessage, PendingOutbound } from "./local-types.js";
@@ -437,6 +440,151 @@ export async function submitPendingOutbound(
   }
 }
 
+// Phase 11.6: deferred-decrypt drainer. Iterates every pending row
+// for this owner, runs decodeEnvelopeBody with the now-unlocked
+// account, and writes the real LocalMessage in place. Failures get
+// ONE sender-key refetch + retry; if that still fails, the row is
+// flagged with a structured fail_reason and surfaced as a permanent
+// placeholder.
+//
+// Called from main.ts on:
+//   - unlock dialog success
+//   - app boot AFTER currentCryptoAccount is set
+//   - inbox poll, when the account is unlocked (drains anything that
+//     was stashed during a previous locked window)
+export async function drainPendingDecrypt(
+  ownerCanonicalId: string,
+  options: {
+    recipientAccount: BrowserCryptoAccount;
+    resolveSenderMessagingKey?: SenderKeyResolver;
+  }
+): Promise<{ tried: number; decrypted: number; deferred: number; failed: number }> {
+  const rows = await listPendingDecrypt(ownerCanonicalId);
+  const result = { tried: 0, decrypted: 0, deferred: 0, failed: 0 };
+  // Cache the sender-key lookup per-drain.
+  const cache = new Map<string, SenderMessagingKey | null>();
+  async function senderKey(canonical: string, forceRefetch: boolean): Promise<SenderMessagingKey | null> {
+    if (!forceRefetch && cache.has(canonical)) return cache.get(canonical) ?? null;
+    if (options.resolveSenderMessagingKey === undefined) {
+      cache.set(canonical, null);
+      return null;
+    }
+    try {
+      const k = await options.resolveSenderMessagingKey(canonical);
+      cache.set(canonical, k);
+      return k;
+    } catch {
+      cache.set(canonical, null);
+      return null;
+    }
+  }
+  for (const row of rows) {
+    result.tried++;
+    let envelope: RelayEnvelope;
+    try {
+      envelope = JSON.parse(row.envelope_json) as RelayEnvelope;
+    } catch {
+      // Corrupted row JSON — drop it, render permanent failure.
+      await persistDecryptedRow(ownerCanonicalId, row, null, "malformed");
+      await deletePendingDecrypt(row.local_id);
+      result.failed++;
+      continue;
+    }
+    // First decrypt attempt with cached sender key.
+    let key = await senderKey(envelope.sender_canonical_id, false);
+    let decoded = await decodeEnvelopeBody(envelope, {
+      recipientAccount: options.recipientAccount,
+      senderMessagingPublicKey: key?.public_key,
+      senderMessagingKeyType: key?.type
+    });
+    // Second attempt: refetch the sender's profile from the relay
+    // in case our cached messaging key is stale (sender rotated
+    // / fresh deployment / relinked device).
+    if (!decoded.decryption_ok) {
+      const refreshed = await senderKey(envelope.sender_canonical_id, true);
+      if (refreshed !== null && (key === null || refreshed.public_key !== key.public_key)) {
+        key = refreshed;
+        decoded = await decodeEnvelopeBody(envelope, {
+          recipientAccount: options.recipientAccount,
+          senderMessagingPublicKey: key.public_key,
+          senderMessagingKeyType: key.type
+        });
+      }
+    }
+    if (decoded.decryption_ok) {
+      await persistDecryptedRow(ownerCanonicalId, row, envelope, null, decoded);
+      await deletePendingDecrypt(row.local_id);
+      result.decrypted++;
+      continue;
+    }
+    // Decrypt still failed after one refresh — classify the failure
+    // and either defer (transient) or permanent-fail.
+    const attempts = (row.retry_attempts ?? 0) + 1;
+    if (attempts < 3) {
+      await savePendingDecrypt({ ...row, retry_attempts: attempts });
+      result.deferred++;
+    } else {
+      const failReason = key === null ? "sender_missing" : "auth_failed";
+      await persistDecryptedRow(ownerCanonicalId, row, envelope, failReason);
+      await deletePendingDecrypt(row.local_id);
+      result.failed++;
+    }
+  }
+  return result;
+}
+
+// Helper: write the final LocalMessage row after a pending_decrypt
+// row is resolved (either successfully decrypted or permanently
+// failed). Decoded body / metadata is filled in on success; failure
+// rows get a structured fail_reason that the renderer maps to copy.
+async function persistDecryptedRow(
+  ownerCanonicalId: string,
+  pending: { relay_message_id: string; sender_canonical_id: string; conversation_id: string; received_at: string; envelope_json: string },
+  envelope: RelayEnvelope | null,
+  failReason: "wrong_key" | "malformed" | "unsupported_scheme" | "sender_missing" | "auth_failed" | null,
+  decoded?: DecodedEnvelope
+): Promise<void> {
+  const now = new Date().toISOString();
+  let envOrNull = envelope;
+  if (envOrNull === null) {
+    try { envOrNull = JSON.parse(pending.envelope_json) as RelayEnvelope; }
+    catch { envOrNull = null; }
+  }
+  const messageId = crypto.randomUUID();
+  const renderBody = decoded?.decryption_ok === true
+    ? decoded.body
+    : "[message could not be decrypted]";
+  const message: LocalMessage = {
+    message_id: messageId,
+    owner_canonical_id: ownerCanonicalId,
+    conversation_id: pending.conversation_id,
+    direction: "received",
+    sender_canonical_id: pending.sender_canonical_id,
+    recipient_canonical_id: ownerCanonicalId,
+    sender_handle: envOrNull?.sender_handle,
+    recipient_handle: envOrNull?.recipient_handle,
+    body: renderBody,
+    ciphertext: envOrNull?.ciphertext,
+    created_at: envOrNull?.created_at ?? pending.received_at,
+    updated_at: now,
+    status: "delivered_to_recipient_device",
+    relay_message_id: pending.relay_message_id
+  };
+  if (decoded?.decryption_ok === true) {
+    if (typeof decoded.reply_to_relay_message_id === "string") message.reply_to_relay_message_id = decoded.reply_to_relay_message_id;
+    if (decoded.is_forwarded === true) message.forwarded = true;
+  }
+  await saveLocalMessage(ownerCanonicalId, message);
+  void notifyMessageUpsert(ownerCanonicalId, message);
+  await appendLocalEvent(ownerCanonicalId, {
+    event_id: crypto.randomUUID(),
+    type: decoded?.decryption_ok === true ? "message.received.local" : "message.receive.failed.local",
+    created_at: now,
+    subject_id: messageId,
+    data: failReason !== null ? { relay_message_id: pending.relay_message_id, fail_reason: failReason } : { relay_message_id: pending.relay_message_id }
+  });
+}
+
 // Drain step. Iterates the owner's pending_outbound rows and tries
 // to submit any that are queued AND past their next_retry_at gate.
 // Idempotent — safe to call from multiple triggers (online event,
@@ -679,6 +827,66 @@ export async function retrieveRelayInboxAfterLocalSave(
       continue;
     }
     const messageId = crypto.randomUUID();
+    // Phase 11.6: deferred-decrypt. If this is a chat envelope we
+    // can't decrypt right now (locked: account in IDB but not
+    // unlocked in memory), stash the ciphertext in pending_decrypt
+    // and ack the server. drainPendingDecrypt() picks it up after
+    // unlock and writes the real chat row. We DO NOT save a
+    // permanent "could not be decrypted" placeholder anymore — that
+    // was the Phase 11.5 regression bug.
+    const isChatScheme = envelope.ciphertext_scheme === SUDO_CHAT_CIPHERTEXT_SCHEME
+      || envelope.ciphertext_scheme === "x25519-aes-gcm-v1"
+      || envelope.ciphertext_scheme === "ecdh-p256-aes-gcm-v1";
+    if (isChatScheme && (options.recipientAccount === undefined || options.recipientAccount === null)) {
+      try {
+        await savePendingDecrypt({
+          local_id: crypto.randomUUID(),
+          owner_canonical_id: ownerCanonicalId,
+          relay_message_id: envelope.message_id,
+          envelope_json: JSON.stringify(envelope),
+          sender_canonical_id: envelope.sender_canonical_id,
+          conversation_id: conversationIdFor(envelope.sender_canonical_id, envelope.recipient_canonical_id),
+          received_at: now
+        });
+      } catch (error) {
+        // If the IDB write fails, leave the envelope at the server
+        // (don't ack) so the next poll tries again. The local row
+        // is the source of truth — better to retry than to lose.
+        await appendLocalEvent(ownerCanonicalId, {
+          event_id: crypto.randomUUID(),
+          type: "message.receive.failed.local",
+          created_at: now,
+          subject_id: messageId,
+          data: { relay_message_id: envelope.message_id, reason: "pending_decrypt_save_failed", message: error instanceof Error ? error.message : "unknown" }
+        });
+        continue;
+      }
+      // Ack the server — we have the ciphertext locally now.
+      try {
+        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+          method: "POST",
+          headers: { accept: "application/json" }
+        });
+      } catch { /* ACK retry on next poll */ }
+      // Broadcast the chat-list refresh so the conversation surfaces
+      // a "unlock to read N messages" affordance even before decrypt.
+      void notifyMessageUpsert(ownerCanonicalId, {
+        message_id: messageId,
+        owner_canonical_id: ownerCanonicalId,
+        conversation_id: conversationIdFor(envelope.sender_canonical_id, envelope.recipient_canonical_id),
+        direction: "received",
+        sender_canonical_id: envelope.sender_canonical_id,
+        recipient_canonical_id: envelope.recipient_canonical_id,
+        sender_handle: envelope.sender_handle,
+        recipient_handle: envelope.recipient_handle,
+        body: "",
+        created_at: envelope.created_at,
+        updated_at: now,
+        status: "delivered_to_recipient_device",
+        relay_message_id: envelope.message_id
+      });
+      continue;
+    }
     // Resolve THIS envelope's sender key. The poll loop can carry
     // envelopes from many different senders, so we look up per-row
     // rather than passing a single sender key into the function.
@@ -688,12 +896,39 @@ export async function retrieveRelayInboxAfterLocalSave(
       senderMessagingPublicKey: senderKey?.public_key,
       senderMessagingKeyType: senderKey?.type
     });
-    // Phase 9: chat metadata (reply pointer, forwarded flag) lives
+    // Phase 11.6: when decrypt fails on an unlocked account, treat
+    // it as a transient failure and stash for retry (drainer will
+    // refetch the sender key and try once more) rather than burning
+    // a permanent placeholder. Only true corruption / unsupported
+    // scheme falls through to the placeholder render below.
+    if (isChatScheme && !decoded.decryption_ok && options.recipientAccount !== undefined && options.recipientAccount !== null) {
+      try {
+        await savePendingDecrypt({
+          local_id: crypto.randomUUID(),
+          owner_canonical_id: ownerCanonicalId,
+          relay_message_id: envelope.message_id,
+          envelope_json: JSON.stringify(envelope),
+          sender_canonical_id: envelope.sender_canonical_id,
+          conversation_id: conversationIdFor(envelope.sender_canonical_id, envelope.recipient_canonical_id),
+          received_at: now,
+          retry_attempts: 0
+        });
+      } catch { /* fall through to placeholder below */ }
+      try {
+        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
+          method: "POST",
+          headers: { accept: "application/json" }
+        });
+      } catch { /* ACK retry on next poll */ }
+      continue;
+    }
+    // Phase 11.6: chat metadata (reply pointer, forwarded flag) lives
     // INSIDE the encrypted payload for sudo_chat_v1 envelopes. For
     // legacy schemes (real-ECDH chat / dev-placeholder) we still
-    // fall back to the envelope's top-level fields. A failed
-    // decrypt on a sudo_chat_v1 envelope yields body="" with the
-    // "could not be decrypted" placeholder that the renderer paints.
+    // fall back to the envelope's top-level fields. A failed decrypt
+    // here means the account WAS unlocked but the body was unreadable
+    // even after a sender-key retry — that's a TRUE permanent failure,
+    // and we render the placeholder.
     const renderBody = decoded.decryption_ok
       ? decoded.body
       : (envelope.ciphertext_scheme === SUDO_CHAT_CIPHERTEXT_SCHEME

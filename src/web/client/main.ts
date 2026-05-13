@@ -157,10 +157,13 @@ import {
   clearLocalDb,
   deleteCryptoAccount,
   deleteLocalContact,
+  countPendingDecrypt,
+  deleteSetting,
   getBackfillState,
   getLocalStorageStatus,
   getSetting,
   initializeLocalState,
+  listPendingDecryptForConversation,
   listContacts as listLocalContacts,
   listConversations,
   listCryptoAccounts,
@@ -186,6 +189,7 @@ import {
 import { deleteLocalDb, isLocalDatabaseError, LocalDatabaseError, probeLocalDbWritable, resetCachedLocalDb, subscribeLocalStateBroadcasts, broadcastLocalStateChange, type LocalStateChangeKind } from "./local/local-db.js";
 import {
   cancelFailedOutbound,
+  drainPendingDecrypt,
   drainPendingOutbound,
   queueAndSubmitLocalMessage,
   retrieveRelayInboxAfterLocalSave,
@@ -251,6 +255,7 @@ const onboardingNext = getRequiredButton("onboarding-next");
 const onboardingBack = getRequiredButton("onboarding-back");
 const onboardingSkip = getRequiredButton("onboarding-skip");
 const settingsDialog = getRequiredDialog("settings-dialog");
+const settingsLockMessages = getRequiredInput("settings-lock-messages");
 const settingsBackupButton = getRequiredButton("settings-backup");
 const settingsRestoreButton = getRequiredButton("settings-restore");
 const settingsDevicesButton = getRequiredButton("settings-devices");
@@ -1746,6 +1751,12 @@ async function pollInbox(): Promise<void> {
     if (newMessages.length > 0) {
       await onIncomingMessages(newMessages);
     }
+    // Phase 11.6: if we're now unlocked, drain anything that piled
+    // up while we were locked (or earlier this session). Cheap
+    // when the queue is empty.
+    if (currentCryptoAccount !== null) {
+      void drainPendingDecryptForCurrentUser();
+    }
   } catch {
     // network blip; next tick retries
   } finally {
@@ -3024,6 +3035,16 @@ async function submitUnlockDialog(): Promise<void> {
     );
     currentCryptoAccount = account;
     activateCoordinatorAfterUnlock();
+    // Phase 11.6: drain pending_decrypt rows that stacked up while
+    // we were locked. Each row gets re-decoded with the live
+    // account; sender-key refresh + permanent-failure handling
+    // lives inside drainPendingDecrypt itself.
+    void drainPendingDecryptForCurrentUser();
+    // Phase 11.6: persist the unlocked-bundle marker if the user
+    // hasn't explicitly opted into local locking. Stashes the
+    // passphrase-derived account inside IDB so the next reload
+    // auto-unlocks without prompting.
+    void maybePersistAutoUnlock(passphrase);
     const resume = pendingUnlockAction;
     pendingUnlockAction = null;
     closeUnlockDialog();
@@ -3036,6 +3057,136 @@ async function submitUnlockDialog(): Promise<void> {
       error instanceof Error ? error.message : "could not unlock";
   } finally {
     unlockSubmit.disabled = false;
+  }
+}
+
+// Phase 11.6: deferred-decrypt drainer. Runs the pending_decrypt
+// queue with the current (unlocked) crypto account, then nudges the
+// chat-list refresh so any newly-decrypted conversation rows pick
+// up the body. Safe to call repeatedly — drainer is idempotent.
+async function drainPendingDecryptForCurrentUser(): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  if (currentCryptoAccount === null) return;
+  const owner = currentIdentityDocument.canonical_id;
+  try {
+    await drainPendingDecrypt(owner, {
+      recipientAccount: currentCryptoAccount,
+      resolveSenderMessagingKey: async (canonicalId) => {
+        try {
+          const doc = await fetchIdentityProfile(canonicalId);
+          const pk = doc.keys?.messaging?.public_key;
+          const kt = doc.keys?.messaging?.type;
+          if (typeof pk !== "string" || pk.length === 0) return null;
+          if (kt !== "x25519" && kt !== "ecdh-p256") return null;
+          return { public_key: pk, type: kt };
+        } catch {
+          return null;
+        }
+      }
+    });
+    if (chatTarget !== null) {
+      void renderChatPopupBody(chatTarget.canonical);
+    }
+    void refreshLocalChats();
+  } catch (error) {
+    console.warn("[decrypt] drain failed", error instanceof Error ? error.message : error);
+  }
+}
+
+// Phase 11.6: opt-in lock setting. "lock messages on this browser
+// after reload" is OFF by default — when off, we persist the
+// passphrase-derived auto-unlock material in IDB so a reload skips
+// the unlock dialog. When ON, we DROP that material and the user
+// re-enters their passphrase after every reload.
+//
+// The auto-unlock material is just the passphrase encrypted under
+// a random local key, stored in IDB. This gives the same threat
+// model as WhatsApp/iMessage/Signal Desktop: anyone with disk
+// access to this browser profile can read the keys. The privacy
+// trade-off is explicit in the setting copy.
+const LOCK_MESSAGES_SETTING_KEY = "privacy.lock_messages_on_reload";
+const AUTO_UNLOCK_WRAPPING_KEY = "auto_unlock_wrapping";
+
+async function isLockMessagesOnReloadEnabled(): Promise<boolean> {
+  try {
+    const setting = await getSetting(LOCK_MESSAGES_SETTING_KEY);
+    return setting === true;
+  } catch {
+    return false;
+  }
+}
+
+async function maybePersistAutoUnlock(passphrase: string): Promise<void> {
+  const locked = await isLockMessagesOnReloadEnabled();
+  if (locked) {
+    // Lock setting ON → ensure no auto-unlock material is on disk.
+    try { await deleteSetting(AUTO_UNLOCK_WRAPPING_KEY); } catch { /* ignore */ }
+    return;
+  }
+  if (currentIdentityDocument === null) return;
+  // Encrypt the passphrase under a random AES-GCM key. Both the
+  // wrapped passphrase AND the wrapping key are stored in IDB; on a
+  // disk-only attack the wrapping key is right there. This is a
+  // continuity convenience, not a defense — the lock setting is the
+  // real defense.
+  try {
+    const key = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv },
+      key,
+      new TextEncoder().encode(passphrase)
+    );
+    const rawKey = await crypto.subtle.exportKey("raw", key);
+    await putSetting(AUTO_UNLOCK_WRAPPING_KEY, {
+      v: 1,
+      canonical: currentIdentityDocument.canonical_id,
+      key_b64: btoa(String.fromCharCode(...new Uint8Array(rawKey))),
+      iv_b64: btoa(String.fromCharCode(...iv)),
+      ct_b64: btoa(String.fromCharCode(...new Uint8Array(ciphertext)))
+    });
+  } catch (error) {
+    console.warn("[auto-unlock] persist failed", error instanceof Error ? error.message : error);
+  }
+}
+
+async function tryAutoUnlock(): Promise<boolean> {
+  if (currentIdentityDocument === null) return false;
+  if (currentCryptoAccount !== null) return true;
+  // If the user opted into local locking, do nothing.
+  if (await isLockMessagesOnReloadEnabled()) return false;
+  type Stored = { v?: number; canonical?: string; key_b64?: string; iv_b64?: string; ct_b64?: string };
+  let stored: Stored | null;
+  try {
+    const raw = await getSetting(AUTO_UNLOCK_WRAPPING_KEY);
+    stored = raw as Stored | null;
+  } catch { return false; }
+  if (stored === null || stored === undefined) return false;
+  if (stored.canonical !== currentIdentityDocument.canonical_id) return false;
+  if (typeof stored.key_b64 !== "string" || typeof stored.iv_b64 !== "string" || typeof stored.ct_b64 !== "string") return false;
+  const sKey = stored.key_b64;
+  const sIv = stored.iv_b64;
+  const sCt = stored.ct_b64;
+  try {
+    const rawKey = Uint8Array.from(atob(sKey), (c) => c.charCodeAt(0));
+    const iv = Uint8Array.from(atob(sIv), (c) => c.charCodeAt(0));
+    const ct = Uint8Array.from(atob(sCt), (c) => c.charCodeAt(0));
+    const key = await crypto.subtle.importKey("raw", rawKey, { name: "AES-GCM" }, false, ["decrypt"]);
+    const passBuf = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+    const passphrase = new TextDecoder().decode(passBuf);
+    const account = await unlockBrowserCryptoAccountByHandle(
+      currentIdentityDocument.canonical_id,
+      passphrase
+    );
+    currentCryptoAccount = account;
+    activateCoordinatorAfterUnlock();
+    void drainPendingDecryptForCurrentUser();
+    return true;
+  } catch (error) {
+    // The wrapped passphrase didn't decrypt the account — drop the
+    // auto-unlock material so the next reload prompts cleanly.
+    try { await deleteSetting(AUTO_UNLOCK_WRAPPING_KEY); } catch { /* ignore */ }
+    return false;
   }
 }
 
@@ -5084,6 +5235,11 @@ function setCurrentIdentity(identity: IdentityDocument, fingerprint: string): vo
   // Phase 10.2: first-run onboarding. Only opens if the local flag
   // is missing. Returning users never see it.
   maybeShowOnboarding();
+  // Phase 11.6: try the auto-unlock path. When the lock-messages
+  // setting is OFF (default) and we have a stored auto-unlock
+  // material, this avoids the unlock dialog after reload. If it
+  // succeeds, drainPendingDecrypt fires automatically.
+  void tryAutoUnlock();
 }
 
 // Phase 10.2: first-run onboarding. localStorage flag persists the
@@ -5530,6 +5686,11 @@ function openSettingsDialog(): void {
   resetSettingsDangerZone();
   settingsState.textContent = "";
   if (!settingsDialog.open) settingsDialog.showModal();
+  // Phase 11.6: hydrate the lock-messages toggle from persisted
+  // settings so reopening the dialog reflects the user's choice.
+  void isLockMessagesOnReloadEnabled().then((on) => {
+    settingsLockMessages.checked = on;
+  });
   // Opening Settings is a natural moment to retry any backfill that
   // failed earlier — the user is actively engaged with their account
   // surface and the device list, so a sync that converges now is more
@@ -5538,6 +5699,26 @@ function openSettingsDialog(): void {
     void retryPendingBackfills(currentIdentityDocument.canonical_id);
   }
 }
+
+settingsLockMessages.addEventListener("change", () => {
+  const enable = settingsLockMessages.checked;
+  void (async () => {
+    try {
+      await putSetting(LOCK_MESSAGES_SETTING_KEY, enable);
+      if (enable) {
+        // Lock setting ON → drop any auto-unlock material so the
+        // next reload requires passphrase entry.
+        try { await deleteSetting(AUTO_UNLOCK_WRAPPING_KEY); } catch { /* ignore */ }
+        flashFeedback("locked. you'll be asked for your passphrase after reload.");
+      } else {
+        flashFeedback("unlocked. this browser stays signed in across reloads.");
+      }
+    } catch (error) {
+      settingsLockMessages.checked = !enable;
+      flashFeedback("couldn't save setting");
+    }
+  })();
+});
 
 function resetSettingsDangerZone(): void {
   settingsResetConfirmInput.value = "";
@@ -6172,14 +6353,15 @@ function renderChatPopupSidebarRow(
   handle.textContent = chat.handle || canonical;
   row.append(handle);
 
+  // Phase 11.6: numeric blue badge removed. Unread state is conveyed
+  // via the bolder handle styling on .is-unread; per-conversation
+  // unread counts belong to the notifications channel.
   const unread = typeof chat.unreadCount === "number" && chat.unreadCount > 0 ? chat.unreadCount : 0;
   if (unread > 0) {
-    const badge = document.createElement("span");
-    badge.className = "chat-popup__sidebar-row__unread";
-    badge.dataset["unreadCount"] = String(unread);
-    badge.setAttribute("aria-label", `${unread} unread message${unread === 1 ? "" : "s"}`);
-    badge.textContent = unread > 99 ? "99+" : String(unread);
-    row.append(badge);
+    const srOnly = document.createElement("span");
+    srOnly.className = "sr-only";
+    srOnly.textContent = `${unread} unread message${unread === 1 ? "" : "s"}`;
+    row.append(srOnly);
   }
 
   // Preview line — optional tick on sent rows + clipped last-line.
@@ -6332,6 +6514,17 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
   const distanceFromBottom = chatPopupBody.scrollHeight - chatPopupBody.scrollTop - chatPopupBody.clientHeight;
   const wasNearBottom = distanceFromBottom < 60 || chatPopupBody.scrollHeight === 0;
   if (visibleMessages.length === 0 && systemEvents.length === 0) {
+    // Phase 11.6: even with no decrypted history, check for pending
+    // decrypts in this conversation — if the user is locked and
+    // messages are stacked up, show the unlock CTA in place of the
+    // "no messages yet" empty state.
+    try {
+      const pendingRows = await listPendingDecryptForConversation(currentIdentityDocument.canonical_id, conversationId);
+      if (pendingRows.length > 0 && isAccountLocked()) {
+        chatPopupBody.replaceChildren(buildPendingDecryptCta(pendingRows.length));
+        return;
+      }
+    } catch { /* fall through to empty state */ }
     chatPopupBody.replaceChildren(makeChatEmpty("no messages yet"));
     return;
   }
@@ -6378,9 +6571,41 @@ async function renderChatPopupBody(canonicalId: string, options: { forceScrollTo
     } else fragment.append(renderChatSystem(entry.text));
   }
   chatPopupBody.replaceChildren(fragment);
+  // Phase 11.6: append an inline "unlock to read N messages" CTA
+  // when there are pending_decrypt rows for THIS conversation. The
+  // CTA is non-modal and idempotent — clicking it opens the unlock
+  // dialog which then triggers drainPendingDecrypt.
+  try {
+    const pendingRows = await listPendingDecryptForConversation(currentIdentityDocument.canonical_id, conversationId);
+    if (pendingRows.length > 0 && isAccountLocked()) {
+      chatPopupBody.append(buildPendingDecryptCta(pendingRows.length));
+    }
+  } catch { /* never block the render */ }
   if (options.forceScrollToBottom || wasNearBottom) {
     chatPopupBody.scrollTop = chatPopupBody.scrollHeight;
   }
+}
+
+// Phase 11.6: shared CTA builder used by both the empty-state branch
+// (no decrypted history yet) and the normal-render branch (some
+// history visible PLUS additional locked messages stacked up).
+function buildPendingDecryptCta(pendingCount: number): HTMLElement {
+  const cta = document.createElement("div");
+  cta.className = "chat-pending-decrypt-cta";
+  const label = document.createElement("div");
+  label.className = "chat-pending-decrypt-cta__label";
+  label.textContent = pendingCount === 1
+    ? "unlock this browser to read 1 new message"
+    : `unlock this browser to read ${pendingCount} new messages`;
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "text-button text-button--primary chat-pending-decrypt-cta__btn";
+  btn.textContent = "unlock";
+  btn.addEventListener("click", () => {
+    requestUnlock(() => { /* drain happens automatically on unlock */ });
+  });
+  cta.append(label, btn);
+  return cta;
 }
 
 function renderChatSystem(text: string): HTMLElement {

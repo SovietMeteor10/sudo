@@ -361,6 +361,43 @@ body[data-auth-state="auth-restore"] .landing {
   color: var(--muted);
 }
 
+/* Phase 11.6: privacy toggle row. */
+.settings-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+.settings-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--focus);
+}
+
+/* Phase 11.6: inline unlock CTA inside a conversation when there
+   are pending_decrypt rows. Calm, non-modal, never replaces the
+   chat history. */
+.chat-pending-decrypt-cta {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin: 12px 16px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+.chat-pending-decrypt-cta__label {
+  color: var(--text);
+  font-size: 13px;
+  flex: 1 1 auto;
+}
+.chat-pending-decrypt-cta__btn {
+  flex-shrink: 0;
+}
+
 .settings-danger {
   margin-top: 6px;
   border: 1px solid var(--line);

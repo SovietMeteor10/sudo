@@ -63,6 +63,8 @@
     "smoke:diagnostics-hardening": "node scripts/diagnostics-hardening-smoke.cjs",
     "smoke:message-quota-behavior": "node scripts/message-quota-behavior-smoke.cjs",
     "smoke:incognito-linking-copy": "node scripts/incognito-linking-copy-smoke.cjs",
+    "smoke:deferred-decrypt": "node scripts/deferred-decrypt-smoke.cjs",
+    "smoke:auto-unlock-setting": "node scripts/auto-unlock-setting-smoke.cjs",
     "smoke:client-signup-no-server-key": "node scripts/client-signup-no-server-key-smoke.cjs",
     "smoke:follow-vs-chat": "node scripts/follow-vs-chat-smoke.cjs",
     "smoke:lookup-card-default": "node scripts/lookup-card-default-smoke.cjs",

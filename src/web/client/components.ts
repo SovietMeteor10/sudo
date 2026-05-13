@@ -1082,13 +1082,16 @@ function renderChat(chat: ChatSummary): HTMLElement {
   handle.textContent = chat.handle;
   row.append(handle);
 
+  // Phase 11.6: removed the numeric blue circle badge. Unread state
+  // is conveyed by the bolder handle (.chat-row--unread .chat-row__handle)
+  // alone. Per-conversation unread counts belong in the notifications
+  // channel, not as inline pills on every chat row. We keep the
+  // sr-only aria-label so screen readers still surface the count.
   if (unread > 0) {
-    const badge = document.createElement("span");
-    badge.className = "chat-row__unread";
-    badge.dataset["unreadCount"] = String(unread);
-    badge.setAttribute("aria-label", `${unread} unread message${unread === 1 ? "" : "s"}`);
-    badge.textContent = unread > 99 ? "99+" : String(unread);
-    row.append(badge);
+    const srOnly = document.createElement("span");
+    srOnly.className = "sr-only";
+    srOnly.textContent = `${unread} unread message${unread === 1 ? "" : "s"}`;
+    row.append(srOnly);
   }
 
   if (chat.lastLine && chat.lastLine.length > 0) {

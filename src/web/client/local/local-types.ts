@@ -285,6 +285,37 @@ export type LocalMessageReaction = {
   removed_at?: string;
 };
 
+// Phase 11.6: deferred-decrypt row.
+//
+// When an encrypted chat envelope arrives while the local crypto
+// account is locked, the inbox poller cannot decrypt the body. The
+// old behavior was to save a permanent "[message could not be
+// decrypted]" placeholder LocalMessage; the new behavior is to stash
+// the entire envelope JSON here and ack the server. On unlock,
+// drainPendingDecrypt() iterates these rows, decrypts in place,
+// writes the real LocalMessage, and deletes the row.
+//
+// retry_attempts captures retries for transient sender-key refresh
+// (an unlocked account can still fail to decrypt if the sender's
+// messaging key in our profile cache is stale; we refetch + retry
+// once before giving up).
+export type PendingDecryptRow = {
+  // Composite primary key: a random UUID generated when we stash.
+  // Keyed on local_id (not relay_message_id) so two browsers that
+  // each saw the same envelope can have independent pending rows.
+  local_id: string;
+  owner_canonical_id: string;
+  relay_message_id: string;
+  envelope_json: string;
+  sender_canonical_id: string;
+  conversation_id: string;
+  received_at: string;
+  // Last permanent-failure reason, if drainPendingDecrypt gave up.
+  // Surfaced in the chat row's failure label.
+  fail_reason?: "wrong_key" | "malformed" | "unsupported_scheme" | "sender_missing" | "auth_failed";
+  retry_attempts?: number;
+};
+
 // Media-attachment metadata. The actual file bytes live on the
 // server as opaque AES-GCM ciphertext at /api/media/<blob_id>;
 // this row is what lets a local device decrypt + render. Two key

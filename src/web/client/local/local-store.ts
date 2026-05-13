@@ -17,6 +17,7 @@ import type {
   LocalStorageStatus,
   LocalSubscription,
   LocalTrustedDevice,
+  PendingDecryptRow,
   PendingOutbound
 } from "./local-types.js";
 
@@ -395,6 +396,37 @@ export async function deletePendingOutboundByQueueId(localQueueId: string): Prom
   const transaction = db.transaction("pending_outbound", "readwrite");
   transaction.objectStore("pending_outbound").delete(localQueueId);
   await txDone(transaction);
+}
+
+// Phase 11.6: pending-decrypt store. These rows survive across
+// reloads — the inbox poller writes them when the account is locked,
+// drainPendingDecrypt reads + deletes them after unlock.
+export async function savePendingDecrypt(row: PendingDecryptRow): Promise<void> {
+  await putRecord("pending_decrypt", row);
+}
+
+export async function listPendingDecrypt(ownerCanonicalId: string): Promise<PendingDecryptRow[]> {
+  return getAllByIndex<PendingDecryptRow>("pending_decrypt", "by_owner", ownerCanonicalId);
+}
+
+export async function listPendingDecryptForConversation(
+  ownerCanonicalId: string,
+  conversationId: string
+): Promise<PendingDecryptRow[]> {
+  const all = await listPendingDecrypt(ownerCanonicalId);
+  return all.filter((row) => row.conversation_id === conversationId);
+}
+
+export async function deletePendingDecrypt(localId: string): Promise<void> {
+  const db = await openLocalDb();
+  const transaction = db.transaction("pending_decrypt", "readwrite");
+  transaction.objectStore("pending_decrypt").delete(localId);
+  await txDone(transaction);
+}
+
+export async function countPendingDecrypt(ownerCanonicalId: string): Promise<number> {
+  const rows = await listPendingDecrypt(ownerCanonicalId);
+  return rows.length;
 }
 
 export async function saveIdentitySeen(identity: LocalIdentityRecord): Promise<void> {

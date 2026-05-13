@@ -15,7 +15,7 @@ export const LOCAL_DB_NAME = "sudo_local_state";
 // (blob_id, mime, filename, size, optional width/height). The
 // blob itself is opaque ciphertext on the server; this row is
 // what lets the receiving device decrypt + render.
-export const LOCAL_DB_VERSION = 10;
+export const LOCAL_DB_VERSION = 11;
 
 export const localStoreNames = [
   "events",
@@ -34,7 +34,8 @@ export const localStoreNames = [
   "conversation_settings",
   "conversation_system_events",
   "message_reactions",
-  "message_attachments"
+  "message_attachments",
+  "pending_decrypt"
 ] as const;
 
 export type LocalStoreName = typeof localStoreNames[number];
@@ -581,6 +582,21 @@ function applySchema(db: IDBDatabase, oldVersion: number, upgrade: IDBTransactio
       keyPath: ["owner_canonical_id", "canonical_id"]
     });
     contactsStore.createIndex("by_owner", "owner_canonical_id");
+  }
+
+  // ---- v10 → v11: Phase 11.6 pending_decrypt store ----
+  // Holds incoming chat envelopes that arrived while the local
+  // crypto account was locked. Each row is the raw RelayEnvelope
+  // JSON; the inbox poller stores them here (instead of saving a
+  // permanent placeholder LocalMessage) and acks the server. On
+  // unlock, drainPendingDecrypt() iterates these rows, decrypts in
+  // place, and writes the real LocalMessage row.
+  if (oldVersion < 11) {
+    if (!db.objectStoreNames.contains("pending_decrypt")) {
+      const store = db.createObjectStore("pending_decrypt", { keyPath: "local_id" });
+      store.createIndex("by_owner", "owner_canonical_id");
+      store.createIndex("by_owner_received_at", ["owner_canonical_id", "received_at"]);
+    }
   }
 }
 
