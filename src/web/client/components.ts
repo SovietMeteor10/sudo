@@ -881,7 +881,19 @@ export function renderLookupResult(root: HTMLElement, state: LookupState): void 
 
 export function renderChatList(root: HTMLElement, localChats: ChatSummary[] = []): void {
   if (localChats.length === 0) {
-    root.replaceChildren(line("no chats yet", "lookup__empty"));
+    // Phase 13: pristine empty state. Two short lines, no exclamation,
+    // no "you have 0 chats" awkwardness — just a calm placeholder
+    // and a hint of what to do next.
+    const wrap = document.createElement("div");
+    wrap.className = "chat-list__empty";
+    const title = document.createElement("div");
+    title.className = "chat-list__empty-title";
+    title.textContent = "your conversations will appear here";
+    const hint = document.createElement("div");
+    hint.className = "chat-list__empty-hint";
+    hint.textContent = "share your handle to start talking.";
+    wrap.append(title, hint);
+    root.replaceChildren(wrap);
     return;
   }
   const fragment = document.createDocumentFragment();

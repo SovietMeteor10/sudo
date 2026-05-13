@@ -1542,6 +1542,21 @@ body[data-auth-state="auth-restore"] .landing {
   font-size: 12px;
 }
 
+/* Phase 13: chat-list empty state. Calm two-line placeholder shown
+   when the signed-in user has no conversations yet. */
+.chat-list__empty {
+  padding: 16px 14px;
+}
+.chat-list__empty-title {
+  color: var(--text);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.chat-list__empty-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .column__hint {
   padding: 8px 14px 10px;
   border-bottom: 1px solid var(--line-soft);

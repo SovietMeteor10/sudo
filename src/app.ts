@@ -7,6 +7,8 @@ import { feedRouter } from "./feeds/feed.routes.js";
 import { identityRouter } from "./identity/identity.routes.js";
 import { mountStaticClientPortal } from "./portal/clientPortal.js";
 import { CONTENT_SECURITY_POLICY } from "./portal/csp.js";
+import { maintenanceMiddleware } from "./node/maintenance.js";
+import { getNetworkEpoch } from "./node/network.epoch.js";
 import { notificationsRouter } from "./notifications/notifications.routes.js";
 import { SUDO_PROTOCOL_VERSION } from "./protocol/constants.js";
 import { pushRouter } from "./push/push.routes.js";
@@ -64,6 +66,13 @@ export function createApp() {
     response.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
     next();
   });
+  // Phase 13: maintenance-mode short-circuit. If
+  // `${dataDir}/.maintenance` exists, every non-health request gets
+  // a 503 + Retry-After. The reset script flips the flag before
+  // destructive ops and clears it on completion. Mounted BEFORE the
+  // media router so uploads can't slip through during a reset.
+  app.use(maintenanceMiddleware);
+
   // /api/media MUST be mounted BEFORE the JSON body middleware.
   // Uploads stream raw ciphertext octets up to 50MB; the JSON
   // parser would otherwise consume the body (and reject with 413
@@ -80,6 +89,15 @@ export function createApp() {
 
   app.get("/api/health", (_request, response) => {
     response.json({ ok: true, protocol: "sudo", version: SUDO_PROTOCOL_VERSION });
+  });
+
+  // Phase 13: NETWORK_EPOCH endpoint. Public, unauthenticated. The
+  // client polls on boot and compares to its last-seen value; a
+  // mismatch wipes IDB + service-worker caches and forces a fresh
+  // connect. Cheap — the value is cached in memory after first
+  // file read.
+  app.get("/api/network/epoch", (_request, response) => {
+    response.json({ epoch: getNetworkEpoch() });
   });
 
   app.use("/api/identity", identityRouter);

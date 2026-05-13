@@ -1312,12 +1312,89 @@ window.addEventListener("keydown", (event) => {
 
 async function initializeLocalRuntime(): Promise<void> {
   try {
+    // Phase 13: network-epoch check. If the server's epoch differs
+    // from what this browser last saw, the network was reset; wipe
+    // every local persistence surface and force a clean reconnect.
+    // Runs BEFORE initializeLocalState so a stale IDB never gets
+    // opened with the new epoch's expectations.
+    await checkNetworkEpochAndMaybeWipe();
     await initializeLocalState();
     await refreshLocalChats();
     await refreshLocalStorageStatus();
     await refreshDevicePanel();
   } catch (error) {
     localStateStatus.textContent = `local data: ${error instanceof Error ? error.message : "unavailable"}`;
+  }
+}
+
+// Phase 13: stale-client protection. The server hands us a network
+// epoch. We persist the last-seen value in localStorage; when the
+// fetched value differs (and we'd previously seen ANY value), the
+// network was reset behind us — wipe everything and reload as a
+// fresh device.
+const NETWORK_EPOCH_KEY = "sudo.network_epoch";
+async function checkNetworkEpochAndMaybeWipe(): Promise<void> {
+  let serverEpoch: string | null = null;
+  try {
+    const r = await fetch("/api/network/epoch", { headers: { accept: "application/json" } });
+    if (!r.ok) return; // server might be in maintenance; don't wipe
+    const body = await r.json() as { epoch?: string };
+    if (typeof body?.epoch === "string" && body.epoch.length > 0) serverEpoch = body.epoch;
+  } catch {
+    // Network blip — safer to keep local state than to wipe on a
+    // transient error.
+    return;
+  }
+  if (serverEpoch === null) return;
+  let lastSeen: string | null = null;
+  try { lastSeen = localStorage.getItem(NETWORK_EPOCH_KEY); }
+  catch { /* localStorage may be inaccessible — bail */ return; }
+  if (lastSeen === null) {
+    // First time on this browser: just record the value.
+    try { localStorage.setItem(NETWORK_EPOCH_KEY, serverEpoch); } catch { /* ignore */ }
+    return;
+  }
+  if (lastSeen === serverEpoch) return; // happy path
+  // Mismatch — the network was reset. Wipe + reload.
+  try {
+    // 1. Wipe IDB.
+    await deleteLocalDb();
+    // 2. Wipe localStorage except the epoch key (which we'll set
+    //    to the new value).
+    const keys = Object.keys(localStorage);
+    for (const k of keys) {
+      if (k === NETWORK_EPOCH_KEY) continue;
+      try { localStorage.removeItem(k); } catch { /* ignore */ }
+    }
+    localStorage.setItem(NETWORK_EPOCH_KEY, serverEpoch);
+    // 3. Unregister service workers so a stale SW can't keep
+    //    serving cached old assets.
+    if ("serviceWorker" in navigator) {
+      try {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map((r) => r.unregister().catch(() => false)));
+      } catch { /* ignore */ }
+    }
+    // 4. Clear caches API (covers SW cache + http cache shims).
+    if ("caches" in self) {
+      try {
+        const names = await caches.keys();
+        await Promise.all(names.map((n) => caches.delete(n).catch(() => false)));
+      } catch { /* ignore */ }
+    }
+    // 5. Show a brief explanation, then reload as a clean device.
+    try {
+      document.body.innerHTML = "<div style='padding:24px;max-width:560px;margin:60px auto;font-family:inherit;color:#e0e0e0;background:#1a1a1a;border-radius:6px'>"
+        + "<h2 style='margin:0 0 12px'>sudo has been reset for a new network launch</h2>"
+        + "<p style='margin:0 0 12px;line-height:1.5'>this browser needs to reconnect. local data has been cleared. reloading…</p>"
+        + "</div>";
+    } catch { /* ignore */ }
+    window.setTimeout(() => { window.location.reload(); }, 1200);
+    // Wait long enough that the reload kicks in before any other
+    // boot code runs.
+    await new Promise((r) => setTimeout(r, 5000));
+  } catch (error) {
+    console.warn("[epoch] wipe failed", error instanceof Error ? error.message : error);
   }
 }
 
