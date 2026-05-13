@@ -250,15 +250,24 @@ async function unblockRelayInbox(page) {
     }
     // Reply chip survives inside the encrypted payload. The
     // receiver-side render attaches a .chat-message__reply-snippet
-    // pointing at the original message's relay id.
-    const replyChip = await pageB.evaluate(() => {
+    // pointing at the original message's relay id. Wait up to
+    // RECEIVE_BUDGET_MS for the second envelope (the reply) to
+    // arrive in a subsequent poll cycle.
+    const chipAppeared = await waitFor(pageB, () => {
       const rows = [...document.querySelectorAll("#chat-popup-body .chat-message")];
-      const withReply = rows.filter((r) => r.querySelector(".chat-message__reply-snippet") !== null);
-      return withReply.length;
-    });
-    if (replyChip < 1) {
-      fail("3b.reply-chip", "B never rendered a reply quote — metadata didn't survive the encrypted payload");
+      return rows.some((r) => r.querySelector(".chat-message__reply-snippet") !== null);
+    }, RECEIVE_BUDGET_MS, 300);
+    if (!chipAppeared) {
+      const peek = await pageB.evaluate(() => {
+        const rows = [...document.querySelectorAll("#chat-popup-body .chat-message")];
+        return rows.map((r) => (r.innerText || "").slice(0, 50));
+      });
+      fail("3b.reply-chip", `B never rendered a reply quote within ${RECEIVE_BUDGET_MS}ms. rows=${JSON.stringify(peek)}`);
     } else {
+      const replyChip = await pageB.evaluate(() => {
+        const rows = [...document.querySelectorAll("#chat-popup-body .chat-message")];
+        return rows.filter((r) => r.querySelector(".chat-message__reply-snippet") !== null).length;
+      });
       ok(`3b. reply pointer survived the encrypted payload (${replyChip} row with reply quote)`);
     }
 
