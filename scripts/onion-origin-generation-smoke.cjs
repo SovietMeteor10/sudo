@@ -30,7 +30,11 @@ async function fetchNodeJson(host) {
       port: url.port,
       path: url.pathname,
       method: "GET",
-      headers
+      headers,
+      // Pin TLS SNI to the connection hostname even when the HTTP
+      // Host header is spoofed. Without this, Node verifies the
+      // cert against the (synthetic) onion host and rejects.
+      servername: url.hostname
     };
     const req = http.request(opts, (res) => {
       let data = "";
