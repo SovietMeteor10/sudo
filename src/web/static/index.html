@@ -380,6 +380,7 @@
       <section class="pairing-card" id="pairing-card" hidden aria-labelledby="pairing-card-title">
         <div class="pairing-card__title" id="pairing-card-title">temporary passcode</div>
         <p class="pairing-card__hint">use this code only on your own device. it expires in 60 seconds.</p>
+        <p class="pairing-card__hint pairing-card__hint--note" id="pairing-card-private-note">if the device you're linking is in a private or incognito window, it may forget this account when the window closes.</p>
         <div class="pairing-card__qr" id="pairing-card-qr" aria-hidden="true"></div>
         <div class="pairing-card__code" id="pairing-card-code" aria-label="temporary passcode"></div>
         <div class="pairing-card__url is-muted" id="pairing-card-url"></div>
@@ -402,6 +403,7 @@
     <form class="signup-dialog__panel" id="link-device-form" method="dialog" autocomplete="off">
       <div class="signup-dialog__title" id="link-device-title">collect account from another device</div>
       <p class="signup-dialog__warning">open sudo on a device that already has this account, then go to <strong>account → settings → link another device</strong>. enter the temporary passcode and your account passphrase here.</p>
+      <p class="signup-dialog__hint signup-dialog__hint--note" id="link-device-private-note">private or incognito windows may forget this device when closed. use a normal browser profile if you want this device to stay linked.</p>
 
       <label class="signup-dialog__label" for="link-device-code">temporary passcode</label>
       <input id="link-device-code" class="lookup__input" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDEF-123456">

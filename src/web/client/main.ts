@@ -3787,8 +3787,43 @@ function openLinkDeviceDialog(prefilledCode?: string): void {
   linkDeviceScan.hidden = !isBarcodeDetectorAvailable();
   closeQrScanner({ silent: true });
   if (!linkDeviceDialog.open) linkDeviceDialog.showModal();
+  // Phase 11.5: upgrade the private-window note to the stronger
+  // variant if we can detect that this browser is likely in private
+  // mode (storage.persisted() will reject + persist() returns false
+  // in private mode on most browsers).
+  void refinePrivateStorageNote();
   if (prefilledCode && prefilledCode.length > 0) linkDevicePassphrase.focus();
   else linkDeviceCode.focus();
+}
+
+// Phase 11.5: best-effort private-mode detection. If the result
+// strongly suggests private storage, upgrade the link-device note
+// to a stronger variant. Never relies on the result for correctness
+// — detection is a hint, not a gate.
+async function refinePrivateStorageNote(): Promise<void> {
+  const note = document.getElementById("link-device-private-note");
+  if (!(note instanceof HTMLElement)) return;
+  let privateLikely = false;
+  try {
+    if ("storage" in navigator && navigator.storage.persist) {
+      const persisted = await navigator.storage.persist();
+      // persist() === false despite the user being signed in is a
+      // strong private-mode signal on Chromium + Firefox.
+      if (persisted === false) privateLikely = true;
+    }
+    if ("storage" in navigator && navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      const quotaMb = (est.quota ?? 0) / (1024 * 1024);
+      // Private windows on Safari/Firefox typically report a quota
+      // far below the normal ~half-of-disk default. 200 MB is well
+      // below the ~50GB+ a normal browser exposes.
+      if (quotaMb > 0 && quotaMb < 200) privateLikely = true;
+    }
+  } catch { /* ignore — detection failures default to the generic note */ }
+  if (privateLikely) {
+    note.textContent = "this private window may forget the account when closed. open sudo in a normal browser profile if you want this device to stay linked.";
+    note.classList.add("signup-dialog__hint--strong");
+  }
 }
 
 type GlobalWithBarcodeDetector = typeof globalThis & {
@@ -6450,7 +6485,7 @@ function renderChatMessage(
     if (message.raw_status === "failed") {
       status = "failed";
       label = typeof message.last_error === "string" && message.last_error.length > 0
-        ? `failed: ${message.last_error}`
+        ? `failed — ${humanizeSendError(message.last_error)}`
         : "failed to send";
       glyph = "⚠";
       tick.classList.add("chat-message__tick--failed");
@@ -6493,9 +6528,7 @@ function renderChatMessage(
   if (message.direction === "sent" && !tombstoned && message.raw_status === "failed") {
     const recovery = document.createElement("div");
     recovery.className = "chat-message__recovery";
-    const reason = typeof message.last_error === "string" && message.last_error.length > 0
-      ? message.last_error
-      : "send failed";
+    const reason = humanizeSendError(message.last_error ?? undefined);
     const reasonEl = document.createElement("span");
     reasonEl.className = "chat-message__recovery-reason";
     reasonEl.textContent = reason;
@@ -7283,15 +7316,36 @@ async function sendChatPopupMessage(): Promise<void> {
     await renderChatPopupBody(target.canonical, { forceScrollToBottom: true });
     await refreshLocalChats();
     if (!result.ok) {
-      flashFeedback(`send failed: ${result.error ?? "unknown"}`);
+      flashFeedback(humanizeSendError(result.error));
     }
     // Trigger an immediate inbox poll so a fast reply lands without a 5s wait.
     void pollInbox();
   } catch (error) {
     const message = error instanceof Error ? error.message : "send failed";
-    chatPopupBody.append(makeChatEmpty(message));
-    flashFeedback(`send failed: ${message}`);
+    chatPopupBody.append(makeChatEmpty(humanizeSendError(message)));
+    flashFeedback(humanizeSendError(message));
   }
+}
+
+// Phase 11.5: map server error codes (and freeform strings) to calm
+// user-facing copy. Never surfaces internal terms like
+// "unknown_quota_exceeded" or "stored_by_relay" to the user. Codes
+// the user can act on get specific copy; everything else gets a
+// generic "couldn't send. retry." that pairs with the retry button.
+function humanizeSendError(code: string | undefined | null): string {
+  if (code === undefined || code === null) return "couldn't send. retry.";
+  const lower = String(code).toLowerCase();
+  if (lower.includes("rate_limited")) return "too many messages too quickly. wait a moment and try again.";
+  if (lower.includes("message_too_large")) return "message too long.";
+  if (lower.includes("owner_media_quota") || lower.includes("media_quota")) return "storage is full. delete media or try a smaller file.";
+  if (lower.includes("owner_envelope_quota") || lower.includes("unknown_quota") || lower.includes("known_quota") || lower.includes("sender_outbox") || lower.includes("recipient_inbox") || lower.includes("pair_quota") || lower.includes("relay_full")) {
+    return "couldn't send right now. try again in a moment.";
+  }
+  if (lower.includes("sender_blocked")) return "you can't message this person.";
+  if (lower.includes("invalid_envelope")) return "couldn't send. retry.";
+  if (lower.includes("expired")) return "couldn't send. retry.";
+  if (lower.includes("network") || lower.includes("fetch")) return "couldn't reach the relay. retry.";
+  return "couldn't send. retry.";
 }
 
 // ============================================================

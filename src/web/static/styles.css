@@ -3166,6 +3166,31 @@ body[data-auth-state="auth-restore"] .landing {
   line-height: 1.55;
 }
 
+/* Phase 11.5: secondary copy variants. --lead sits ABOVE the main
+   content, --secondary BELOW; --note is the inline private-window
+   caveat; --strong upgrades the note when private mode is detected. */
+.signup-dialog__hint--lead { margin-top: 4px; }
+.signup-dialog__hint--secondary { margin-top: 12px; }
+.signup-dialog__hint--note {
+  padding: 8px 10px;
+  background: var(--panel-soft);
+  border-left: 2px solid var(--line);
+  border-radius: 3px;
+}
+.signup-dialog__hint--strong {
+  border-left-color: #d9a000;
+  color: var(--text);
+}
+
+.pairing-card__hint--note {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: var(--panel-soft);
+  border-left: 2px solid var(--line);
+  border-radius: 3px;
+  font-size: 11px;
+}
+
 .signup-dialog__label {
   display: block;
   margin-top: 14px;

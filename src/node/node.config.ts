@@ -32,6 +32,9 @@ export type NodeRuntimeConfig = {
   // candidates for deletion. Conservative default keeps recent
   // activity safe.
   mediaRetentionDays: number;
+  // Phase 11.5: per-minute send rate limits.
+  relayPerMinuteRateSender: number;
+  relayPerMinuteRateIp: number;
 };
 
 export function readNodeRuntimeConfig(): NodeRuntimeConfig {
@@ -54,8 +57,20 @@ export function readNodeRuntimeConfig(): NodeRuntimeConfig {
     requireInvite: readBooleanEnv("SUDO_REQUIRE_INVITE", false),
     logLevel: readLogLevel(),
     ownerMediaQuotaBytes: readIntEnv("SUDO_OWNER_MEDIA_QUOTA_BYTES", 500 * 1024 * 1024),
-    ownerRelayEnvelopeQuota: readIntEnv("SUDO_OWNER_RELAY_ENVELOPE_QUOTA", 5000),
-    mediaRetentionDays: readIntEnv("SUDO_MEDIA_RETENTION_DAYS", 30)
+    // Phase 11.5: raised from 5_000 → 100_000. The cap is meant to
+    // be an abuse ceiling, not a normal-use ceiling. Per-minute
+    // rate limits (relayPerMinuteRate{Sender,IpAddress}) are now
+    // the primary defense against runaway bursts; this total quota
+    // only catches sustained multi-hour floods.
+    ownerRelayEnvelopeQuota: readIntEnv("SUDO_OWNER_RELAY_ENVELOPE_QUOTA", 100_000),
+    mediaRetentionDays: readIntEnv("SUDO_MEDIA_RETENTION_DAYS", 30),
+    // Phase 11.5: per-minute send rate limits on /api/relay/envelopes.
+    // The per-sender cap (100/min) covers a one-handed typist
+    // hammering Enter; the per-IP cap (300/min) covers a shared
+    // network or NAT'd household. Both are belt-and-braces with the
+    // existing per-IP media upload limiter.
+    relayPerMinuteRateSender: readIntEnv("SUDO_RELAY_PER_MINUTE_RATE_SENDER", 100),
+    relayPerMinuteRateIp: readIntEnv("SUDO_RELAY_PER_MINUTE_RATE_IP", 300)
   };
 }
 
