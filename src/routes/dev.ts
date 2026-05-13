@@ -9,7 +9,10 @@ import {
   handleIdentitySearch,
   handleIdentitySession
 } from "../identity/identity-auth.handlers.js";
+import { listUntrackedBlobs, runOrphanBlobGc } from "../media/media.gc.js";
+import { summarizeMediaStorage } from "../media/media.store.js";
 import { readNodeRuntimeConfig } from "../node/node.config.js";
+import { runRelayRetentionSweep } from "../relay/relay.retention.js";
 
 export const devRouter = Router();
 
@@ -81,6 +84,44 @@ devRouter.get("/api/admin/tombstone-watermarks", (_request: Request, response: R
   response.json({
     watermarks: listAllTombstoneWatermarks(),
     stale_upserts_rejected: readStaleUpsertRejectionCount()
+  });
+});
+
+// Phase 11.1: smoke + operator hooks for the new lifecycle sweepers.
+// All three are gated identically to /dev/sync/counts — production
+// returns 404. The handlers are POST so a caching proxy / browser
+// preview can't accidentally fire them.
+//
+// /api/admin/media/gc accepts an optional ?dry_run=1 query parameter.
+// Dry-run mode returns the candidate set without deleting anything;
+// this is the path the orphan-blob-gc smoke uses to confirm the
+// retention math BEFORE asking the server to actually delete.
+
+devRouter.post("/api/admin/relay/retention-sweep", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  response.json({ ok: true, ...runRelayRetentionSweep() });
+});
+
+devRouter.post("/api/admin/media/gc", (request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  const dryRun = String(request.query.dry_run ?? "") === "1";
+  response.json({ ok: true, ...runOrphanBlobGc({ dryRun }) });
+});
+
+devRouter.get("/api/admin/media/summary", (_request: Request, response: Response) => {
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("sudo: not found\n");
+    return;
+  }
+  response.json({
+    ...summarizeMediaStorage(),
+    untracked_blobs: listUntrackedBlobs()
   });
 });
 

@@ -7439,6 +7439,7 @@ async function doUpload(file: File, mediaClass: "image" | "video" | "file", ctx:
     const upload = await uploadEncryptedMediaBlob({
       ciphertext,
       mediaClass,
+      uploaderCanonicalId: currentIdentityDocument?.canonical_id,
       signal: abort.signal,
       onProgress: (sent, total) => {
         const pct = total > 0 ? Math.floor((sent / total) * 100) : 0;
@@ -7446,9 +7447,20 @@ async function doUpload(file: File, mediaClass: "image" | "video" | "file", ctx:
       }
     });
     if (upload.ok !== true) {
+      // Phase 11.1: clean error copy for quota failures. The server
+      // returns specific error codes — we map them to user-friendly
+      // strings rather than dumping raw codes into the attachment
+      // status line. Keep the retry affordance so the user has a
+      // recovery path for transient failures.
+      const errorCode = upload.error ?? "unknown";
+      const reason = errorCode === "owner_media_quota_exceeded" ? "your media storage is full"
+        : errorCode === "payload_too_large" ? "file is too large"
+        : errorCode === "owner_envelope_quota_exceeded" ? "too many messages queued — try again later"
+        : errorCode === "rate_limited" ? "too many uploads — slow down"
+        : `upload failed: ${errorCode}`;
       setAttachmentStatus({
         hidden: false,
-        text: `upload failed: ${upload.error}`,
+        text: reason,
         showRetry: true,
         onRetry: () => { void doUpload(file, mediaClass, ctx); }
       });

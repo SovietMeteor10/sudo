@@ -20,7 +20,8 @@ export type RelayPolicyError =
   | "message_too_large"
   | "invalid_envelope"
   | "duplicate_message"
-  | "expired";
+  | "expired"
+  | "owner_envelope_quota_exceeded";
 
 export type SubmitRelayEnvelopeResult =
   | {

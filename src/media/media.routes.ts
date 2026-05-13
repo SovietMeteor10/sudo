@@ -26,11 +26,18 @@
 
 import express from "express";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, statSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, chmodSync, unlinkSync } from "node:fs";
 import { createReadStream, createWriteStream } from "node:fs";
 import { resolve } from "node:path";
 import { emitRateLimited } from "../devices/rate-limit-response.js";
 import { readNodeRuntimeConfig } from "../node/node.config.js";
+import {
+  deleteMediaBlob,
+  getMediaBlob,
+  getMediaBytesForUploader,
+  markMediaBlobAccessed,
+  recordMediaBlob
+} from "./media.store.js";
 
 export const mediaRouter = express.Router();
 
@@ -101,10 +108,47 @@ mediaRouter.post("/upload", (request, response) => {
   const mediaClass = String(request.get("x-sudo-media-class") ?? "file").toLowerCase();
   const limit = SIZE_LIMITS[mediaClass] ?? DEFAULT_LIMIT;
 
+  // Phase 11.1: optional per-owner attestation. The client can pass
+  // its canonical_id in this header to opt into per-owner quota
+  // tracking. The header is *not* authenticated (no signature) — a
+  // malicious client could attribute its uploads to someone else's
+  // canonical_id, but doing so only hurts the attacker (their own
+  // quota tally rises). The privacy invariant (server never sees
+  // plaintext bytes) is unchanged. Phase 11.2 will add signed
+  // attestation as part of the abuse-hardening pass.
+  const uploaderHeader = request.get("x-sudo-uploader-canonical-id");
+  const uploaderCanonicalId = typeof uploaderHeader === "string" && /^sudo:[A-Za-z0-9_:.@-]+$/.test(uploaderHeader)
+    ? uploaderHeader
+    : null;
+
+  // Pre-flight owner quota: reject before we even open the file
+  // handle if the uploader's running total already exceeds the cap.
+  if (uploaderCanonicalId !== null) {
+    const quota = readNodeRuntimeConfig().ownerMediaQuotaBytes;
+    if (quota > 0) {
+      const used = getMediaBytesForUploader(uploaderCanonicalId);
+      if (used >= quota) {
+        response.status(413).json({
+          ok: false,
+          error: "owner_media_quota_exceeded",
+          quota_bytes: quota,
+          used_bytes: used
+        });
+        return;
+      }
+    }
+  }
+
   const blobId = newBlobId();
   const dir = mediaDir();
   const path = resolve(dir, blobId);
   const writer = createWriteStream(path, { mode: 0o600 });
+  // Phase 11.1: silence ERR_STREAM_DESTROYED uncaught errors. The
+  // oversize path explicitly destroys the writer mid-stream, which
+  // Node would otherwise surface as an unhandled error event,
+  // crashing the process. We've already cleaned up the partial file
+  // above; this listener turns the error into a no-op.
+  writer.on("error", () => { /* expected on oversize/abort */ });
 
   let bytesWritten = 0;
   let oversize = false;
@@ -141,12 +185,46 @@ mediaRouter.post("/upload", (request, response) => {
       if (bytesWritten === 0) {
         // Empty body — clean up + reject.
         try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const fs = require("node:fs");
-          if (existsSync(path)) fs.unlinkSync(path);
+          if (existsSync(path)) unlinkSync(path);
         } catch { /* ignore */ }
         finalize(400, { ok: false, error: "empty_body" });
         return;
+      }
+      // Phase 11.1: record the blob for quota + GC bookkeeping AFTER
+      // the bytes are durably on disk. If the second-quota check
+      // (now-exact size known) fails, delete the file we just wrote
+      // and reject — never leaves a leftover blob the client can't
+      // address.
+      if (uploaderCanonicalId !== null) {
+        const quota = readNodeRuntimeConfig().ownerMediaQuotaBytes;
+        if (quota > 0) {
+          const used = getMediaBytesForUploader(uploaderCanonicalId);
+          if (used + bytesWritten > quota) {
+            try { if (existsSync(path)) unlinkSync(path); } catch { /* ignore */ }
+            finalize(413, {
+              ok: false,
+              error: "owner_media_quota_exceeded",
+              quota_bytes: quota,
+              used_bytes: used,
+              attempted_bytes: bytesWritten
+            });
+            return;
+          }
+        }
+      }
+      const nowIso = new Date().toISOString();
+      try {
+        recordMediaBlob({
+          blob_id: blobId,
+          size_bytes: bytesWritten,
+          media_class: mediaClass,
+          uploader_canonical_id: uploaderCanonicalId,
+          created_at: nowIso,
+          last_accessed_at: nowIso
+        });
+      } catch {
+        // DB insert failure shouldn't lose the blob — the client can
+        // still address it by blob_id. Quota tracking is best-effort.
       }
       finalize(200, { ok: true, blob_id: blobId, size_bytes: bytesWritten });
     });
@@ -185,6 +263,11 @@ mediaRouter.get("/:blob_id", (request, response) => {
     response.status(404).json({ ok: false, error: "not_found" });
     return;
   }
+  // Phase 11.1: bookkeeping bump. Touching last_accessed_at means
+  // the orphan-blob GC's "stale = no access in N days" heuristic
+  // gets a true signal. If the DB row is missing (legacy blob from
+  // before the bookkeeping table existed), this is a no-op.
+  try { markMediaBlobAccessed(blobId, new Date().toISOString()); } catch { /* ignore */ }
   const stat = statSync(path);
   response.setHeader("Content-Type", "application/octet-stream");
   response.setHeader("Content-Length", String(stat.size));

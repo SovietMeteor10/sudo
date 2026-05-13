@@ -592,6 +592,10 @@ export type MediaUploadResult = { ok: true; blob_id: string; size_bytes: number 
 export async function uploadEncryptedMediaBlob(input: {
   ciphertext: Uint8Array;
   mediaClass: "image" | "video" | "file";
+  // Phase 11.1: when present, the server tallies this upload toward
+  // the uploader's per-owner quota. Unauthenticated — see media.routes
+  // comment for the threat model.
+  uploaderCanonicalId?: string;
   signal?: AbortSignal;
   onProgress?: (sentBytes: number, totalBytes: number) => void;
 }): Promise<MediaUploadResult> {
@@ -603,6 +607,9 @@ export async function uploadEncryptedMediaBlob(input: {
     xhr.open("POST", "/api/media/upload");
     xhr.setRequestHeader("content-type", "application/octet-stream");
     xhr.setRequestHeader("x-sudo-media-class", input.mediaClass);
+    if (typeof input.uploaderCanonicalId === "string" && input.uploaderCanonicalId.length > 0) {
+      xhr.setRequestHeader("x-sudo-uploader-canonical-id", input.uploaderCanonicalId);
+    }
     xhr.responseType = "json";
     if (typeof input.onProgress === "function") {
       const cb = input.onProgress;

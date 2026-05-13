@@ -4,6 +4,7 @@ import { SUDO_PROTOCOL_VERSION } from "../protocol/constants.js";
 import { getIdentityByCanonicalId } from "../identity/identity.store.js";
 import { fireAndForgetPush } from "../push/push.service.js";
 import { evaluateRelayPolicy } from "./relay.policy.js";
+import { readNodeRuntimeConfig } from "../node/node.config.js";
 import type {
   LegacyEncryptedMessageEnvelope,
   RelayEnvelope,
@@ -48,6 +49,14 @@ export function submitRelayEnvelope(input: unknown, now = new Date()): SubmitRel
   const decision = evaluateRelayPolicy(tier, counts, ciphertextBytes);
   if (!decision.ok) {
     return { ok: false, error: decision.error };
+  }
+  // Phase 11.1: per-owner envelope quota. counts.sender is already the
+  // sender's queued+expired-greater-than-now total — if it's at or
+  // above the configured ceiling, we reject the new envelope so a
+  // runaway client can't fill the relay disk for everyone else.
+  const ownerRelayQuota = readNodeRuntimeConfig().ownerRelayEnvelopeQuota;
+  if (ownerRelayQuota > 0 && counts.sender >= ownerRelayQuota) {
+    return { ok: false, error: "owner_envelope_quota_exceeded" };
   }
 
   if (parsed.sender_signature !== "dev-placeholder" && parsed.sender_signature !== "dev-placeholder:relay-signature-unavailable") {

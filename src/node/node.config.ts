@@ -22,6 +22,16 @@ export type NodeRuntimeConfig = {
   allowSignups: boolean;
   requireInvite: boolean;
   logLevel: LogLevel;
+  // Phase 11.1: storage quotas. Per-owner totals across all classes.
+  // Defaults are generous; operators tune via env. The per-class
+  // size caps live in media.routes.ts as before.
+  ownerMediaQuotaBytes: number;
+  ownerRelayEnvelopeQuota: number;
+  // Phase 11.1: orphan-blob GC retention window. Blobs whose
+  // last_accessed_at is older than (now - retentionDays) are
+  // candidates for deletion. Conservative default keeps recent
+  // activity safe.
+  mediaRetentionDays: number;
 };
 
 export function readNodeRuntimeConfig(): NodeRuntimeConfig {
@@ -42,8 +52,19 @@ export function readNodeRuntimeConfig(): NodeRuntimeConfig {
     dbPath: resolveDbPath(dataDir),
     allowSignups: readBooleanEnv("SUDO_ALLOW_SIGNUPS", true),
     requireInvite: readBooleanEnv("SUDO_REQUIRE_INVITE", false),
-    logLevel: readLogLevel()
+    logLevel: readLogLevel(),
+    ownerMediaQuotaBytes: readIntEnv("SUDO_OWNER_MEDIA_QUOTA_BYTES", 500 * 1024 * 1024),
+    ownerRelayEnvelopeQuota: readIntEnv("SUDO_OWNER_RELAY_ENVELOPE_QUOTA", 5000),
+    mediaRetentionDays: readIntEnv("SUDO_MEDIA_RETENTION_DAYS", 30)
   };
+}
+
+function readIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim();
+  if (raw === undefined || raw.length === 0) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed < 0) return fallback;
+  return parsed;
 }
 
 export function resolveIdentityHost(config: NodeRuntimeConfig = readNodeRuntimeConfig()): string {

@@ -371,4 +371,25 @@ export const schemaSql = `
 
   CREATE INDEX IF NOT EXISTS identity_challenges_canonical_idx
     ON identity_challenges(canonical_id, expires_at);
+
+  -- Phase 11.1: media-blob bookkeeping. The blob bytes themselves stay
+  -- opaque on disk under media/<blob_id>; this row tracks size + access
+  -- times so we can apply per-uploader quotas (when the uploader
+  -- attested their canonical_id at upload time) and run the orphan-
+  -- blob GC. uploader_canonical_id is NULL when the upload was made
+  -- without an attestation header — those rows still get the
+  -- last_accessed_at lifecycle but are excluded from per-owner totals.
+  CREATE TABLE IF NOT EXISTS media_blobs (
+    blob_id TEXT PRIMARY KEY,
+    size_bytes INTEGER NOT NULL,
+    media_class TEXT NOT NULL,
+    uploader_canonical_id TEXT,
+    created_at TEXT NOT NULL,
+    last_accessed_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS media_blobs_uploader_idx
+    ON media_blobs(uploader_canonical_id);
+  CREATE INDEX IF NOT EXISTS media_blobs_last_accessed_idx
+    ON media_blobs(last_accessed_at);
 `;
