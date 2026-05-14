@@ -539,6 +539,69 @@ body[data-auth-state="auth-restore"] .landing {
   color: var(--muted);
 }
 
+.settings-section__label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* Phase 14B: bio editor inside the settings dialog. Textarea, counter,
+   save/clear actions, and a calm aria-live state line for save/error. */
+.settings-section--profile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-bio__input {
+  width: 100%;
+  margin-top: 2px;
+  padding: 8px 10px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: vertical;
+  min-height: 56px;
+  max-height: 180px;
+}
+.settings-bio__input:focus {
+  outline: none;
+  border-color: var(--focus, var(--text));
+}
+.settings-bio__input::placeholder {
+  color: var(--muted);
+}
+.settings-bio__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+}
+.settings-bio__counter {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.settings-bio__counter[data-overlimit="true"] {
+  color: var(--danger, #e87b5e);
+}
+.settings-bio__actions {
+  display: flex;
+  gap: 6px;
+}
+.settings-bio__state {
+  font-size: 12px;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+.settings-bio__state[data-state="error"] {
+  color: var(--danger, #e87b5e);
+}
+
 /* Phase 11.6: privacy toggle row. */
 .settings-toggle {
   display: flex;

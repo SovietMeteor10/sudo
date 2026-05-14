@@ -478,6 +478,33 @@
         <p class="settings-section__hint">pair a second device or revoke one you no longer use.</p>
       </div>
 
+      <div class="settings-section settings-section--profile">
+        <label class="settings-section__label" for="settings-bio">your bio</label>
+        <p class="settings-section__hint">shown on your public profile page.</p>
+        <textarea
+          id="settings-bio"
+          class="settings-bio__input"
+          maxlength="280"
+          rows="3"
+          placeholder="say a little about yourself"
+          autocomplete="off"
+          spellcheck="true"
+        ></textarea>
+        <div class="settings-bio__row">
+          <span class="settings-bio__counter" id="settings-bio-counter" aria-live="polite">0 / 280</span>
+          <div class="settings-bio__actions">
+            <button class="text-button" id="settings-bio-clear" type="button">clear</button>
+            <button class="text-button text-button--primary" id="settings-bio-save" type="button">save</button>
+          </div>
+        </div>
+        <div class="settings-bio__state" id="settings-bio-state" aria-live="polite"></div>
+      </div>
+
+      <div class="settings-section">
+        <button class="text-button settings-section__action" id="settings-share-profile" type="button">copy profile link</button>
+        <p class="settings-section__hint">copies your public link so you can share it.</p>
+      </div>
+
       <div class="settings-section settings-section--privacy">
         <label class="settings-toggle" for="settings-lock-messages">
           <input id="settings-lock-messages" type="checkbox">

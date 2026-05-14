@@ -314,7 +314,10 @@ export async function cancelPairing(pairingToken: string): Promise<void> {
 // device fetches this to populate the LocalCryptoAccountRecord
 // during link-existing-account so the restored install knows its
 // own handle, public keys, and signed identity blob.
-export async function fetchIdentityProfile(canonicalId: string): Promise<IdentityDocument> {
+//
+// Phase 14B: the response also carries an optional `bio` field
+// (string | null). The bio editor in settings reads it here.
+export async function fetchIdentityProfile(canonicalId: string): Promise<IdentityDocument & { bio?: string | null }> {
   const response = await fetchWithTimeout(
     `/api/identity/profiles/${encodeURIComponent(canonicalId)}`,
     { headers: { accept: "application/json" } }
@@ -323,7 +326,23 @@ export async function fetchIdentityProfile(canonicalId: string): Promise<Identit
     const errorBody = await readErrorBody(response);
     throw new Error(errorBody.message);
   }
-  return response.json() as Promise<IdentityDocument>;
+  return response.json() as Promise<IdentityDocument & { bio?: string | null }>;
+}
+
+// Phase 14B: identity-signed bio update. Server normalizes (strips
+// control chars, trims, caps at 280) and stores. Passing an empty
+// string clears the row.
+export async function setIdentityBio(canonicalId: string, bio: string): Promise<{ bio: string; max_length: number }> {
+  const response = await signedFetchAsIdentity({
+    method: "POST",
+    path: "/api/identity/bio",
+    body: { canonical_id: canonicalId, bio }
+  });
+  const body = await response.json() as { ok?: boolean; bio?: string; max_length?: number; error?: string; message?: string };
+  if (!response.ok || body.ok !== true || typeof body.bio !== "string" || typeof body.max_length !== "number") {
+    throw new Error(body.message ?? body.error ?? `bio update failed: ${response.status}`);
+  }
+  return { bio: body.bio, max_length: body.max_length };
 }
 
 export async function revokeTrustedDevice(

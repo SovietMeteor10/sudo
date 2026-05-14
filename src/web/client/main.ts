@@ -35,6 +35,7 @@ import {
   fetchPeerProgress,
   restoreDevSession,
   searchHandles,
+  setIdentityBio,
   upsertConnectionRelationship,
   type FeedEngagement
 } from "./api.js";
@@ -264,6 +265,20 @@ const settingsResetConfirmInput = getRequiredInput("settings-reset-confirm");
 const settingsResetButton = getRequiredButton("settings-reset");
 const settingsCancel = getRequiredButton("settings-cancel");
 const settingsState = getRequiredElement("settings-state");
+// Phase 14B: bio editor + share-profile inside settings.
+const settingsBioInput = (() => {
+  const el = document.getElementById("settings-bio");
+  if (!(el instanceof HTMLTextAreaElement)) throw new Error("settings-bio missing");
+  return el;
+})();
+const settingsBioCounter = getRequiredElement("settings-bio-counter");
+const settingsBioSave = getRequiredButton("settings-bio-save");
+const settingsBioClear = getRequiredButton("settings-bio-clear");
+const settingsBioState = getRequiredElement("settings-bio-state");
+const settingsShareProfile = getRequiredButton("settings-share-profile");
+const BIO_MAX = 280;
+let settingsBioLoadedFor: string | null = null;
+let settingsBioOriginalValue = "";
 const accountDialog = getRequiredDialog("account-dialog");
 const accountCardHandle = getRequiredElement("account-card-handle");
 const accountCardFingerprintGrid = getRequiredElement("account-card-fingerprint-grid");
@@ -6076,6 +6091,10 @@ function openSettingsDialog(): void {
   void isLockMessagesOnReloadEnabled().then((on) => {
     settingsLockMessages.checked = on;
   });
+  // Phase 14B: hydrate the bio textarea each time the dialog opens.
+  // We re-fetch from the server on every open so the editor reflects
+  // any cross-device updates that happened since last open.
+  void hydrateBioEditor();
   // Opening Settings is a natural moment to retry any backfill that
   // failed earlier — the user is actively engaged with their account
   // surface and the device list, so a sync that converges now is more
@@ -6084,6 +6103,124 @@ function openSettingsDialog(): void {
     void retryPendingBackfills(currentIdentityDocument.canonical_id);
   }
 }
+
+// Phase 14B: bio editor hydration. Fetches the current bio from the
+// server-side profile and populates the textarea + counter. Disables
+// the controls while loading so the user can't fire a save against a
+// stale "original" value.
+async function hydrateBioEditor(): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const canonicalId = currentIdentityDocument.canonical_id;
+  setBioControlsDisabled(true);
+  settingsBioState.textContent = "";
+  settingsBioState.removeAttribute("data-state");
+  try {
+    const profile = await fetchIdentityProfile(canonicalId);
+    const bio = typeof profile.bio === "string" ? profile.bio : "";
+    settingsBioInput.value = bio;
+    settingsBioLoadedFor = canonicalId;
+    settingsBioOriginalValue = bio;
+    updateBioCounter();
+  } catch (error) {
+    settingsBioState.textContent = error instanceof Error ? error.message : "could not load bio";
+    settingsBioState.setAttribute("data-state", "error");
+  } finally {
+    setBioControlsDisabled(false);
+  }
+}
+
+function setBioControlsDisabled(disabled: boolean): void {
+  settingsBioInput.disabled = disabled;
+  settingsBioSave.disabled = disabled;
+  settingsBioClear.disabled = disabled;
+}
+
+function updateBioCounter(): void {
+  const len = settingsBioInput.value.length;
+  settingsBioCounter.textContent = `${len} / ${BIO_MAX}`;
+  if (len > BIO_MAX) settingsBioCounter.setAttribute("data-overlimit", "true");
+  else settingsBioCounter.removeAttribute("data-overlimit");
+}
+
+settingsBioInput.addEventListener("input", () => {
+  updateBioCounter();
+  // Clear any stale "saved" / "error" line as soon as the user types.
+  if (settingsBioState.textContent !== "") {
+    settingsBioState.textContent = "";
+    settingsBioState.removeAttribute("data-state");
+  }
+});
+
+async function saveBio(): Promise<void> {
+  if (currentIdentityDocument === null) return;
+  const canonicalId = currentIdentityDocument.canonical_id;
+  if (settingsBioLoadedFor !== canonicalId) {
+    settingsBioState.textContent = "reload settings and try again";
+    settingsBioState.setAttribute("data-state", "error");
+    return;
+  }
+  const value = settingsBioInput.value;
+  setBioControlsDisabled(true);
+  settingsBioState.textContent = "saving…";
+  settingsBioState.removeAttribute("data-state");
+  try {
+    const result = await setIdentityBio(canonicalId, value);
+    settingsBioInput.value = result.bio;
+    settingsBioOriginalValue = result.bio;
+    updateBioCounter();
+    settingsBioState.textContent = result.bio.length === 0 ? "bio cleared" : "saved";
+  } catch (error) {
+    settingsBioState.textContent = error instanceof Error ? error.message : "save failed";
+    settingsBioState.setAttribute("data-state", "error");
+  } finally {
+    setBioControlsDisabled(false);
+  }
+}
+
+settingsBioSave.addEventListener("click", () => { void saveBio(); });
+
+settingsBioClear.addEventListener("click", () => {
+  if (settingsBioInput.value.length === 0 && settingsBioOriginalValue.length === 0) return;
+  settingsBioInput.value = "";
+  updateBioCounter();
+  void saveBio();
+});
+
+// Phase 14B: copy profile link. Builds ${origin}/u/<handle> and
+// writes to clipboard; falls back to copying the bare handle if the
+// origin isn't available (very old browsers). Toast surfaces feedback
+// via the existing settings-state line.
+settingsShareProfile.addEventListener("click", async () => {
+  if (currentIdentityDocument === null) {
+    settingsState.textContent = "sign in to share your profile";
+    return;
+  }
+  const handle = currentIdentityDocument.handle;
+  const handleNoAt = handle.replace(/^@/, "");
+  const origin = (typeof window !== "undefined" && typeof window.location?.origin === "string")
+    ? window.location.origin
+    : "";
+  const url = origin.length > 0 ? `${origin}/u/${encodeURIComponent(handleNoAt)}` : null;
+  const text = url ?? handle;
+  const label = url !== null ? "profile link copied" : "handle copied";
+  try {
+    if (navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
+    settingsState.textContent = label;
+  } catch {
+    settingsState.textContent = "copy failed; you can copy this manually: " + text;
+  }
+});
 
 settingsLockMessages.addEventListener("change", () => {
   const enable = settingsLockMessages.checked;

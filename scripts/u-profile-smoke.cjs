@@ -90,6 +90,21 @@ async function run() {
   if (/identity document/i.test(r6aBody)) fail("6b.no-identity-document", `friendly page contains "identity document" copy`);
   else pass(`6b. friendly page has no "identity document" copy`);
 
+  // 6c. Phase 14B final polish: clearing the bio (POST with bio="")
+  // removes it from /u/:handle, restoring the no-bio rendering.
+  const clearResp = await postJsonSignedIdentity(BASE, "/api/identity/bio", {
+    canonical_id: alice.canonical_id, bio: ""
+  }, aliceSigner);
+  if (clearResp.status !== 200 || clearResp.body?.bio !== "") {
+    fail("6c.bio-clear", `expected empty bio after clear, got ${JSON.stringify(clearResp.body)}`);
+  } else {
+    const r6c = await fetch(`${BASE}/u/${encodeURIComponent(aliceHandleNoAt)}`);
+    const r6cBody = await r6c.text();
+    if (/<p class="bio[^>]*>/.test(r6cBody)) fail("6c.bio-still-rendered", `bio element still rendered after clear`);
+    else if (/no bio yet/i.test(r6cBody)) fail("6c.placeholder-after-clear", `"no bio yet" placeholder reappeared after clear`);
+    else pass(`6c. clearing bio removes it from /u/:handle`);
+  }
+
   // 7. Cross-handed sig: eve signs, body says alice → 403 canonical_id_mismatch.
   const cross = signIdentityRequest({
     method: "POST",
