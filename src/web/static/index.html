@@ -51,21 +51,53 @@
 
   <dialog class="about-overlay" id="about-overlay" aria-labelledby="about-title">
     <article class="about-overlay__panel" aria-modal="true">
-      <button class="about-overlay__close" id="about-close" type="button" aria-label="close">close</button>
-      <h2 class="about-overlay__title" id="about-title">why sudo</h2>
-      <div class="about-overlay__body">
-        <p>Most apps you've used today watched you. They counted your taps, profiled your contacts, and quietly carried copies of everything you said back to a server you don't run.</p>
-        <p>sudo doesn't do that. Your account lives on your devices. The server passes messages along as encrypted blocks of bytes it can't read. It doesn't hold your password — there is no password to hold. It doesn't keep your address book. It doesn't track what you read.</p>
-        <p>This isn't a feature. It's the shape. We couldn't read your messages even if we wanted to, and we wrote the code so you can verify that.</p>
-        <p>In a decade of "free" services that turned every user into a data point, this is a small refusal. You own your account because you alone hold the keys. If you lose them, no one can give them back — including us. That's the deal: privacy that can't be revoked because nobody else has the lever.</p>
-        <p class="about-overlay__signoff">— sudo</p>
-      </div>
-      <div class="about-overlay__links">
-        <a href="/docs/HOW_SUDO_WORKS.md">how it works</a>
-        <span aria-hidden="true">·</span>
-        <a href="/docs/TRUST_MODEL.md">trust model</a>
-        <span aria-hidden="true">·</span>
-        <a href="/docs/PRIVACY.md">privacy</a>
+      <header class="about-overlay__header">
+        <h2 class="about-overlay__title" id="about-title">why sudo</h2>
+        <button class="about-overlay__close" id="about-close" type="button" aria-label="close about">
+          <span aria-hidden="true">×</span>
+        </button>
+      </header>
+
+      <div class="about-overlay__scroll">
+        <section class="about-overlay__section">
+          <h3 class="about-overlay__lede">a different default</h3>
+          <p>Most apps you've used today watched you. They counted your taps, profiled your contacts, and quietly carried copies of everything you said back to a server you don't run.</p>
+        </section>
+
+        <section class="about-overlay__section">
+          <h3 class="about-overlay__lede">what sudo doesn't do</h3>
+          <p>Your account lives on your devices. The server passes messages along as encrypted blocks of bytes it can't read.</p>
+          <p>It doesn't hold your password — there is no password to hold. It doesn't keep your address book. It doesn't track what you read.</p>
+        </section>
+
+        <section class="about-overlay__section">
+          <h3 class="about-overlay__lede">verifiable, not just promised</h3>
+          <p>This isn't a feature. It's the shape. We couldn't read your messages even if we wanted to, and we wrote the code so you can verify that.</p>
+        </section>
+
+        <section class="about-overlay__section">
+          <h3 class="about-overlay__lede">your keys, your account</h3>
+          <p>In a decade of "free" services that turned every user into a data point, this is a small refusal. You own your account because you alone hold the keys.</p>
+          <p>If you lose them, no one can give them back — including us. That's the deal: privacy that can't be revoked because nobody else has the lever.</p>
+        </section>
+
+        <section class="about-overlay__docs" aria-label="documentation">
+          <a class="doc-card" href="/docs/HOW_SUDO_WORKS.md">
+            <span class="doc-card__title">how sudo works</span>
+            <span class="doc-card__desc">accounts, encryption, devices, recovery — plain language.</span>
+            <span class="doc-card__arrow" aria-hidden="true">→</span>
+          </a>
+          <a class="doc-card" href="/docs/TRUST_MODEL.md">
+            <span class="doc-card__title">trust model</span>
+            <span class="doc-card__desc">what the server can and cannot see, and why.</span>
+            <span class="doc-card__arrow" aria-hidden="true">→</span>
+          </a>
+          <a class="doc-card" href="/docs/PRIVACY.md">
+            <span class="doc-card__title">privacy</span>
+            <span class="doc-card__desc">what's stored, what's not, what you control.</span>
+            <span class="doc-card__arrow" aria-hidden="true">→</span>
+          </a>
+        </section>
       </div>
     </article>
   </dialog>

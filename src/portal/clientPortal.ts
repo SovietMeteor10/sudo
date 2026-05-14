@@ -1,6 +1,8 @@
 import type { Express, Response } from "express";
 import express from "express";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { renderMarkdownToHtml, wrapDocHtml } from "./markdown.js";
 
 // While sudo is in early-development we explicitly disable caching for the
 // JS module graph the browser pulls (`/client` and `/protocol`). Stale
@@ -41,16 +43,40 @@ export function mountStaticClientPortal(app: Express): void {
   app.use("/protocol", express.static(protocolPath, { setHeaders: setNoStore }));
   app.use("/vendor/pretext", express.static(pretextPath));
 
-  // Phase 14B: expose the user-facing docs (HOW_SUDO_WORKS, TRUST_MODEL,
-  // PRIVACY, SECURITY) so links in the about overlay land somewhere
-  // readable. Markdown is served as text/plain so curious readers see
-  // the source; a richer renderer can land later. Restricted to .md
-  // to avoid leaking anything else from the docs/ tree by accident.
+  // Phase 14B mobile polish: render the docs through a small in-tree
+  // markdown -> HTML pipeline so the about overlay's "how it works /
+  // trust model / privacy" cards land on a sudo-styled page instead
+  // of raw text. Source files stay markdown in docs/; the renderer is
+  // in src/portal/markdown.ts. Restricted to a fixed allowlist of
+  // user-facing docs so the route can't surface anything else in the
+  // tree by accident.
+  const DOC_ALLOW: Record<string, string> = {
+    "HOW_SUDO_WORKS.md": "how sudo works",
+    "TRUST_MODEL.md": "trust model",
+    "PRIVACY.md": "privacy",
+    "SECURITY.md": "security overview",
+    "SECURITY_AUDIT.md": "security audit"
+  };
   app.get("/docs/:file", (request, response, next) => {
     const file = request.params.file;
-    if (!/^[A-Za-z0-9_]+\.md$/.test(file)) { next(); return; }
-    response.type("text/plain; charset=utf-8");
-    response.sendFile(resolve("docs", file));
+    const title = DOC_ALLOW[file];
+    if (title === undefined) { next(); return; }
+    let source: string;
+    try {
+      source = readFileSync(resolve("docs", file), "utf-8");
+    } catch {
+      response.status(404).type("text/html").send(wrapDocHtml({
+        title: "not found",
+        bodyHtml: `<h1>not found</h1><p>that document isn't here.</p>`
+      }));
+      return;
+    }
+    const html = wrapDocHtml({
+      title,
+      bodyHtml: renderMarkdownToHtml(source)
+    });
+    response.type("text/html; charset=utf-8");
+    response.send(html);
   });
 
   app.get("/", (_request, response) => {

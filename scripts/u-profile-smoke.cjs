@@ -136,17 +136,39 @@ async function run() {
   if (!/<canvas[^>]*id="landing-constellation"/.test(r7aBody)) fail("7b.constellation-canvas", `landing-constellation canvas missing`);
   else pass(`7b. landing has constellation canvas`);
 
-  // 8. /docs/HOW_SUDO_WORKS.md is served.
+  // 8. Phase 14B mobile polish: /docs/HOW_SUDO_WORKS.md is served as
+  // styled HTML (sudo doc shell) rather than raw text/plain.
   const r8 = await fetch(`${BASE}/docs/HOW_SUDO_WORKS.md`);
   if (r8.status !== 200) fail("8.docs-served", `expected 200, got ${r8.status}`);
-  else if (!(r8.headers.get("content-type") ?? "").includes("text/plain")) fail("8.docs-type", `expected text/plain, got ${r8.headers.get("content-type")}`);
-  else pass(`8. /docs/HOW_SUDO_WORKS.md served as text/plain`);
+  else {
+    const ct = r8.headers.get("content-type") ?? "";
+    const body = await r8.text();
+    if (!ct.includes("text/html")) fail("8.docs-html", `expected text/html, got ${ct}`);
+    else if (!/<article class="doc-shell"/.test(body)) fail("8.docs-shell", `doc-shell markup missing`);
+    else if (!/back to sudo/i.test(body)) fail("8.docs-nav", `back-to-sudo nav missing`);
+    else if (!/<h1>How sudo works<\/h1>/.test(body)) fail("8.docs-h1", `top-level heading missing or not rendered`);
+    else if (!/<h2>In one paragraph<\/h2>/.test(body)) fail("8.docs-h2", `h2 not rendered from markdown`);
+    else if (/^#/m.test(body.split("doc-shell__body")[1] ?? "")) fail("8.docs-raw-md", `raw markdown leaked into rendered body`);
+    else pass(`8. /docs/HOW_SUDO_WORKS.md rendered as styled HTML with shell`);
+  }
 
-  // 9. /docs/<bogus> denied (must end with .md).
+  // 8a. Doc allowlist: an allowlisted doc renders; a non-allowlisted
+  // markdown file 404s (falls through to the SPA's catch-all).
+  const r8a = await fetch(`${BASE}/docs/TRUST_MODEL.md`);
+  if (r8a.status !== 200) fail("8a.trust-doc", `expected 200 for TRUST_MODEL.md, got ${r8a.status}`);
+  else pass(`8a. TRUST_MODEL.md renders`);
+
+  const r8b = await fetch(`${BASE}/docs/SMOKE.md`);
+  if (r8b.status === 200) fail("8b.allowlist-leak", `non-allowlisted doc SMOKE.md was served`);
+  else pass(`8b. non-allowlisted docs are not exposed (SMOKE.md -> ${r8b.status})`);
+
+  // 9. /docs/<traversal> denied.
   const r9 = await fetch(`${BASE}/docs/../package.json`);
-  if (r9.status === 200 && !(r9.headers.get("content-type") ?? "").includes("text/plain")) {
-    fail("9.docs-traversal", `unexpected 200 non-text for ../package.json`);
-  } else pass(`9. /docs/ rejects non-md / traversal-shaped requests`);
+  if (r9.status === 200) {
+    const r9body = await r9.text();
+    if (r9body.includes('"dependencies"')) fail("9.docs-traversal", `path traversal returned package.json content`);
+    else pass(`9. /docs/ rejects traversal-shaped requests`);
+  } else pass(`9. /docs/ rejects traversal-shaped requests (status ${r9.status})`);
 
   if (failures.length > 0) {
     console.error(`\nU-PROFILE SMOKE FAILED (${failures.length})`);

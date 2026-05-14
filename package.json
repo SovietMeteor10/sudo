@@ -103,6 +103,7 @@
     "smoke:security-device-register-revoke": "node scripts/security-device-register-revoke-smoke.cjs",
     "smoke:u-profile": "node scripts/u-profile-smoke.cjs",
     "smoke:settings-bio-share": "node scripts/settings-bio-share-smoke.cjs",
+    "smoke:about-mobile": "node scripts/about-mobile-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {

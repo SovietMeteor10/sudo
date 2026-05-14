@@ -284,11 +284,16 @@ body[data-auth-state="auth-restore"] .landing {
   pointer-events: none;
   z-index: 0;
   display: block;
-  /* Soft radial fade so dots near the card center are dimmer than
-     dots at the periphery; keeps the card readable without a hard
-     mask. Pure CSS, no extra paint cost. */
-  mask-image: radial-gradient(ellipse 65% 55% at 50% 50%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.95) 70%);
-  -webkit-mask-image: radial-gradient(ellipse 65% 55% at 50% 50%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.95) 70%);
+  /* Stronger fade behind the card on mobile so dots never compete
+     with text. Desktop keeps a gentler curve. */
+  mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0, 0, 0, 0.15), rgba(0, 0, 0, 0.95) 65%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0, 0, 0, 0.15), rgba(0, 0, 0, 0.95) 65%);
+}
+@media (max-width: 480px) {
+  .landing__constellation {
+    mask-image: radial-gradient(ellipse 70% 45% at 50% 50%, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.98) 60%);
+    -webkit-mask-image: radial-gradient(ellipse 70% 45% at 50% 50%, rgba(0, 0, 0, 0.05), rgba(0, 0, 0, 0.98) 60%);
+  }
 }
 
 .landing__inner {
@@ -297,8 +302,19 @@ body[data-auth-state="auth-restore"] .landing {
   display: grid;
   gap: 18px;
   justify-items: center;
-  padding: 28px 22px;
+  /* safe-area on bottom for iOS home indicator; the constellation
+     mask already keeps the card area readable. */
+  padding: 28px 22px max(28px, env(safe-area-inset-bottom));
+  width: 100%;
   max-width: min(86vw, 380px);
+  box-sizing: border-box;
+}
+@media (max-width: 480px) {
+  .landing__inner {
+    max-width: min(94vw, 360px);
+    gap: 14px;
+    padding: 20px 18px max(20px, env(safe-area-inset-bottom));
+  }
 }
 
 .landing__tagline {
@@ -342,7 +358,7 @@ body[data-auth-state="auth-restore"] .landing {
 }
 
 /* ============================================================
- * About overlay
+ * About overlay (Phase 14B mobile polish)
  * ============================================================ */
 .about-overlay {
   position: fixed;
@@ -354,96 +370,190 @@ body[data-auth-state="auth-restore"] .landing {
   margin: 0;
   padding: 0;
   border: 0;
-  background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(0, 0, 0, 0.86);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   color: var(--text);
   z-index: 100;
+  overflow: hidden;
 }
 .about-overlay::backdrop { background: rgba(0, 0, 0, 0.6); }
 .about-overlay[open] {
-  display: grid;
-  place-items: center;
-  animation: about-overlay-in 260ms ease-out;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  animation: about-overlay-in 240ms ease-out;
 }
 
 .about-overlay__panel {
   position: relative;
-  max-width: min(88vw, 520px);
-  max-height: 90vh;
-  overflow-y: auto;
-  padding: 32px 28px 24px;
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 600px);
+  max-height: 92vh;
+  padding: 0;
   background: transparent;
-  display: grid;
-  gap: 14px;
   animation: about-panel-in 280ms ease-out 40ms both;
 }
 
-.about-overlay__close {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  appearance: none;
-  background: transparent;
-  border: 0;
-  color: var(--muted, rgba(255, 255, 255, 0.55));
-  font: inherit;
-  font-size: 13px;
-  padding: 6px 10px;
-  cursor: pointer;
-  transition: color 140ms ease;
-}
-.about-overlay__close:hover,
-.about-overlay__close:focus-visible {
-  color: var(--text);
-  outline: none;
+.about-overlay__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  margin: 0 0 4px;
+  flex-shrink: 0;
 }
 
 .about-overlay__title {
   margin: 0;
-  font-size: 22px;
+  font-size: 1.4rem;
   font-weight: 500;
   letter-spacing: -0.01em;
+  line-height: 1.2;
 }
 
-.about-overlay__body {
-  display: grid;
-  gap: 12px;
-  font-size: 15px;
-  line-height: 1.6;
-  color: var(--text);
-}
-
-.about-overlay__body p { margin: 0; }
-
-.about-overlay__signoff {
-  margin-top: 8px !important;
-  color: var(--muted, rgba(255, 255, 255, 0.55));
-  font-size: 13px;
-}
-
-.about-overlay__links {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 13px;
-  color: var(--muted, rgba(255, 255, 255, 0.55));
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
+.about-overlay__close {
+  appearance: none;
+  display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  color: var(--muted, rgba(255, 255, 255, 0.65));
+  font: inherit;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  /* Larger tap target than the visual circle suggests. */
+  -webkit-tap-highlight-color: transparent;
 }
-.about-overlay__links a {
-  color: var(--muted, rgba(255, 255, 255, 0.55));
-  text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.15);
-  text-underline-offset: 3px;
-}
-.about-overlay__links a:hover,
-.about-overlay__links a:focus-visible {
+.about-overlay__close:hover,
+.about-overlay__close:focus-visible {
   color: var(--text);
-  text-decoration-color: rgba(255, 255, 255, 0.45);
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
   outline: none;
+}
+
+.about-overlay__scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  /* iOS momentum scrolling */
+  -webkit-overflow-scrolling: touch;
+  padding: 18px 4px 6px;
+  /* Fade the bottom edge so the scroll cue is obvious without a
+     visible scrollbar on macOS. */
+  mask-image: linear-gradient(to bottom, black, black calc(100% - 24px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black, black calc(100% - 24px), transparent);
+}
+
+.about-overlay__section {
+  margin: 0 0 20px;
+  padding: 0;
+}
+.about-overlay__section:last-of-type { margin-bottom: 16px; }
+
+.about-overlay__lede {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(251, 146, 60, 0.85);
+}
+
+.about-overlay__section p {
+  margin: 0 0 8px;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.88);
+}
+.about-overlay__section p:last-child { margin-bottom: 0; }
+
+.about-overlay__docs {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: grid;
+  gap: 8px;
+}
+
+.doc-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "title arrow" "desc arrow";
+  gap: 2px 14px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  color: var(--text);
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+.doc-card:hover,
+.doc-card:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(255, 255, 255, 0.22);
+  outline: none;
+}
+.doc-card:focus-visible {
+  box-shadow: 0 0 0 2px rgba(251, 146, 60, 0.3);
+}
+.doc-card__title {
+  grid-area: title;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--text);
+}
+.doc-card__desc {
+  grid-area: desc;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.58);
+}
+.doc-card__arrow {
+  grid-area: arrow;
+  align-self: center;
+  font-size: 18px;
+  color: rgba(255, 255, 255, 0.45);
+  transition: transform 140ms ease, color 140ms ease;
+}
+.doc-card:hover .doc-card__arrow,
+.doc-card:focus-visible .doc-card__arrow {
+  transform: translateX(2px);
+  color: var(--text);
+}
+
+@media (max-width: 480px) {
+  .about-overlay__panel {
+    width: 100%;
+    max-height: 100dvh;
+    /* Fill the screen on mobile so the scrollable region uses the
+       full viewport — avoids the sandwich-overflow issue where the
+       panel itself is shorter than the device but inner content
+       overflows. */
+    height: 100dvh;
+    padding: max(env(safe-area-inset-top), 16px) 18px max(env(safe-area-inset-bottom), 14px);
+  }
+  .about-overlay__header {
+    padding-bottom: 12px;
+  }
+  .about-overlay__title { font-size: 1.25rem; }
+  .about-overlay__section p { font-size: 0.9375rem; line-height: 1.55; }
+  .about-overlay__lede { font-size: 11px; }
+  .doc-card { padding: 12px 14px; border-radius: 8px; }
 }
 
 @keyframes about-overlay-in {
@@ -482,12 +592,25 @@ body[data-auth-state="auth-restore"] .landing {
 .landing__row {
   display: flex;
   gap: 10px;
+  width: 100%;
 }
 
 .landing__row .auth-link {
   flex: 1 1 0;
   justify-content: center;
   text-align: center;
+  /* Phase 14B mobile polish: minimum 44px tall on touch viewports
+     (Apple HIG recommended tap target). Desktop keeps the 32px
+     base from .auth-link. */
+  min-height: 32px;
+}
+
+@media (max-width: 480px) {
+  .landing__row .auth-link,
+  .landing__about-link {
+    min-height: 44px;
+    font-size: 14px;
+  }
 }
 
 .landing__stale {
