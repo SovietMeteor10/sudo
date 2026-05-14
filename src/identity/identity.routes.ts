@@ -12,6 +12,8 @@ import {
   handleIdentitySessionFromChallenge
 } from "./identity-auth.handlers.js";
 import type { IdentityDocument } from "../protocol/types.js";
+import { requireSignedRequest } from "./request-auth.js";
+import { getIdentityBio, normalizeBio, setIdentityBio, MAX_BIO_LENGTH } from "./identity-bio.store.js";
 
 export const identityRouter = Router();
 
@@ -65,7 +67,32 @@ identityRouter.get("/profiles/:canonicalId", (request, response) => {
     return;
   }
 
-  response.json(identity.document);
+  // Phase 14B: include the optional short bio. It's stored separately
+  // from the signed identity document so users can edit it without
+  // re-signing the whole identity.
+  const bio = getIdentityBio(identity.document.canonical_id);
+  response.json({ ...identity.document, bio });
+});
+
+// Phase 14B: POST /api/identity/bio sets the caller's short bio.
+// Identity-signed (`bodyOwnerField: "canonical_id"` cross-check).
+// Server normalizes (strip control chars, truncate to 280) and stores.
+identityRouter.post("/bio", requireSignedRequest({
+  kind: "identity",
+  bodyOwnerField: "canonical_id"
+}), (request, response) => {
+  const body = request.body as { canonical_id?: unknown; bio?: unknown };
+  if (typeof body.canonical_id !== "string") {
+    response.status(400).json({ ok: false, error: "invalid_canonical_id" });
+    return;
+  }
+  if (resolveIdentityByCanonicalId(body.canonical_id) === null) {
+    response.status(404).json({ ok: false, error: "identity_not_found" });
+    return;
+  }
+  const normalized = normalizeBio(body.bio);
+  setIdentityBio(body.canonical_id, normalized);
+  response.json({ ok: true, bio: normalized, max_length: MAX_BIO_LENGTH });
 });
 
 identityRouter.get("/:canonicalId/fingerprint", (request, response) => {

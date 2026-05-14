@@ -392,4 +392,14 @@ export const schemaSql = `
     ON media_blobs(uploader_canonical_id);
   CREATE INDEX IF NOT EXISTS media_blobs_last_accessed_idx
     ON media_blobs(last_accessed_at);
+
+  -- Phase 14B: short free-form bio rendered on /u/:handle. Owner-only
+  -- writes via identity-signed POST /api/identity/bio. Capped at 280
+  -- chars server-side; control chars stripped.
+  CREATE TABLE IF NOT EXISTS identity_bio (
+    canonical_id TEXT PRIMARY KEY,
+    bio TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (canonical_id) REFERENCES identities(canonical_id)
+  );
 `;

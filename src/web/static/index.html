@@ -34,17 +34,44 @@
   </header>
 
   <section class="landing" id="landing-screen" aria-label="sudo sign in">
+    <div class="landing__atmosphere" aria-hidden="true">
+      <div class="landing__atmosphere-grid"></div>
+      <div class="landing__atmosphere-glow"></div>
+    </div>
     <div class="landing__inner">
       <button class="landing__brand" id="landing-brand" type="button" aria-label="sudo">sudo</button>
+      <p class="landing__tagline">private chat. you keep the keys.</p>
       <div class="landing__actions">
         <div class="landing__row">
           <button class="auth-link" type="button" data-auth-action="signin">sign in</button>
           <button class="auth-link" type="button" data-auth-action="signup">sign up</button>
         </div>
+        <button class="landing__about-link" type="button" data-auth-action="about">about</button>
       </div>
       <div class="landing__stale" id="landing-stale" role="status" aria-live="polite" hidden></div>
     </div>
   </section>
+
+  <dialog class="about-overlay" id="about-overlay" aria-labelledby="about-title">
+    <article class="about-overlay__panel" aria-modal="true">
+      <button class="about-overlay__close" id="about-close" type="button" aria-label="close">close</button>
+      <h2 class="about-overlay__title" id="about-title">why sudo</h2>
+      <div class="about-overlay__body">
+        <p>Most apps you've used today watched you. They counted your taps, profiled your contacts, and quietly carried copies of everything you said back to a server you don't run.</p>
+        <p>sudo doesn't do that. Your account lives on your devices. The server passes messages along as encrypted blocks of bytes it can't read. It doesn't hold your password — there is no password to hold. It doesn't keep your address book. It doesn't track what you read.</p>
+        <p>This isn't a feature. It's the shape. We couldn't read your messages even if we wanted to, and we wrote the code so you can verify that.</p>
+        <p>In a decade of "free" services that turned every user into a data point, this is a small refusal. You own your account because you alone hold the keys. If you lose them, no one can give them back — including us. That's the deal: privacy that can't be revoked because nobody else has the lever.</p>
+        <p class="about-overlay__signoff">— sudo</p>
+      </div>
+      <div class="about-overlay__links">
+        <a href="/docs/HOW_SUDO_WORKS.md">how it works</a>
+        <span aria-hidden="true">·</span>
+        <a href="/docs/TRUST_MODEL.md">trust model</a>
+        <span aria-hidden="true">·</span>
+        <a href="/docs/PRIVACY.md">privacy</a>
+      </div>
+    </article>
+  </dialog>
 
   <div class="offline-banner" id="offline-banner" role="status" aria-live="polite" hidden>you're offline — queued messages will send when you reconnect</div>
 

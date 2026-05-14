@@ -41,6 +41,18 @@ export function mountStaticClientPortal(app: Express): void {
   app.use("/protocol", express.static(protocolPath, { setHeaders: setNoStore }));
   app.use("/vendor/pretext", express.static(pretextPath));
 
+  // Phase 14B: expose the user-facing docs (HOW_SUDO_WORKS, TRUST_MODEL,
+  // PRIVACY, SECURITY) so links in the about overlay land somewhere
+  // readable. Markdown is served as text/plain so curious readers see
+  // the source; a richer renderer can land later. Restricted to .md
+  // to avoid leaking anything else from the docs/ tree by accident.
+  app.get("/docs/:file", (request, response, next) => {
+    const file = request.params.file;
+    if (!/^[A-Za-z0-9_]+\.md$/.test(file)) { next(); return; }
+    response.type("text/plain; charset=utf-8");
+    response.sendFile(resolve("docs", file));
+  });
+
   app.get("/", (_request, response) => {
     setNoStore(response);
     response.sendFile(resolve(publicPath, "index.html"));
