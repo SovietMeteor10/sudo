@@ -54,7 +54,11 @@ identityRouter.get("/handles/:handle", (request, response) => {
       return;
     }
 
-    response.json(identity.document);
+    // Phase 14C: include the optional bio so the directory card can
+    // render it under the handle without a second round trip to
+    // /api/identity/profiles/:canonicalId.
+    const bio = getIdentityBio(identity.document.canonical_id);
+    response.json({ ...identity.document, bio });
   } catch {
     response.status(400).json({ error: "invalid_handle" });
   }

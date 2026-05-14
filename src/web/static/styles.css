@@ -1964,6 +1964,19 @@ body[data-auth-state="auth-restore"] .landing {
   white-space: nowrap;
 }
 
+/* Phase 14C: bio shown under the handle on the directory card. Bio
+   stays in normal text color (not muted) so it reads as content
+   rather than metadata. Wraps; ~3 lines worth of room before any
+   ellipsis is needed. */
+.lookup-card__bio {
+  display: block;
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
 .lookup-card__actions {
   display: flex;
   flex-wrap: wrap;

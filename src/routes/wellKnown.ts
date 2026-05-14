@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { generateIdentityGrid } from "../crypto/index.js";
 import { getIdentityByHandle, normalizeHandle } from "../identity/registry.js";
+import { getIdentityBio } from "../identity/identity-bio.store.js";
 import { getNodeCapabilityDocumentForOrigin } from "../node/node.service.js";
 
 export const wellKnownRouter = Router();
@@ -20,13 +21,18 @@ wellKnownRouter.get("/.well-known/handles/:handle", (request, response) => {
     return;
   }
 
+  // Phase 14C: include the optional public bio so the directory card
+  // (and any future federated discovery) can render it without a
+  // second round trip.
+  const bio = getIdentityBio(identity.canonicalId);
   response.json({
     ...identity.document,
     canonical_id: identity.canonicalId,
     identity_url: `/api/identity/${encodeURIComponent(identity.canonicalId)}`,
     public_keys: identity.document.keys,
     visual_fingerprint: generateIdentityGrid(identity.document.keys.identity.public_key),
-    signature: identity.document.signature
+    signature: identity.document.signature,
+    bio
   });
 });
 

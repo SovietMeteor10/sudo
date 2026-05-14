@@ -903,7 +903,7 @@ export function renderLookupResult(root: HTMLElement, state: LookupState): void 
     return;
   }
 
-  root.replaceChildren(renderResolvedIdentity(state.identity, state.fingerprint, state.relationship, state.subscription));
+  root.replaceChildren(renderResolvedIdentity(state.identity, state.fingerprint, state.bio ?? null, state.relationship, state.subscription));
 }
 
 export function renderChatList(root: HTMLElement, localChats: ChatSummary[] = []): void {
@@ -1005,27 +1005,31 @@ function describeConnection(relationship?: ConnectionRelationship): string {
 function renderResolvedIdentity(
   identity: IdentityDocument,
   fingerprint: string,
+  bio: string | null,
   relationship?: ConnectionRelationship,
   subscription?: FeedSubscription | null
 ): HTMLElement {
   const isFollowing = subscription !== null && subscription !== undefined && subscription.muted !== true;
   const tier = relationship?.tier ?? "unknown";
-  const card = block("lookup-card", [
-    line(identity.handle, "lookup-card__handle"),
-    // Short relationship status only. Canonical id, raw fingerprint,
-    // trust state, onion availability, and updated timestamp are
-    // hidden behind the advanced disclosure below.
-    line(
-      isFollowing
-        ? tier === "known" || tier === "close"
-          ? "you follow each other — chat unlocked"
-          : "following — chats unlock when they follow you back"
-        : tier === "blocked"
-          ? "blocked"
-          : "not following yet",
-      "is-muted"
-    )
-  ]);
+  const headerChildren: HTMLElement[] = [line(identity.handle, "lookup-card__handle")];
+  // Phase 14C: render the public bio under the handle when present.
+  // No placeholder when absent.
+  if (typeof bio === "string" && bio.length > 0) {
+    headerChildren.push(line(bio, "lookup-card__bio"));
+  }
+  headerChildren.push(line(
+    // Phase 14C: calmer relationship copy. "following shows their
+    // public posts. chats unlock when both follow each other."
+    isFollowing
+      ? tier === "known" || tier === "close"
+        ? "you follow each other — you can chat"
+        : "following them — chat unlocks when they follow you back"
+      : tier === "blocked"
+        ? "blocked"
+        : "not following yet",
+    "is-muted"
+  ));
+  const card = block("lookup-card", headerChildren);
 
   // Default action row is intentionally minimal: follow/unfollow on
   // one axis, block/unblock on the other. Tier controls (known /
@@ -1063,11 +1067,11 @@ function renderAdvancedIdentityDetails(
   details.className = "lookup-card__advanced";
   const summary = document.createElement("summary");
   summary.className = "lookup-card__advanced-summary";
-  summary.textContent = "advanced identity details";
+  summary.textContent = "advanced details";
   details.append(summary);
 
   const fields = block("lookup-card__advanced-fields", [
-    line(`canonical: ${shortCanonical(identity.canonical_id)}`, "is-muted"),
+    line(`account id: ${shortCanonical(identity.canonical_id)}`, "is-muted"),
     line(`fingerprint: ${identity.visual_fingerprint?.fingerprint ?? `${fingerprint.slice(0, 12)}...`}`, "is-muted"),
     line("trust: unverified", "is-muted"),
     line("onion: unknown", "is-muted"),

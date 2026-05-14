@@ -265,20 +265,9 @@ const settingsResetConfirmInput = getRequiredInput("settings-reset-confirm");
 const settingsResetButton = getRequiredButton("settings-reset");
 const settingsCancel = getRequiredButton("settings-cancel");
 const settingsState = getRequiredElement("settings-state");
-// Phase 14B: bio editor + share-profile inside settings.
-const settingsBioInput = (() => {
-  const el = document.getElementById("settings-bio");
-  if (!(el instanceof HTMLTextAreaElement)) throw new Error("settings-bio missing");
-  return el;
-})();
-const settingsBioCounter = getRequiredElement("settings-bio-counter");
-const settingsBioSave = getRequiredButton("settings-bio-save");
-const settingsBioClear = getRequiredButton("settings-bio-clear");
-const settingsBioState = getRequiredElement("settings-bio-state");
+// Phase 14C: bio lives in the account dialog. Settings keeps a
+// "copy your profile link" shortcut.
 const settingsShareProfile = getRequiredButton("settings-share-profile");
-const BIO_MAX = 280;
-let settingsBioLoadedFor: string | null = null;
-let settingsBioOriginalValue = "";
 const accountDialog = getRequiredDialog("account-dialog");
 const accountCardHandle = getRequiredElement("account-card-handle");
 const accountCardFingerprintGrid = getRequiredElement("account-card-fingerprint-grid");
@@ -2221,11 +2210,16 @@ async function runLookup(rawQuery: string): Promise<void> {
     const fingerprint = await fingerprintPublicKey(getIdentityPublicKey(identity));
     const [relationship, subscription] = await loadLookupContext(identity.canonical_id);
     if (controller.signal.aborted) return;
+    // Phase 14C: lookupHandle now returns the bio alongside the
+    // identity document. We pull it off here so the directory card
+    // can render it under the handle.
+    const bio = (identity as IdentityDocument & { bio?: string | null }).bio ?? null;
     setLookupState({
       status: "resolved",
       query,
       identity,
       fingerprint,
+      bio,
       relationship: relationship ?? undefined,
       subscription
     });
@@ -6091,10 +6085,6 @@ function openSettingsDialog(): void {
   void isLockMessagesOnReloadEnabled().then((on) => {
     settingsLockMessages.checked = on;
   });
-  // Phase 14B: hydrate the bio textarea each time the dialog opens.
-  // We re-fetch from the server on every open so the editor reflects
-  // any cross-device updates that happened since last open.
-  void hydrateBioEditor();
   // Opening Settings is a natural moment to retry any backfill that
   // failed earlier — the user is actively engaged with their account
   // surface and the device list, so a sync that converges now is more
@@ -6103,88 +6093,6 @@ function openSettingsDialog(): void {
     void retryPendingBackfills(currentIdentityDocument.canonical_id);
   }
 }
-
-// Phase 14B: bio editor hydration. Fetches the current bio from the
-// server-side profile and populates the textarea + counter. Disables
-// the controls while loading so the user can't fire a save against a
-// stale "original" value.
-async function hydrateBioEditor(): Promise<void> {
-  if (currentIdentityDocument === null) return;
-  const canonicalId = currentIdentityDocument.canonical_id;
-  setBioControlsDisabled(true);
-  settingsBioState.textContent = "";
-  settingsBioState.removeAttribute("data-state");
-  try {
-    const profile = await fetchIdentityProfile(canonicalId);
-    const bio = typeof profile.bio === "string" ? profile.bio : "";
-    settingsBioInput.value = bio;
-    settingsBioLoadedFor = canonicalId;
-    settingsBioOriginalValue = bio;
-    updateBioCounter();
-  } catch (error) {
-    settingsBioState.textContent = error instanceof Error ? error.message : "could not load bio";
-    settingsBioState.setAttribute("data-state", "error");
-  } finally {
-    setBioControlsDisabled(false);
-  }
-}
-
-function setBioControlsDisabled(disabled: boolean): void {
-  settingsBioInput.disabled = disabled;
-  settingsBioSave.disabled = disabled;
-  settingsBioClear.disabled = disabled;
-}
-
-function updateBioCounter(): void {
-  const len = settingsBioInput.value.length;
-  settingsBioCounter.textContent = `${len} / ${BIO_MAX}`;
-  if (len > BIO_MAX) settingsBioCounter.setAttribute("data-overlimit", "true");
-  else settingsBioCounter.removeAttribute("data-overlimit");
-}
-
-settingsBioInput.addEventListener("input", () => {
-  updateBioCounter();
-  // Clear any stale "saved" / "error" line as soon as the user types.
-  if (settingsBioState.textContent !== "") {
-    settingsBioState.textContent = "";
-    settingsBioState.removeAttribute("data-state");
-  }
-});
-
-async function saveBio(): Promise<void> {
-  if (currentIdentityDocument === null) return;
-  const canonicalId = currentIdentityDocument.canonical_id;
-  if (settingsBioLoadedFor !== canonicalId) {
-    settingsBioState.textContent = "reload settings and try again";
-    settingsBioState.setAttribute("data-state", "error");
-    return;
-  }
-  const value = settingsBioInput.value;
-  setBioControlsDisabled(true);
-  settingsBioState.textContent = "saving…";
-  settingsBioState.removeAttribute("data-state");
-  try {
-    const result = await setIdentityBio(canonicalId, value);
-    settingsBioInput.value = result.bio;
-    settingsBioOriginalValue = result.bio;
-    updateBioCounter();
-    settingsBioState.textContent = result.bio.length === 0 ? "bio cleared" : "saved";
-  } catch (error) {
-    settingsBioState.textContent = error instanceof Error ? error.message : "save failed";
-    settingsBioState.setAttribute("data-state", "error");
-  } finally {
-    setBioControlsDisabled(false);
-  }
-}
-
-settingsBioSave.addEventListener("click", () => { void saveBio(); });
-
-settingsBioClear.addEventListener("click", () => {
-  if (settingsBioInput.value.length === 0 && settingsBioOriginalValue.length === 0) return;
-  settingsBioInput.value = "";
-  updateBioCounter();
-  void saveBio();
-});
 
 // Phase 14B: copy profile link. Builds ${origin}/u/<handle> and
 // writes to clipboard; falls back to copying the bare handle if the
@@ -6318,6 +6226,17 @@ async function openAccountDialog(): Promise<void> {
 
 async function refreshAccountBio(canonicalId: string): Promise<void> {
   if (accountBioInput === null) return;
+  // Phase 14C: the bio shown here is the same bio that appears on
+  // /u/handle (the public profile). Server is authoritative; the
+  // legacy profile-sync `profileBioKey` setting is read only as a
+  // best-effort fallback when the server fetch fails (e.g. offline).
+  try {
+    const profile = await fetchIdentityProfile(canonicalId);
+    accountBioInput.value = typeof profile.bio === "string" ? profile.bio : "";
+    return;
+  } catch {
+    // Offline / fetch failed — fall through to local cache.
+  }
   const value = await getSetting(profileBioKey(canonicalId));
   accountBioInput.value = typeof value === "string" ? value : "";
 }
@@ -6327,16 +6246,20 @@ async function saveAccountBio(): Promise<void> {
   const next = accountBioInput.value.slice(0, 280);
   accountState.textContent = "saving…";
   try {
-    // applyProfileUpsertWithBroadcast writes the bio to the local
-    // settings store AND publishes a profile.upsert sync event so
-    // any linked device picks up the change on its next poll.
-    await applyProfileUpsertWithBroadcast(currentIdentityDocument.canonical_id, { bio: next });
-    accountState.textContent = "saved";
+    // Phase 14C: the bio is published to the public /u/handle page
+    // via the identity-signed /api/identity/bio endpoint. We also
+    // broadcast it to linked devices through the encrypted profile-
+    // sync slice so the account dialog on a paired phone shows the
+    // same value without a manual refresh.
+    const result = await setIdentityBio(currentIdentityDocument.canonical_id, next);
+    accountBioInput.value = result.bio;
+    await applyProfileUpsertWithBroadcast(currentIdentityDocument.canonical_id, { bio: result.bio });
+    accountState.textContent = result.bio.length === 0 ? "bio cleared" : "saved";
     window.setTimeout(() => {
-      if (accountState.textContent === "saved") accountState.textContent = "";
+      if (/^(saved|bio cleared)$/i.test(accountState.textContent ?? "")) accountState.textContent = "";
     }, 1600);
   } catch (error) {
-    accountState.textContent = error instanceof Error ? error.message : "save failed";
+    accountState.textContent = friendlyErrorMessage(error, "couldn't save your bio. try again in a moment.");
   }
 }
 
@@ -8142,6 +8065,41 @@ async function sendChatPopupMessage(): Promise<void> {
 // "unknown_quota_exceeded" or "stored_by_relay" to the user. Codes
 // the user can act on get specific copy; everything else gets a
 // generic "couldn't send. retry." that pairs with the retry button.
+// Phase 14C: map raw server / network error codes to calm user-facing
+// copy. Anything we don't have a specific phrasing for falls back to
+// the caller's default. We keep the raw error available via
+// console.warn for diagnostics; this helper only shapes what shows
+// in the UI.
+function friendlyErrorMessage(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (raw === "") return fallback;
+  console.warn("[ux] surfaced error:", raw);
+  const lower = raw.toLowerCase();
+  if (lower.includes("missing_signature") || lower.includes("invalid_signature") || lower.includes("expired_signature")) {
+    return "your session needs to refresh. reload and try again.";
+  }
+  if (lower.includes("replayed_signature")) return "that request was already used. try again.";
+  if (lower.includes("canonical_id_mismatch") || lower.includes("device_owner_mismatch")) {
+    return "that action doesn't match your account. reload and try again.";
+  }
+  if (lower.includes("device_revoked")) return "this device no longer has access. link this device again.";
+  if (lower.includes("unknown_device") || lower.includes("missing_device_id")) {
+    return "this device isn't recognised. reload and try again.";
+  }
+  if (lower.includes("missing_signed_membership")) return "couldn't complete that — try the action again.";
+  if (lower.includes("rate_limited") || lower.includes("too many")) return "too many requests. wait a moment.";
+  if (lower.includes("network") || lower.includes("fetch failed") || lower.includes("failed to fetch")) {
+    return "couldn't reach sudo. check your connection and try again.";
+  }
+  if (lower.includes("timeout")) return "that took too long. try again.";
+  // OperationError (AES-GCM wrong key / passphrase) — neutral, no
+  // crypto jargon.
+  if (lower.includes("operationerror") || lower.includes("wrong passphrase")) {
+    return "wrong passphrase, or this account is on another device.";
+  }
+  return fallback;
+}
+
 function humanizeSendError(code: string | undefined | null): string {
   if (code === undefined || code === null) return "couldn't send. retry.";
   const lower = String(code).toLowerCase();

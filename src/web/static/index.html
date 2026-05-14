@@ -460,7 +460,7 @@
 
   <dialog class="signup-dialog signup-dialog--link" id="link-device-dialog" aria-labelledby="link-device-title">
     <form class="signup-dialog__panel" id="link-device-form" method="dialog" autocomplete="off">
-      <div class="signup-dialog__title" id="link-device-title">collect account from another device</div>
+      <div class="signup-dialog__title" id="link-device-title">link this device to your account</div>
       <p class="signup-dialog__warning">open sudo on a device that already has this account, then go to <strong>account → settings → link another device</strong>. enter the temporary passcode and your account passphrase here.</p>
       <p class="signup-dialog__hint signup-dialog__hint--note" id="link-device-private-note">private or incognito windows may forget this device when closed. use a normal browser profile if you want this device to stay linked.</p>
 
@@ -486,7 +486,7 @@
 
       <div class="signup-dialog__actions">
         <button class="text-button" id="link-device-cancel" type="button">back</button>
-        <button class="text-button text-button--primary" id="link-device-submit" type="submit">collect account</button>
+        <button class="text-button text-button--primary" id="link-device-submit" type="submit">link this device</button>
       </div>
     </form>
   </dialog>
@@ -510,31 +510,9 @@
         <p class="settings-section__hint">pair a second device or revoke one you no longer use.</p>
       </div>
 
-      <div class="settings-section settings-section--profile">
-        <label class="settings-section__label" for="settings-bio">your bio</label>
-        <p class="settings-section__hint">shown on your public profile page.</p>
-        <textarea
-          id="settings-bio"
-          class="settings-bio__input"
-          maxlength="280"
-          rows="3"
-          placeholder="say a little about yourself"
-          autocomplete="off"
-          spellcheck="true"
-        ></textarea>
-        <div class="settings-bio__row">
-          <span class="settings-bio__counter" id="settings-bio-counter" aria-live="polite">0 / 280</span>
-          <div class="settings-bio__actions">
-            <button class="text-button" id="settings-bio-clear" type="button">clear</button>
-            <button class="text-button text-button--primary" id="settings-bio-save" type="button">save</button>
-          </div>
-        </div>
-        <div class="settings-bio__state" id="settings-bio-state" aria-live="polite"></div>
-      </div>
-
       <div class="settings-section">
-        <button class="text-button settings-section__action" id="settings-share-profile" type="button">copy profile link</button>
-        <p class="settings-section__hint">copies your public link so you can share it.</p>
+        <button class="text-button settings-section__action" id="settings-share-profile" type="button">copy your profile link</button>
+        <p class="settings-section__hint">copies your public profile link so you can share it. edit your bio in <strong>account</strong>.</p>
       </div>
 
       <div class="settings-section settings-section--privacy">
@@ -589,8 +567,9 @@
       <details class="settings-danger settings-danger--quiet" id="account-advanced">
         <summary class="settings-danger__summary">advanced</summary>
         <div class="settings-danger__body">
-          <div class="signup-dialog__label">canonical id</div>
+          <div class="signup-dialog__label">your account id</div>
           <div class="account-card__canonical is-muted" id="account-card-canonical"></div>
+          <p class="signup-dialog__hint">long unique id derived from your public key. you don't need to remember it.</p>
         </div>
       </details>
 
@@ -681,7 +660,7 @@
       <div class="signup-dialog__hint" id="signin-passkey-support">device support: checking</div>
       <div class="signup-dialog__state" id="signin-state" aria-live="polite"></div>
       <div class="signup-dialog__secondary">
-        <button class="text-button signup-dialog__mode" type="button" data-auth-action="link">collect account from another device</button>
+        <button class="text-button signup-dialog__mode" type="button" data-auth-action="link">link this device to an existing account</button>
         <button class="text-button signup-dialog__mode" type="button" data-auth-action="restore">restore from backup</button>
       </div>
       <div class="signup-dialog__actions">

@@ -65,6 +65,9 @@ export type LookupState =
       query: string;
       identity: IdentityDocument;
       fingerprint: string;
+      // Phase 14C: optional public bio. Rendered under the handle on
+      // the directory card. Undefined / empty string => omit.
+      bio?: string | null;
       relationship?: ConnectionRelationship;
       subscription?: FeedSubscription | null;
     }
