@@ -63,11 +63,130 @@ Future work should warn when a handle changes keys or when a canonical identity 
 
 ## Client-held keys
 
-Every account is client-key only. The browser generates and stores all private keys in IndexedDB, encrypted under the user's passphrase. The server never receives them. Sign-in unlocks the encrypted IndexedDB bundle locally, then mints a server session by signing a single-use challenge nonce with the local identity key — no password ever crosses the wire.
+Every account is client-key only. The browser generates and stores all private keys in IndexedDB, encrypted under the user's passphrase (PBKDF2-SHA256 at 600 000 iterations as of Phase 14 — see MED-1). The server never receives them. Sign-in unlocks the encrypted IndexedDB bundle locally, then mints a server session by signing a single-use challenge nonce with the local identity key — no password ever crosses the wire.
 
-Future hardening: move local-unlock from passphrase-derived AES-GCM to a passkey/WebAuthn-backed credential, and eliminate the bearer `sessionToken` entirely in favor of a per-request client-signed token so the server's session table stops being a single trust point.
+Bundles created before Phase 14 (at 250 000 iterations) auto-upgrade to 600 000 on the next unlock via the existing `v1→v2` re-encrypt-on-unlock path in `src/web/client/crypto/key-storage.ts`. Bundles whose `kdf.iterations` falls below the floor of 100 000 are refused outright as evidence of tampering.
+
+Future hardening: move local-unlock from passphrase-derived AES-GCM to a passkey/WebAuthn-backed credential. The bearer `sessionToken` still exists for backwards compatibility, but it no longer guards any Critical or High audit finding — see "Per-request signed-payload auth" below.
 
 The server must never need the private key. There is no longer a code path that writes one to disk.
+
+## Per-request signed-payload auth (Phase 14)
+
+The Phase 14 audit found that the HTTP routes around the encrypted
+core trusted `owner_canonical_id` from the request body or URL with
+no proof of ownership. Every "social graph" write was reachable
+unauthenticated from any HTTP client on the open internet.
+
+The fix: an `X-Sudo-Auth` header that carries a per-request signed
+payload. The header is base64url-encoded JSON of
+`{canonical_id, [device_id,] ts, nonce, signature}`, where the
+signature is over the canonical JSON of `{type:"sudo_request_auth",
+method, path, body_digest, canonical_id, [device_id,] ts, nonce}`.
+
+Replay defenses:
+
+- `ts` must be within ±60 s of server time.
+- `nonce` must not have been seen in the current process within
+  120 s; stored in-memory (lost on process restart, which bounds
+  the worst-case replay window to the ts skew).
+- `body_digest` is `sha256(canonicalJson(body))` (or `sha256("null")`
+  for empty bodies — `request.body === {}` is normalized to `null`
+  so client and server agree). A captured signature can't be reused
+  with a different body.
+- `method` and `path` are part of the signed payload, so a signature
+  for `POST /api/connections` can't be replayed against any other
+  route.
+
+Server-side enforcement lives in `src/identity/request-auth.ts`
+(middleware) and `src/node/trusted-ip.ts` (loopback-only X-Real-IP).
+
+Client-side signing lives in `src/web/client/crypto/request-auth.ts`
+(`signedFetchAsIdentity`, `signedFetchAsDevice`). The signer is
+derived from the currently-unlocked account; calling a signed-fetch
+helper while the account is locked throws `MissingSignerError`.
+
+### Routes requiring identity-key signature
+
+Signer: the unlocked account's identity private key. Cross-checked
+against the named `owner_canonical_id` field in the body, URL, or
+query string (a mismatch returns `403 canonical_id_mismatch`).
+
+| Method | Path | Cross-check |
+|---|---|---|
+| `POST` | `/api/connections` | body `owner_canonical_id` |
+| `DELETE` | `/api/connections/:ownerCanonicalId/:subjectCanonicalId` | URL `ownerCanonicalId` |
+| `POST` | `/api/subscriptions` | body `owner_canonical_id` |
+| `DELETE` | `/api/subscriptions/:ownerCanonicalId/:authorCanonicalId` | URL `ownerCanonicalId` |
+| `POST` | `/api/relay/relationships` | body `sender_canonical_id` |
+| `POST` | `/api/push/subscriptions` | body `owner_canonical_id` (+ private-IP block on endpoint URL) |
+| `DELETE` | `/api/push/subscriptions` | body `owner_canonical_id` |
+| `DELETE` | `/api/feeds/posts/:postId` | route handler verifies authenticated canonical_id matches post author |
+| `DELETE` | `/api/discovery/reactions/:postId/:actorCanonicalId/vote` | URL `actorCanonicalId` |
+| `GET` | `/api/notifications/incoming/:recipientCanonicalId` | URL `recipientCanonicalId` |
+
+### Routes requiring device-key signature
+
+Signer: the device's published `device_public_key` looked up from
+`device_memberships`. The membership must be `trust_state="active"`
+under the named owner. Cross-checked against the named `device_id`.
+
+| Method | Path | Cross-check |
+|---|---|---|
+| `GET` | `/api/relay/inbox/:canonicalId` | URL `canonicalId` (owner) |
+| `POST` | `/api/relay/envelopes/:messageId/ack` | route handler asserts the envelope's `recipient_canonical_id` matches the signer |
+| `GET` | `/api/devices/:ownerCanonicalId/sync` | URL owner + query `device_id` |
+| `POST` | `/api/devices/:ownerCanonicalId/sync/ack` | URL owner + body `recipient_device_id` |
+| `GET` | `/api/devices/:ownerCanonicalId/sync/peer-progress` | URL owner + query `caller_device_id` |
+| `GET` | `/api/devices/:ownerCanonicalId/sync/cursor` | URL owner + query `device_id` |
+
+### Other Phase 14 gates
+
+- `POST /api/relay/envelopes` — the `sender_signature: "dev-placeholder"`
+  bypass is dev-only. In production an envelope without a real Ed25519
+  signature over its canonical fields returns `400 missing_signature`
+  (CRIT-1).
+- `POST /api/devices/register` and `POST /api/devices/:deviceId/revoke`
+  — `signed_membership` is now mandatory; the route rejects with
+  `400 missing_signed_membership` if absent (HIGH-5). Revoke's
+  push-subscription deletion side-effect runs only after signature
+  verification succeeds.
+- `POST /api/relay/expire` — dev-only (404 in prod).
+- `POST /api/discovery/reindex` — dev-only (404 in prod).
+- `POST /api/push/subscriptions` — endpoint URL is resolved at
+  subscription time and rejected if any resolved IP falls in a
+  reserved range (loopback, RFC1918, link-local, CGNAT, IPv4/v6
+  multicast, IPv6 ULA/link-local, AWS metadata `169.254.169.254`).
+  This closes the CRIT-5 SSRF leg. A strict push-provider allowlist
+  (FCM/Apple/Mozilla/Microsoft) is intentionally deferred — see
+  `docs/SECURITY_AUDIT.md` "Product decisions".
+
+### Legacy bearer-token auth
+
+`dev_sessions` bearer tokens (`Authorization: Bearer <token>`) still
+exist and still authenticate `GET /api/identity/session`. They do
+**not** authenticate any of the Critical/High routes above — those
+require a per-request signature. Removing bearers entirely is a
+Phase 14.1+ cleanup; the bearer table is no longer a single trust
+point for any audit-flagged operation.
+
+### Routes that remain public reads (intentional)
+
+- `GET /api/identity/handles/:handle`, `/search`, `/profiles/:id`
+- `GET /api/devices/:owner` — device + membership listing (public
+  threat model: handles and devices are discovery names, not trust)
+- `GET /api/feeds/posts`, `/users/:id`, `/users/:id/rss`,
+  `/posts/:id`, `/posts/:id/replies`, `/posts/:id/thread`,
+  `/personal/:viewer`
+- `GET /api/discovery/hot|rising|recent`, `/handles`, `/posts/:id`
+- `GET /api/typing/:recipient` — ephemeral typing state
+- `GET /.well-known/sudo/node.json`
+
+These do not surface ciphertext or content the threat model treats
+as private. Authorization-gated *content* (e.g. `connections_only`
+feed posts) still requires identity-signed reads where the viewer's
+visibility depends on a relationship; see `feed.service.ts`
+`canSeeAuthorPosts`.
 
 ## Passkeys and WebAuthn
 

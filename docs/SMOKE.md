@@ -249,6 +249,79 @@ Fix on the affected browser:
 A backup file from a healthy device can be imported instead of
 clearing.
 
+## Phase 14 security smokes
+
+The new security smokes verify the per-request signed-auth contract
+(`X-Sudo-Auth` header) introduced in Phase 14. Each one targets a
+specific Critical or High audit finding and asserts the five canonical
+failure modes plus the success path: missing signature, wrong signer,
+expired timestamp, replay, and valid signature accepted.
+
+| Smoke | Audit findings covered | What it checks |
+|---|---|---|
+| `smoke:security-request-auth` | CRIT-2/3/4/5 + HIGH-2/3/4/6 | Per-route gate behavior on every protected write |
+| `smoke:security-relay-and-inbox` | HIGH-1, CRIT-1/2/3 | Legacy `/inbox` gone, dev-placeholder bypass killed in prod, relay inbox + ack require device sig |
+| `smoke:security-push-ssrf` | CRIT-5 SSRF | 7 reserved-IP ranges rejected at `POST /api/push/subscriptions` |
+| `smoke:security-device-register-revoke` | HIGH-5 | `signed_membership` mandatory on register + revoke |
+
+Run individually or as a group:
+
+```sh
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:security-request-auth
+BASE_URL=http://127.0.0.1:3017 npm run smoke:security-relay-and-inbox
+BASE_URL=http://127.0.0.1:3017 npm run smoke:security-push-ssrf
+BASE_URL=http://127.0.0.1:3017 npm run smoke:security-device-register-revoke
+```
+
+### Prod-mode smoke runs (`SUDO_SMOKE_PROD=1`)
+
+A subset of the security smokes asserts production-only gates that
+don't fire in local-dev:
+
+- `POST /api/relay/envelopes` with `sender_signature: "dev-placeholder"`
+  must return `400 missing_signature` in prod (CRIT-1). In local dev
+  the placeholder is still accepted so the broader smoke suite can
+  exercise envelope shapes without minting real identities.
+- `POST /api/relay/expire` and `POST /api/discovery/reindex` must
+  return 404 in prod (dev-only operator endpoints).
+
+To run the security smokes against a prod-configured node, start the
+server with `NODE_ENV=production` (and **without** `SUDO_LOCAL_DEV=1`)
+and run the smokes with `SUDO_SMOKE_PROD=1`:
+
+```sh
+NODE_ENV=production SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 SUDO_SMOKE_PROD=1 npm run smoke:security-relay-and-inbox
+```
+
+The other security smokes (`smoke:security-request-auth`,
+`smoke:security-push-ssrf`, `smoke:security-device-register-revoke`)
+pass identically in dev and prod — the gates they test are always-on.
+
+### `diagnostics-hardening` is order-sensitive
+
+`smoke:diagnostics-hardening` scans the JSON bodies returned by
+`/api/admin/*` and `/dev/sync/counts` for "long base64-like strings"
+(an over-broad leak detector for ciphertext / private material).
+Other smokes that populate `device_sync_log` rows (e.g. `message-sync`,
+`contact-sync`, `subscription-sync`, `purge-watermark`) leave behind
+real `event_id` and `device_id` values that look exactly like the
+pattern the detector flags.
+
+Run `diagnostics-hardening` **first**, against a freshly-reset SQLite
+DB, before any sync-state-generating smokes:
+
+```sh
+rm -f data/sudo.sqlite*
+SUDO_PORT=3017 node dist/server.js &
+BASE_URL=http://127.0.0.1:3017 npm run smoke:diagnostics-hardening
+```
+
+This is a smoke-harness limitation, not a Phase 14 regression — the
+diagnostic endpoints intentionally surface those fields to local
+operators in dev.
+
 ## Cache headers
 
 `/client/*` and `/protocol/*` must respond with
