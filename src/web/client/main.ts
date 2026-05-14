@@ -953,6 +953,177 @@ for (const button of authActionButtons) {
   });
 }
 
+// Phase 14B polish: interactive constellation behind the landing
+// card. A small particle system drawn into <canvas id="landing-
+// constellation">. Dots drift slowly, connect to neighbors within
+// a threshold, and bias gently toward the pointer. Honors
+// prefers-reduced-motion (paints once, no animation loop). Pauses
+// when the tab is hidden or the user signs in.
+(function initLandingConstellation(): void {
+  const found = document.getElementById("landing-constellation");
+  if (!(found instanceof HTMLCanvasElement)) return;
+  const canvas: HTMLCanvasElement = found;
+  const ctx: CanvasRenderingContext2D | null = canvas.getContext("2d");
+  if (ctx === null) return;
+
+  const reducedMotion = typeof matchMedia === "function"
+    && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  type Dot = { x: number; y: number; vx: number; vy: number };
+  let dots: Dot[] = [];
+  let raf = 0;
+  const pointer = { x: -9999, y: -9999, active: false };
+  const LINK_DISTANCE = 130;
+  const POINTER_RADIUS = 160;
+
+  function dpr(): number {
+    return Math.min(window.devicePixelRatio || 1, 2);
+  }
+
+  function resize(): void {
+    const w = canvas.clientWidth || window.innerWidth;
+    const h = canvas.clientHeight || window.innerHeight;
+    const ratio = dpr();
+    canvas.width = Math.max(1, Math.floor(w * ratio));
+    canvas.height = Math.max(1, Math.floor(h * ratio));
+    ctx!.setTransform(ratio, 0, 0, ratio, 0, 0);
+    const area = w * h;
+    // ~1 dot per 22000 px², capped, so phones get fewer.
+    const target = Math.max(28, Math.min(72, Math.floor(area / 22000)));
+    if (dots.length < target) {
+      while (dots.length < target) {
+        dots.push({
+          x: Math.random() * w,
+          y: Math.random() * h,
+          vx: (Math.random() - 0.5) * 0.18,
+          vy: (Math.random() - 0.5) * 0.18
+        });
+      }
+    } else if (dots.length > target) {
+      dots = dots.slice(0, target);
+    }
+    // Re-clamp positions inside new bounds.
+    for (const d of dots) {
+      if (d.x > w) d.x = w * Math.random();
+      if (d.y > h) d.y = h * Math.random();
+    }
+  }
+
+  function step(): void {
+    if (ctx === null) return;
+    const w = canvas.clientWidth || window.innerWidth;
+    const h = canvas.clientHeight || window.innerHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    // Update positions.
+    for (const d of dots) {
+      d.x += d.vx;
+      d.y += d.vy;
+      if (d.x < 0) { d.x = 0; d.vx = -d.vx; }
+      else if (d.x > w) { d.x = w; d.vx = -d.vx; }
+      if (d.y < 0) { d.y = 0; d.vy = -d.vy; }
+      else if (d.y > h) { d.y = h; d.vy = -d.vy; }
+
+      // Pointer bias: nearby dots drift gently toward the cursor.
+      if (pointer.active) {
+        const dx = pointer.x - d.x;
+        const dy = pointer.y - d.y;
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 < POINTER_RADIUS * POINTER_RADIUS && dist2 > 4) {
+          const k = (1 - Math.sqrt(dist2) / POINTER_RADIUS) * 0.04;
+          d.vx += dx * k * 0.01;
+          d.vy += dy * k * 0.01;
+        }
+      }
+      // Cap velocity so the bias doesn't accumulate.
+      const sp = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
+      const cap = 0.35;
+      if (sp > cap) { d.vx = (d.vx / sp) * cap; d.vy = (d.vy / sp) * cap; }
+    }
+
+    // Draw lines (constellation segments).
+    ctx.lineWidth = 1;
+    for (let i = 0; i < dots.length; i++) {
+      for (let j = i + 1; j < dots.length; j++) {
+        const a = dots[i]!;
+        const b = dots[j]!;
+        const dx = a.x - b.x;
+        const dy = a.y - b.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < LINK_DISTANCE) {
+          const alpha = (1 - dist / LINK_DISTANCE) * 0.22;
+          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw dots.
+    for (const d of dots) {
+      let alpha = 0.55;
+      if (pointer.active) {
+        const dx = pointer.x - d.x;
+        const dy = pointer.y - d.y;
+        const dist2 = dx * dx + dy * dy;
+        if (dist2 < POINTER_RADIUS * POINTER_RADIUS) {
+          alpha = 0.55 + (1 - Math.sqrt(dist2) / POINTER_RADIUS) * 0.45;
+        }
+      }
+      ctx.fillStyle = `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, 1.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (!reducedMotion) raf = requestAnimationFrame(step);
+  }
+
+  function start(): void {
+    if (raf !== 0) return;
+    if (reducedMotion) {
+      step();
+      return;
+    }
+    raf = requestAnimationFrame(step);
+  }
+  function stop(): void {
+    if (raf !== 0) { cancelAnimationFrame(raf); raf = 0; }
+  }
+
+  resize();
+  step();
+
+  window.addEventListener("resize", () => {
+    resize();
+    if (reducedMotion) step();
+  });
+  if (!reducedMotion) {
+    window.addEventListener("pointermove", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      pointer.x = event.clientX - rect.left;
+      pointer.y = event.clientY - rect.top;
+      pointer.active = true;
+    }, { passive: true });
+    window.addEventListener("pointerleave", () => { pointer.active = false; });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stop(); else start();
+    });
+    start();
+  }
+
+  // Stop the loop once the user is signed in — the canvas is hidden
+  // behind the app shell at that point, no reason to keep painting.
+  const observer = new MutationObserver(() => {
+    const state = document.body.dataset["authState"] ?? "";
+    if (state === "signed-in") stop();
+    else if (!reducedMotion && raf === 0) start();
+  });
+  observer.observe(document.body, { attributes: true, attributeFilter: ["data-auth-state"] });
+})();
+
 // Phase 14B: about overlay on the landing page. The philosophy lives
 // inline in index.html; this just toggles the <dialog>.
 const aboutOverlay = document.getElementById("about-overlay");

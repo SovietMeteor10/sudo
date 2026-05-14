@@ -67,14 +67,28 @@ async function run() {
   else if (bioResp.body.bio.includes("\x00") || bioResp.body.bio.includes("\x01")) fail("5.bio-ctrl", `control chars not stripped`);
   else pass(`5. signed bio set, normalized to ${bioResp.body.bio.length} chars, control chars stripped`);
 
-  // 6. Bio visible on /u/handle. The `.bio-empty` CSS rule lives in
-  // the inline <style> regardless, so we only check that the bio
-  // element doesn't carry the empty modifier in its class attribute.
+  // 6. Bio visible on /u/handle once set. Element should render with
+  // the bio class.
   const r6 = await fetch(`${BASE}/u/${encodeURIComponent(aliceHandleNoAt)}`);
   const r6Body = await r6.text();
   if (!r6Body.includes("hello")) fail("6.bio-rendered", `bio text missing from /u/${aliceHandleNoAt}`);
-  else if (/class="bio bio-empty"/.test(r6Body)) fail("6.bio-empty-class", `bio element still has bio-empty modifier after set`);
-  else pass(`6. /u/${aliceHandleNoAt} now shows the bio (no empty-modifier)`);
+  else if (!/<p class="bio">/.test(r6Body)) fail("6.bio-element", `<p class="bio"> missing in /u/${aliceHandleNoAt}`);
+  else pass(`6. /u/${aliceHandleNoAt} now shows the bio`);
+
+  // 6a. Phase 14B polish: no "no bio yet." placeholder anywhere on
+  // the friendly page (eve has no bio set).
+  const eveHandleNoAt = eve.handle.replace(/^@/, "");
+  const r6a = await fetch(`${BASE}/u/${encodeURIComponent(eveHandleNoAt)}`);
+  const r6aBody = await r6a.text();
+  if (/no bio yet/i.test(r6aBody)) fail("6a.no-placeholder", `friendly page still shows "no bio yet" placeholder`);
+  else if (/<p class="bio[^>]*>/.test(r6aBody)) fail("6a.empty-bio-element", `friendly page rendered an empty <p class="bio"> element for an unset bio`);
+  else pass(`6a. friendly page omits bio entirely when none is set`);
+
+  // 6b. Phase 14B polish: friendly profile must not contain "identity
+  // document" placeholder copy. Technical terms live behind the
+  // /u/:canonical_id link.
+  if (/identity document/i.test(r6aBody)) fail("6b.no-identity-document", `friendly page contains "identity document" copy`);
+  else pass(`6b. friendly page has no "identity document" copy`);
 
   // 7. Cross-handed sig: eve signs, body says alice → 403 canonical_id_mismatch.
   const cross = signIdentityRequest({
@@ -91,6 +105,21 @@ async function run() {
   });
   if (crossResp.status !== 403) fail("7.cross-handed", `expected 403, got ${crossResp.status}`);
   else pass(`7. cross-handed sig rejected with 403 (eve cannot set alice's bio)`);
+
+  // 7a. Phase 14B polish: landing page (unauthenticated /) must
+  // expose the About button. The landing screen is the only surface
+  // available before sign-in; About has to be reachable there.
+  const r7a = await fetch(`${BASE}/`);
+  const r7aBody = await r7a.text();
+  if (!/<section[^>]*class="landing"/.test(r7aBody)) fail("7a.landing-present", `landing section missing on /`);
+  else if (!/data-auth-action="about"/.test(r7aBody)) fail("7a.about-button-present", `about button missing on landing`);
+  else if (!/landing__about-link/.test(r7aBody)) fail("7a.about-styled", `about button missing landing__about-link class`);
+  else pass(`7a. landing exposes the About button before auth`);
+
+  // 7b. Landing renders the interactive constellation canvas (Phase
+  // 14B polish — replaces the prior grid+glow atmosphere).
+  if (!/<canvas[^>]*id="landing-constellation"/.test(r7aBody)) fail("7b.constellation-canvas", `landing-constellation canvas missing`);
+  else pass(`7b. landing has constellation canvas`);
 
   // 8. /docs/HOW_SUDO_WORKS.md is served.
   const r8 = await fetch(`${BASE}/docs/HOW_SUDO_WORKS.md`);

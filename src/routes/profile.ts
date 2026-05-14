@@ -209,9 +209,7 @@ function handleHtml(identity: { document: { handle: string; canonical_id: string
 <body>
   <main>
     <h1 class="handle"><span class="at">@</span>${escapeHtml(handleNoAt)}</h1>
-    ${bio
-      ? `<p class="bio">${escapeHtml(bio)}</p>`
-      : `<p class="bio bio-empty">no bio yet.</p>`}
+    ${bio ? `<p class="bio">${escapeHtml(bio)}</p>` : ""}
     <div class="actions">
       <a class="primary" href="/?h=${encodeURIComponent(handleNoAt)}">open in sudo</a>
       <button id="copy-handle" type="button">copy @${escapeHtml(handleNoAt)}</button>

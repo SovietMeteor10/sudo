@@ -272,44 +272,23 @@ body[data-auth-state="auth-restore"] .landing {
   transition: opacity 220ms ease;
 }
 
-/* Phase 14B: subtle ambient motion behind the landing card. A slowly
-   drifting grid + a soft glow that breathes. Calm, not distracting.
-   Disabled by prefers-reduced-motion (handled below). */
-.landing__atmosphere {
+/* Phase 14B polish: interactive constellation behind the landing
+   card. Canvas is drawn by main.ts (initLandingConstellation). Pure
+   visual layer; pointer-events forwarded to the card above. The
+   canvas paints a static state when prefers-reduced-motion is set. */
+.landing__constellation {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   pointer-events: none;
   z-index: 0;
-}
-
-.landing__atmosphere-grid {
-  position: absolute;
-  inset: -20%;
-  background-image:
-    linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-  background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0, 0, 0, 0.85), transparent 75%);
-  -webkit-mask-image: radial-gradient(ellipse 60% 50% at 50% 50%, rgba(0, 0, 0, 0.85), transparent 75%);
-  animation: landing-grid-drift 38s linear infinite;
-}
-
-.landing__atmosphere-glow {
-  position: absolute;
-  inset: -20%;
-  background: radial-gradient(circle at 50% 45%, rgba(251, 146, 60, 0.06), transparent 55%);
-  filter: blur(28px);
-  animation: landing-glow-breathe 14s ease-in-out infinite;
-}
-
-@keyframes landing-grid-drift {
-  from { transform: translate(0, 0); }
-  to { transform: translate(56px, 56px); }
-}
-
-@keyframes landing-glow-breathe {
-  0%, 100% { opacity: 0.7; transform: scale(1); }
-  50% { opacity: 1; transform: scale(1.04); }
+  display: block;
+  /* Soft radial fade so dots near the card center are dimmer than
+     dots at the periphery; keeps the card readable without a hard
+     mask. Pure CSS, no extra paint cost. */
+  mask-image: radial-gradient(ellipse 65% 55% at 50% 50%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.95) 70%);
+  -webkit-mask-image: radial-gradient(ellipse 65% 55% at 50% 50%, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.95) 70%);
 }
 
 .landing__inner {
@@ -331,28 +310,34 @@ body[data-auth-state="auth-restore"] .landing {
   animation: landing-actions-in 280ms ease-out 90ms both;
 }
 
+/* Phase 14B polish: about is a real button alongside sign in / sign
+   up, just visually secondary (matches .auth-link base shape but
+   wider and full-width, sits one row below). */
 .landing__about-link {
-  margin-top: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 32px;
+  margin: 6px 0 0;
   appearance: none;
   background: transparent;
-  border: 0;
-  padding: 4px 8px;
-  color: var(--muted, rgba(255, 255, 255, 0.55));
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.18));
+  border-radius: 3px;
+  padding: 5px 12px;
+  color: var(--muted, rgba(255, 255, 255, 0.65));
   font: inherit;
-  font-size: 12px;
-  letter-spacing: 0.02em;
+  font-size: 13px;
   cursor: pointer;
-  text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.15);
-  text-underline-offset: 4px;
-  transition: color 140ms ease, text-decoration-color 140ms ease;
-  align-self: center;
+  text-decoration: none;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
 .landing__about-link:hover,
 .landing__about-link:focus-visible {
   color: var(--text);
-  text-decoration-color: rgba(255, 255, 255, 0.45);
+  border-color: var(--text);
+  background: rgba(255, 255, 255, 0.03);
   outline: none;
 }
 
@@ -3796,8 +3781,6 @@ body[data-auth-state="signed-in"] .shell {
   .landing__brand,
   .landing__actions,
   .landing__tagline,
-  .landing__atmosphere-grid,
-  .landing__atmosphere-glow,
   .about-overlay,
   .about-overlay__panel,
   .signup-dialog__panel,
