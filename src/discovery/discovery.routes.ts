@@ -10,6 +10,8 @@ import {
   searchIdentityHandles
 } from "./discovery.service.js";
 import { DiscoveryError } from "./discovery.types.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
+import { readNodeRuntimeConfig } from "../node/node.config.js";
 
 export const discoveryRouter = Router();
 
@@ -64,10 +66,14 @@ discoveryRouter.get("/posts/:postId", (request, response) => {
   response.json({ index });
 });
 
-discoveryRouter.delete("/reactions/:postId/:actorCanonicalId/vote", (request, response) => {
-  // Clears the actor's recommend/downrank vote on this post. We expose
-  // a "vote" pseudo-reaction so the client can clear without specifying
-  // direction; the server simply removes both vote types if present.
+// Phase 14 HIGH-3: clearing a discovery vote requires identity-key
+// signature matching the URL's :actorCanonicalId. Previously anyone
+// could clear anyone else's vote, letting a coordinated abuser strip
+// downvotes from their own content by clearing other users' votes.
+discoveryRouter.delete("/reactions/:postId/:actorCanonicalId/vote", requireSignedRequest({
+  kind: "identity",
+  urlOwnerParam: "actorCanonicalId"
+}), (request, response) => {
   const result = clearDiscoveryVote(request.params.postId, request.params.actorCanonicalId);
   response.json({ ok: true, cleared: result.cleared, index: result.index });
 });
@@ -91,6 +97,14 @@ discoveryRouter.get("/recent", (request, response) => {
 });
 
 discoveryRouter.post("/reindex", (_request, response) => {
+  // Phase 14 MED-5: full-index rebuild was an unauth, unrate-limited
+  // single-transaction sweep — a free amplification primitive for any
+  // anonymous caller. Restricted to dev where it's used by the smoke
+  // harness; production operators run reindexes via the CLI.
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("not found\n");
+    return;
+  }
   response.json({ ok: true, count: reindexDiscovery() });
 });
 

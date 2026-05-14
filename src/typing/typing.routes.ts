@@ -64,11 +64,8 @@ function rateCheck(ip: string, now: number): { ok: true } | { ok: false; scope: 
   return { ok: true };
 }
 
-function resolveIp(request: express.Request): string {
-  const real = request.get("x-real-ip");
-  if (typeof real === "string" && real.length > 0) return real;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: only honor X-Real-IP when the peer is loopback.
+import { resolveTrustedIp as resolveIp } from "../node/trusted-ip.js";
 
 function prune(now: number): void {
   for (const [recipient, senders] of typingState) {

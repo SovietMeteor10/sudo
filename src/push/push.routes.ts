@@ -39,23 +39,30 @@ import {
   upsertPushSubscription
 } from "./push.store.js";
 import { buildPushPayload, notifyEnvelopeRecipient, setStubStatusForTests } from "./push.service.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
+import { validatePushEndpoint } from "./endpoint-validation.js";
 
 export const pushRouter = express.Router();
 
-// Resolve the upstream IP the same way devices/identity routes do
-// (X-Real-IP from nginx is preferred; we ignore X-Forwarded-For to
-// avoid spoofing because Express trusts only the loopback peer).
-function resolveRemoteIp(request: express.Request): string {
-  const realIp = request.get("x-real-ip");
-  if (typeof realIp === "string" && realIp.length > 0) return realIp;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: X-Real-IP is only honored when the request arrived
+// from loopback (i.e. behind nginx). See src/node/trusted-ip.ts.
+import { resolveTrustedIp as resolveRemoteIp } from "../node/trusted-ip.js";
 
 pushRouter.get("/vapid-public-key", (_request, response) => {
   response.json({ public_key: getPublicVapidKey() });
 });
 
-pushRouter.post("/subscriptions", (request, response) => {
+// Phase 14 CRIT-5: push subscriptions are now signature-gated AND the
+// endpoint URL is validated against a private-IP blocklist. Previously
+// an unauthenticated caller could (a) register a subscription for a
+// victim's owner_canonical_id pointing at attacker-controlled
+// infrastructure (live traffic-analysis oracle), and (b) point the
+// endpoint at internal addresses for SSRF. The signature requirement
+// closes (a); the address validator closes (b).
+pushRouter.post("/subscriptions", requireSignedRequest({
+  kind: "identity",
+  bodyOwnerField: "owner_canonical_id"
+}), async (request, response) => {
   const body = request.body as Partial<{
     owner_canonical_id: string;
     device_id: string;
@@ -63,10 +70,6 @@ pushRouter.post("/subscriptions", (request, response) => {
     p256dh: string;
     auth: string;
   }>;
-  if (!isCanonicalId(body?.owner_canonical_id)) {
-    response.status(400).json(makeBadRequest("owner_canonical_id", "must be a canonical id"));
-    return;
-  }
   const rateResult = checkPushSubscriptionRate(resolveRemoteIp(request), body.owner_canonical_id ?? null);
   if (!rateResult.ok) { emitRateLimited(response, rateResult); return; }
   if (!isDeviceId(body?.device_id)) {
@@ -75,6 +78,16 @@ pushRouter.post("/subscriptions", (request, response) => {
   }
   if (!isNonEmptyString(body?.endpoint, 2048) || !/^https?:\/\//i.test(body!.endpoint!)) {
     response.status(400).json(makeBadRequest("endpoint", "must be an http(s) URL"));
+    return;
+  }
+  const endpointCheck = await validatePushEndpoint(body!.endpoint!);
+  if (!endpointCheck.ok) {
+    response.status(400).json({
+      ok: false,
+      error: "invalid_endpoint",
+      reason: endpointCheck.reason,
+      message: `push endpoint rejected: ${endpointCheck.reason}`
+    });
     return;
   }
   if (!isNonEmptyString(body?.p256dh, 256)) {
@@ -95,8 +108,17 @@ pushRouter.post("/subscriptions", (request, response) => {
   response.json({ ok: true });
 });
 
-pushRouter.delete("/subscriptions", (request, response) => {
-  const body = request.body as Partial<{ device_id: string; endpoint: string }>;
+// DELETE now also requires identity signature matching owner_canonical_id.
+// Previously the route relied on "an attacker who knows your device_id +
+// endpoint pair can already not affect any row" — but the audit observed
+// that device_id is exposed via the unauth /api/devices/:owner listing
+// (HIGH-5), so it's not a secret. Requiring sig closes the de-registration
+// vector identified in MED-10.
+pushRouter.delete("/subscriptions", requireSignedRequest({
+  kind: "identity",
+  bodyOwnerField: "owner_canonical_id"
+}), (request, response) => {
+  const body = request.body as Partial<{ owner_canonical_id: string; device_id: string; endpoint: string }>;
   if (!isDeviceId(body?.device_id)) {
     response.status(400).json(makeBadRequest("device_id", "must be a 32-hex device id"));
     return;
@@ -105,11 +127,7 @@ pushRouter.delete("/subscriptions", (request, response) => {
     response.status(400).json(makeBadRequest("endpoint", "must be a non-empty URL"));
     return;
   }
-  // DELETE has no owner_canonical_id in the body — the row carries it.
-  // Per-IP cap is enough here; an attacker who can flood DELETE without
-  // owning the device_id cannot affect any row anyway (deleteByDeviceAndEndpoint
-  // is a no-op when the row doesn't exist).
-  const rateResult = checkPushSubscriptionRate(resolveRemoteIp(request), null);
+  const rateResult = checkPushSubscriptionRate(resolveRemoteIp(request), body.owner_canonical_id ?? null);
   if (!rateResult.ok) { emitRateLimited(response, rateResult); return; }
   const deleted = deletePushSubscriptionByDeviceAndEndpoint(body!.device_id!, body!.endpoint!);
   response.json({ ok: true, deleted });

@@ -26,6 +26,7 @@ import { checkPairHandoffRate } from "./pair-handoff-rate-limit.js";
 import { checkSyncRate } from "./sync-rate-limit.js";
 import { checkOwnerReadRate } from "./owner-read-rate-limit.js";
 import { emitRateLimited } from "./rate-limit-response.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
 import {
   getRecipientCursor,
   getMaxOriginSequence,
@@ -114,19 +115,25 @@ devicesRouter.post("/register", (request, response) => {
 
   const trustState: "active" | "revoked" = body.trust_state === "revoked" ? "revoked" : "active";
 
-  let acceptedMembership: SignedDeviceMembership | null = null;
-  if (body.signed_membership !== undefined) {
-    const result = acceptSignedMembership(body.signed_membership, {
-      ownerCanonicalId: body.owner_canonical_id,
-      deviceId: body.device_id,
-      trustState
-    });
-    if (!result.ok) {
-      response.status(400).json({ ok: false, error: result.error });
-      return;
-    }
-    acceptedMembership = result.membership;
+  // Phase 14 HIGH-5: signed_membership is now MANDATORY. Previously a
+  // missing membership silently fell through and let an unauthenticated
+  // attacker plant a `trusted_devices` row under any owner. The
+  // sync-edge was still gated by `device_memberships`, but the listing
+  // surfaced the bogus row to the UI.
+  if (body.signed_membership === undefined) {
+    response.status(400).json({ ok: false, error: "missing_signed_membership" });
+    return;
   }
+  const result = acceptSignedMembership(body.signed_membership, {
+    ownerCanonicalId: body.owner_canonical_id,
+    deviceId: body.device_id,
+    trustState
+  });
+  if (!result.ok) {
+    response.status(400).json({ ok: false, error: result.error });
+    return;
+  }
+  const acceptedMembership: SignedDeviceMembership = result.membership;
 
   const device: TrustedDevice = {
     type: "sudo_trusted_device",
@@ -141,10 +148,7 @@ devicesRouter.post("/register", (request, response) => {
   };
 
   upsertTrustedDevice(device);
-
-  if (acceptedMembership !== null) {
-    upsertDeviceMembership(acceptedMembership);
-  }
+  upsertDeviceMembership(acceptedMembership);
 
   response.status(201).json({ ok: true, device, membership: acceptedMembership });
 });
@@ -161,15 +165,9 @@ devicesRouter.post("/pair/start", (request, response) => {
   response.status(201).json({ ok: true, ...token });
 });
 
-// Resolve the remote IP we'll feed into the pair-handoff rate
-// limiter. Mirrors the pattern in identity-auth.handlers.ts —
-// trust X-Real-IP from nginx, fall back to request.ip / connection
-// peer for safety.
-function resolveRemoteIpForPair(request: import("express").Request): string {
-  const realIp = request.get("x-real-ip");
-  if (typeof realIp === "string" && realIp.length > 0) return realIp;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: only honor X-Real-IP when the immediate peer is
+// loopback. See src/node/trusted-ip.ts.
+import { resolveTrustedIp as resolveRemoteIpForPair } from "../node/trusted-ip.js";
 
 function rejectIfPairRateLimited(
   request: import("express").Request,
@@ -371,19 +369,25 @@ devicesRouter.post("/:deviceId/revoke", (request, response) => {
     return;
   }
 
-  let acceptedMembership: SignedDeviceMembership | null = null;
-  if (body.signed_membership !== undefined) {
-    const result = acceptSignedMembership(body.signed_membership, {
-      ownerCanonicalId: body.owner_canonical_id,
-      deviceId: request.params.deviceId,
-      trustState: "revoked"
-    });
-    if (!result.ok) {
-      response.status(400).json({ ok: false, error: result.error });
-      return;
-    }
-    acceptedMembership = result.membership;
+  // Phase 14 HIGH-5: signed_membership is now MANDATORY on revoke.
+  // Previously omitting it let any caller flip a victim's device to
+  // `revoked` AND silently delete all its push subscriptions (the
+  // revokeTrustedDevice call has that side-effect). Now the owner's
+  // identity signature is verified before any state change.
+  if (body.signed_membership === undefined) {
+    response.status(400).json({ ok: false, error: "missing_signed_membership" });
+    return;
   }
+  const result = acceptSignedMembership(body.signed_membership, {
+    ownerCanonicalId: body.owner_canonical_id,
+    deviceId: request.params.deviceId,
+    trustState: "revoked"
+  });
+  if (!result.ok) {
+    response.status(400).json({ ok: false, error: result.error });
+    return;
+  }
+  const acceptedMembership: SignedDeviceMembership = result.membership;
 
   const device = revokeTrustedDevice(body.owner_canonical_id, request.params.deviceId);
   if (device === null) {
@@ -391,9 +395,7 @@ devicesRouter.post("/:deviceId/revoke", (request, response) => {
     return;
   }
 
-  if (acceptedMembership !== null) {
-    upsertDeviceMembership(acceptedMembership);
-  }
+  upsertDeviceMembership(acceptedMembership);
 
   response.json({ ok: true, device, membership: acceptedMembership });
 });
@@ -528,12 +530,23 @@ devicesRouter.post("/:ownerCanonicalId/sync", (request, response) => {
   });
 });
 
+// Phase 14 HIGH-6: device-signed proof of possession is now required
+// for every sync log access. Previously these routes accepted device_id
+// as a claim — any caller who learned a device_id (trivially available
+// via the unauthenticated GET /api/devices/:owner listing) could pull
+// the full encrypted sync log envelope set, forge cursor advances to
+// cause silent data loss on the legit device, or read sync-lag telemetry.
+
 // GET /api/devices/:ownerCanonicalId/sync?device_id=<recipient>&since=<cursor>&limit=N
 // The recipient device must have a non-revoked SignedDeviceMembership;
 // revocation enforcement happens here, so a revoked device gets 403
 // regardless of any cursor it remembers. This is best-effort gating —
 // the encrypted_payload remains the durable secrecy boundary.
-devicesRouter.get("/:ownerCanonicalId/sync", (request, response) => {
+devicesRouter.get("/:ownerCanonicalId/sync", requireSignedRequest({
+  kind: "device",
+  urlOwnerParam: "ownerCanonicalId",
+  queryDeviceField: "device_id"
+}), (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
   const recipientDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
   if (recipientDeviceId === null || recipientDeviceId.length === 0) {
@@ -572,7 +585,11 @@ devicesRouter.get("/:ownerCanonicalId/sync", (request, response) => {
 // Records that the recipient device has durably stored events up to
 // last_server_seq. The cursor is monotonic: a stale ack does not
 // regress the recorded value.
-devicesRouter.post("/:ownerCanonicalId/sync/ack", (request, response) => {
+devicesRouter.post("/:ownerCanonicalId/sync/ack", requireSignedRequest({
+  kind: "device",
+  urlOwnerParam: "ownerCanonicalId",
+  bodyDeviceField: "recipient_device_id"
+}), (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
   const body = request.body as { recipient_device_id?: unknown; last_server_seq?: unknown };
   if (typeof body.recipient_device_id !== "string" || typeof body.last_server_seq !== "number") {
@@ -629,7 +646,11 @@ const peerProgressCache = new Map<string, { expires_at: number; body: PeerProgre
 function peerProgressCacheKey(owner: string, caller: string, peer: string): string {
   return `${owner}|${caller}|${peer}`;
 }
-devicesRouter.get("/:ownerCanonicalId/sync/peer-progress", (request, response) => {
+devicesRouter.get("/:ownerCanonicalId/sync/peer-progress", requireSignedRequest({
+  kind: "device",
+  urlOwnerParam: "ownerCanonicalId",
+  queryDeviceField: "caller_device_id"
+}), (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
   if (rejectIfOwnerReadRateLimited(request, response, ownerCanonicalId)) return;
   const peerDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
@@ -690,7 +711,11 @@ devicesRouter.get("/:ownerCanonicalId/sync/peer-progress", (request, response) =
 // GET /api/devices/:ownerCanonicalId/sync/cursor?device_id=<recipient>
 // Convenience for clients that lost their local cursor and want to
 // resume from the last server-acknowledged position.
-devicesRouter.get("/:ownerCanonicalId/sync/cursor", (request, response) => {
+devicesRouter.get("/:ownerCanonicalId/sync/cursor", requireSignedRequest({
+  kind: "device",
+  urlOwnerParam: "ownerCanonicalId",
+  queryDeviceField: "device_id"
+}), (request, response) => {
   const ownerCanonicalId = request.params.ownerCanonicalId;
   const recipientDeviceId = typeof request.query.device_id === "string" ? request.query.device_id : null;
   if (recipientDeviceId === null || recipientDeviceId.length === 0) {

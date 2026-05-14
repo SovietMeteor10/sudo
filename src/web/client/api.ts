@@ -14,6 +14,7 @@ import type {
   TrustedDevice,
   SearchResult
 } from "./types.js";
+import { signedFetchAsIdentity, signedFetchAsDevice } from "./crypto/request-auth.js";
 
 export async function lookupHandle(query: string, signal: AbortSignal): Promise<IdentityDocument> {
   const handle = normalizeLookupInput(query);
@@ -133,13 +134,19 @@ export async function listSyncEvents(
   next_cursor: number;
   watermarks: TombstoneWatermarkSnapshotEntry[];
 }> {
-  const url = new URL(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync`, window.location.origin);
-  url.searchParams.set("device_id", recipientDeviceId);
-  url.searchParams.set("since", String(sinceCursor));
-  url.searchParams.set("limit", String(limit));
-  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } });
+  // Phase 14 HIGH-6: device-signed. The path used in the signature
+  // includes the query string normalization done by signedFetch.
+  const path = `/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync`
+    + `?device_id=${encodeURIComponent(recipientDeviceId)}`
+    + `&since=${encodeURIComponent(String(sinceCursor))}`
+    + `&limit=${encodeURIComponent(String(limit))}`;
+  const response = await signedFetchAsDevice({
+    method: "GET",
+    path,
+    deviceId: recipientDeviceId
+  });
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
+    const body = await response.json().catch(() => ({} as { error?: string }));
     throw new Error(body.error ?? `sync list failed: ${response.status}`);
   }
   const body = await response.json() as {
@@ -170,10 +177,10 @@ export async function fetchPeerProgress(
   peerDeviceId: string
 ): Promise<PeerProgress | null> {
   try {
-    const url = `/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/peer-progress`
+    const path = `/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/peer-progress`
       + `?device_id=${encodeURIComponent(peerDeviceId)}`
       + `&caller_device_id=${encodeURIComponent(callerDeviceId)}`;
-    const response = await fetchWithTimeout(url, { headers: { accept: "application/json" } });
+    const response = await signedFetchAsDevice({ method: "GET", path, deviceId: callerDeviceId });
     if (!response.ok) return null;
     const body = await response.json() as Partial<PeerProgress>;
     if (typeof body.peer_recipient_cursor !== "number"
@@ -193,13 +200,11 @@ export async function ackSyncCursor(
   recipientDeviceId: string,
   lastServerSeq: number
 ): Promise<number> {
-  const response = await fetchWithTimeout(`/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/ack`, {
+  const response = await signedFetchAsDevice({
     method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify({ recipient_device_id: recipientDeviceId, last_server_seq: lastServerSeq })
+    path: `/api/devices/${encodeURIComponent(ownerCanonicalId)}/sync/ack`,
+    deviceId: recipientDeviceId,
+    body: { recipient_device_id: recipientDeviceId, last_server_seq: lastServerSeq }
   });
   const body = await response.json() as { ok?: boolean; last_server_seq?: number; error?: string };
   if (response.ok && body.ok && typeof body.last_server_seq === "number") return body.last_server_seq;
@@ -500,13 +505,11 @@ export async function upsertConnectionRelationship(input: {
   subscribed?: boolean;
   notes?: string;
 }): Promise<ConnectionRelationship> {
-  const response = await fetchWithTimeout("/api/connections", {
+  // Phase 14 CRIT-4: identity-signed.
+  const response = await signedFetchAsIdentity({
     method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(input)
+    path: "/api/connections",
+    body: input
   });
 
   const body = await response.json() as { relationship?: ConnectionRelationship; message?: string };
@@ -518,9 +521,9 @@ export async function deleteConnectionRelationship(
   ownerCanonicalId: string,
   subjectCanonicalId: string
 ): Promise<boolean> {
-  const response = await fetchWithTimeout(`/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`, {
+  const response = await signedFetchAsIdentity({
     method: "DELETE",
-    headers: { accept: "application/json" }
+    path: `/api/connections/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(subjectCanonicalId)}`
   });
 
   if (!response.ok) {
@@ -563,21 +566,25 @@ export async function registerPushSubscription(input: {
   p256dh: string;
   auth: string;
 }): Promise<void> {
-  const response = await fetchWithTimeout("/api/push/subscriptions", {
+  // Phase 14 CRIT-5: identity-signed AND server-side endpoint URL is
+  // validated against the private-IP blocklist before the upsert.
+  const response = await signedFetchAsIdentity({
     method: "POST",
-    headers: { accept: "application/json", "content-type": "application/json" },
-    body: JSON.stringify(input)
+    path: "/api/push/subscriptions",
+    body: input
   });
   if (!response.ok) throw new Error(`push subscription register failed: ${response.status}`);
 }
 
-export async function deletePushSubscription(input: { device_id: string; endpoint: string }): Promise<void> {
+export async function deletePushSubscription(input: { owner_canonical_id: string; device_id: string; endpoint: string }): Promise<void> {
   // Best-effort — reset paths call this and tolerate failure.
+  // owner_canonical_id is required so the server-side sig check
+  // can verify the caller owns the subscription being deleted.
   try {
-    await fetchWithTimeout("/api/push/subscriptions", {
+    await signedFetchAsIdentity({
       method: "DELETE",
-      headers: { accept: "application/json", "content-type": "application/json" },
-      body: JSON.stringify(input)
+      path: "/api/push/subscriptions",
+      body: input
     });
   } catch {
     /* swallow */
@@ -683,9 +690,10 @@ export async function listIncomingSocialNotifications(
   recipientCanonicalId: string,
   limit = 100
 ): Promise<SocialNotification[]> {
-  const url = new URL(`/api/notifications/incoming/${encodeURIComponent(recipientCanonicalId)}`, window.location.origin);
-  url.searchParams.set("limit", String(limit));
-  const response = await fetchWithTimeout(url.toString(), { headers: { accept: "application/json" } });
+  // Phase 14 HIGH-4: identity-signed. Path includes query for sig digest.
+  const path = `/api/notifications/incoming/${encodeURIComponent(recipientCanonicalId)}`
+    + `?limit=${encodeURIComponent(String(limit))}`;
+  const response = await signedFetchAsIdentity({ method: "GET", path });
   if (!response.ok) throw new Error(`notifications list failed: ${response.status}`);
   const body = await response.json() as { notifications?: SocialNotification[] };
   return Array.isArray(body.notifications) ? body.notifications : [];
@@ -700,13 +708,11 @@ export async function upsertFeedSubscription(input: {
   include_close?: boolean;
   muted?: boolean;
 }): Promise<FeedSubscription> {
-  const response = await fetchWithTimeout("/api/subscriptions", {
+  // Phase 14 CRIT-4: identity-signed.
+  const response = await signedFetchAsIdentity({
     method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json"
-    },
-    body: JSON.stringify(input)
+    path: "/api/subscriptions",
+    body: input
   });
 
   const body = await response.json() as { subscription?: FeedSubscription; message?: string };
@@ -728,9 +734,9 @@ export async function listFeedSubscriptions(ownerCanonicalId: string): Promise<F
 }
 
 export async function deleteFeedSubscription(ownerCanonicalId: string, authorCanonicalId: string): Promise<boolean> {
-  const response = await fetchWithTimeout(`/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(authorCanonicalId)}`, {
+  const response = await signedFetchAsIdentity({
     method: "DELETE",
-    headers: { accept: "application/json" }
+    path: `/api/subscriptions/${encodeURIComponent(ownerCanonicalId)}/${encodeURIComponent(authorCanonicalId)}`
   });
 
   if (!response.ok) {
@@ -883,10 +889,11 @@ export async function clearDiscoveryVote(
   postId: string,
   actorCanonicalId: string
 ): Promise<DiscoveryPostIndex | null> {
-  const response = await fetchWithTimeout(
-    `/api/discovery/reactions/${encodeURIComponent(postId)}/${encodeURIComponent(actorCanonicalId)}/vote`,
-    { method: "DELETE", headers: { accept: "application/json" } }
-  );
+  // Phase 14 HIGH-3: identity-signed by :actorCanonicalId.
+  const response = await signedFetchAsIdentity({
+    method: "DELETE",
+    path: `/api/discovery/reactions/${encodeURIComponent(postId)}/${encodeURIComponent(actorCanonicalId)}/vote`
+  });
   if (!response.ok) {
     throw new Error(`vote clear failed: ${response.status}`);
   }

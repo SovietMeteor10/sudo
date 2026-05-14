@@ -89,11 +89,8 @@ function rateCheck(buckets: Map<string, number[]>, ip: string, limit: number, no
   buckets.set(key, fresh);
   return { ok: true };
 }
-function resolveIp(request: express.Request): string {
-  const real = request.get("x-real-ip");
-  if (typeof real === "string" && real.length > 0) return real;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: only honor X-Real-IP when the peer is loopback.
+import { resolveTrustedIp as resolveIp } from "../node/trusted-ip.js";
 
 // ---- Upload --------------------------------------------------------------
 //

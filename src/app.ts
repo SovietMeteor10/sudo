@@ -17,7 +17,6 @@ import { typingRouter } from "./typing/typing.routes.js";
 import { mediaRouter } from "./media/media.routes.js";
 import { devRouter } from "./routes/dev.js";
 import { fingerRouter } from "./routes/finger.js";
-import { inboxRouter } from "./routes/inbox.js";
 import { profileRouter } from "./routes/profile.js";
 import { wellKnownRouter } from "./routes/wellKnown.js";
 
@@ -117,7 +116,6 @@ export function createApp() {
   app.use(devRouter);
   app.use(profileRouter);
   app.use(fingerRouter);
-  app.use(inboxRouter);
 
   app.use((_request, response) => {
     response.status(404).type("text/plain").send("sudo: not found\n");

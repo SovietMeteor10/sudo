@@ -10,11 +10,27 @@ import {
 } from "./connections.service.js";
 import { ConnectionError } from "./connections.types.js";
 import type { ConnectionTier } from "../protocol/types.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
 
 export const connectionsRouter = Router();
 export const subscriptionsRouter = Router();
 
-connectionsRouter.post("/", (request, response) => {
+// Phase 14 CRIT-4: every write that mutates a connection or feed
+// subscription requires a per-request signature proving the caller
+// controls owner_canonical_id. Previously these routes accepted the
+// owner field on faith, letting any anonymous caller mark themselves
+// "close" to a victim and read connections-only feed posts, or block
+// any pair of users.
+const requireOwnerSigBody = requireSignedRequest({
+  kind: "identity",
+  bodyOwnerField: "owner_canonical_id"
+});
+const requireOwnerSigUrl = requireSignedRequest({
+  kind: "identity",
+  urlOwnerParam: "ownerCanonicalId"
+});
+
+connectionsRouter.post("/", requireOwnerSigBody, (request, response) => {
   try {
     const body = request.body as {
       owner_canonical_id?: unknown;
@@ -57,11 +73,11 @@ connectionsRouter.get("/:ownerCanonicalId/:subjectCanonicalId", (request, respon
   response.json({ relationship: getConnection(request.params.ownerCanonicalId, request.params.subjectCanonicalId) });
 });
 
-connectionsRouter.delete("/:ownerCanonicalId/:subjectCanonicalId", (request, response) => {
+connectionsRouter.delete("/:ownerCanonicalId/:subjectCanonicalId", requireOwnerSigUrl, (request, response) => {
   response.json({ ok: true, removed: removeConnection(request.params.ownerCanonicalId, request.params.subjectCanonicalId) });
 });
 
-subscriptionsRouter.post("/", (request, response) => {
+subscriptionsRouter.post("/", requireOwnerSigBody, (request, response) => {
   try {
     const body = request.body as {
       owner_canonical_id?: unknown;
@@ -98,7 +114,7 @@ subscriptionsRouter.get("/:ownerCanonicalId", (request, response) => {
   response.json({ subscriptions: listSubscriptions(request.params.ownerCanonicalId) });
 });
 
-subscriptionsRouter.delete("/:ownerCanonicalId/:authorCanonicalId", (request, response) => {
+subscriptionsRouter.delete("/:ownerCanonicalId/:authorCanonicalId", requireOwnerSigUrl, (request, response) => {
   response.json({ ok: true, removed: removeSubscription(request.params.ownerCanonicalId, request.params.authorCanonicalId) });
 });
 

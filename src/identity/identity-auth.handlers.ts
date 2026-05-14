@@ -25,16 +25,9 @@ import {
   getIdentityForDevSession
 } from "../localState/accountAccess.js";
 
-// Resolve the remote IP we'll feed into the challenge rate limiter.
-// Express populates request.ip from X-Forwarded-For when trust-proxy
-// is on (set in app.ts), so this is a thin wrapper that prefers
-// X-Real-IP (which nginx sets unconditionally per DEPLOY_UBUNTU.md)
-// and falls back to request.ip / connection peer for safety.
-function resolveRemoteIp(request: Request): string {
-  const realIp = request.get("x-real-ip");
-  if (typeof realIp === "string" && realIp.length > 0) return realIp;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: only honor X-Real-IP when the immediate peer is
+// loopback (i.e. behind nginx). See src/node/trusted-ip.ts.
+import { resolveTrustedIp as resolveRemoteIp } from "../node/trusted-ip.js";
 
 function rejectIfRateLimited(request: Request, response: Response, canonicalId: string | null): boolean {
   const result = checkChallengeRate(resolveRemoteIp(request), canonicalId);

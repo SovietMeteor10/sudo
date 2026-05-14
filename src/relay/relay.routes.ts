@@ -8,7 +8,9 @@ import {
   setRelayRelationship,
   submitRelayEnvelope
 } from "./relay.service.js";
+import { getRelayEnvelopeRecipient } from "./relay.store.js";
 import type { RelayTier } from "./relay.types.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
 
 export const relayRouter = Router();
 
@@ -34,11 +36,8 @@ function relayRateCheck(buckets: Map<string, number[]>, key: string, limit: numb
   buckets.set(key, fresh);
   return true;
 }
-function resolveRelayIp(request: Request): string {
-  const real = request.get("x-real-ip");
-  if (typeof real === "string" && real.length > 0) return real;
-  return request.ip ?? "";
-}
+// Phase 14 MED-2: only honor X-Real-IP when the peer is loopback.
+import { resolveTrustedIp as resolveRelayIp } from "../node/trusted-ip.js";
 
 relayRouter.post("/envelopes", (request, response) => {
   const config = readNodeRuntimeConfig();
@@ -85,29 +84,60 @@ export function snapshotRelayRateLimits(): { sender_buckets: number; ip_buckets:
   };
 }
 
-relayRouter.get("/inbox/:canonicalId", (request, response) => {
-  // DEV ONLY: recipient authentication is not implemented yet. Production
-  // relay retrieval must require recipient-device authentication, and clients
-  // should ACK only after durable local save.
+// Phase 14 CRIT-2: recipient-device must prove possession of its
+// device key to read the pending inbox. Previously any anonymous
+// caller could enumerate {message_id, sender_canonical_id,
+// sender_handle, created_at, ciphertext} for any user — the warning
+// string was advisory only.
+relayRouter.get("/inbox/:canonicalId", requireSignedRequest({
+  kind: "device",
+  urlOwnerParam: "canonicalId"
+}), (request, response) => {
   response.json({
-    warning: "unsafe_dev_only_ciphertext_listing",
     envelopes: listRecipientRelayInbox(request.params.canonicalId)
   });
 });
 
-relayRouter.post("/envelopes/:messageId/ack", (request, response) => {
-  // DEV ONLY: the server cannot verify durable local recipient save yet.
-  // Recipient devices should only call this after persisting the ciphertext.
-  const result = ackStoredRelayEnvelope(request.params.messageId);
+// Phase 14 CRIT-3: recipient-device must prove possession of its
+// device key to ack (and thereby destroy) a queued envelope.
+// Previously any caller knowing a message_id could redact-delete it
+// — combined with the unauth inbox listing, that was a total
+// message-delivery DoS primitive for any user.
+//
+// The middleware only verifies the signer; we additionally check the
+// envelope's recipient_canonical_id matches the signer's
+// canonical_id, since the message_id alone doesn't establish the
+// signer-as-recipient relationship.
+relayRouter.post("/envelopes/:messageId/ack", requireSignedRequest({
+  kind: "device"
+}), (request, response) => {
+  const messageId = request.params.messageId;
+  const recipientCanonical = getRelayEnvelopeRecipient(messageId);
+  if (recipientCanonical === null) {
+    response.status(404).json({ ok: false, error: "not_found" });
+    return;
+  }
+  if (recipientCanonical !== request.authenticatedCanonicalId) {
+    response.status(403).json({ ok: false, error: "not_recipient" });
+    return;
+  }
+  const result = ackStoredRelayEnvelope(messageId);
   if (!result.ok) {
     response.status(404).json({ ok: false, error: result.error });
     return;
   }
-
   response.json({ ok: true, status: "acked" });
 });
 
-relayRouter.post("/relationships", (request, response) => {
+// Phase 14 CRIT-4: relay-tier writes require a per-request signature
+// from the sender (the canonical_id whose tier is being set). Previously
+// any anonymous caller could set tier="blocked" between two arbitrary
+// users to silently DoS message delivery, or "known" to abuse the
+// expanded relay quota against a victim.
+relayRouter.post("/relationships", requireSignedRequest({
+  kind: "identity",
+  bodyOwnerField: "sender_canonical_id"
+}), (request, response) => {
   const body = request.body as {
     sender_canonical_id?: unknown;
     recipient_canonical_id?: unknown;
@@ -134,7 +164,14 @@ relayRouter.post("/relationships", (request, response) => {
 });
 
 relayRouter.post("/expire", (_request, response) => {
-  // DEV/admin route for local maintenance until a proper job runner exists.
+  // Phase 14 platform slice: this route was previously labeled "DEV/admin"
+  // in a comment but had no production gate. Production cron handles
+  // retention via src/relay/relay.retention.ts on a timer — the
+  // operator-triggered endpoint is dev-only.
+  if (!readNodeRuntimeConfig().isLocalDevelopment) {
+    response.status(404).type("text/plain").send("not found\n");
+    return;
+  }
   response.json({ ok: true, ...expireStoredRelayEnvelopes() });
 });
 
@@ -144,6 +181,7 @@ function isRelayTier(value: unknown): value is RelayTier {
 
 function relayErrorStatus(error: string): number {
   if (error === "invalid_envelope") return 400;
+  if (error === "missing_signature") return 400;
   if (error === "duplicate_message") return 409;
   if (error === "expired") return 410;
   return 429;

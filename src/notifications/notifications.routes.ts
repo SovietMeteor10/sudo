@@ -22,10 +22,19 @@ import {
   listIncomingRepostsOfAuthor
 } from "./notifications.store.js";
 import type { SocialNotification } from "../protocol/types.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
 
 export const notificationsRouter = Router();
 
-notificationsRouter.get("/incoming/:recipientCanonicalId", (request, response) => {
+// Phase 14 HIGH-4: incoming-notification enumeration is now identity-sig
+// gated. Previously any anonymous caller could pull the full incoming
+// social-activity stream for any user (follows, replies, reposts,
+// reactions, mutual-connection confirmations) plus run 5 SQL aggregates
+// per call as a read-load amplifier.
+notificationsRouter.get("/incoming/:recipientCanonicalId", requireSignedRequest({
+  kind: "identity",
+  urlOwnerParam: "recipientCanonicalId"
+}), (request, response) => {
   const recipientCanonicalId = request.params.recipientCanonicalId;
   if (typeof recipientCanonicalId !== "string" || recipientCanonicalId.length === 0) {
     response.status(400).json({ ok: false, error: "invalid_recipient" });

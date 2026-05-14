@@ -59,7 +59,21 @@ export function submitRelayEnvelope(input: unknown, now = new Date()): SubmitRel
     return { ok: false, error: "owner_envelope_quota_exceeded" };
   }
 
-  if (parsed.sender_signature !== "dev-placeholder" && parsed.sender_signature !== "dev-placeholder:relay-signature-unavailable") {
+  // Phase 14 CRIT-1: the `dev-placeholder` sender_signature path skips
+  // verification and previously had no production gate, letting any
+  // unauthenticated remote post envelopes claiming an arbitrary
+  // sender_canonical_id. The shortcut is now refused in production —
+  // a real client must sign with its identity key. Mirrors what
+  // feed.service.ts has always done for unsigned feed posts.
+  const isDevPlaceholder =
+    parsed.sender_signature === "dev-placeholder"
+    || parsed.sender_signature === "dev-placeholder:relay-signature-unavailable";
+
+  if (isDevPlaceholder) {
+    if (!readNodeRuntimeConfig().isLocalDevelopment) {
+      return { ok: false, error: "missing_signature" };
+    }
+  } else {
     const sender = getIdentityByCanonicalId(parsed.sender_canonical_id);
     if (sender === null) {
       return { ok: false, error: "invalid_envelope" };

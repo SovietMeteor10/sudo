@@ -175,6 +175,65 @@ async function getJson(path) {
   return { status: response.status, body: json };
 }
 
+// Phase 14: sync log GET and ack POST are now device-signed. Helpers
+// that mint an X-Sudo-Auth header from the smoke's locally-held
+// device key. Pattern mirrors src/identity/request-auth.ts.
+function bodyDigest(body) {
+  const j = canonicalJson(body ?? null);
+  return createHash("sha256").update(j).digest("base64url");
+}
+function normalizePath(p) {
+  const q = p.indexOf("?");
+  const np = q === -1 ? p : p.slice(0, q);
+  if (np.length > 1 && np.endsWith("/")) return np.slice(0, -1);
+  return np;
+}
+function signDeviceHeader(method, path, body, ownerCanonicalId, deviceId, devicePrivateKey) {
+  const ts = Math.floor(Date.now() / 1000);
+  const nonce = base64url(randomBytes(16));
+  // Normalize empty body to null to match the server's bodyDigest.
+  const normalized = body === undefined || body === null
+    || (typeof body === "object" && !Array.isArray(body) && Object.keys(body).length === 0)
+    ? null
+    : body;
+  const payload = {
+    type: "sudo_request_auth",
+    method: method.toUpperCase(),
+    path: normalizePath(path),
+    body_digest: bodyDigest(normalized),
+    canonical_id: ownerCanonicalId,
+    device_id: deviceId,
+    ts,
+    nonce
+  };
+  const signature = base64url(sign(null, Buffer.from(canonicalJson(payload)), devicePrivateKey));
+  return base64url(Buffer.from(JSON.stringify({
+    canonical_id: ownerCanonicalId,
+    device_id: deviceId,
+    ts,
+    nonce,
+    signature
+  })));
+}
+async function getJsonSigned(path, ownerCanonicalId, deviceId, devicePrivateKey) {
+  const header = signDeviceHeader("GET", path, null, ownerCanonicalId, deviceId, devicePrivateKey);
+  const r = await fetch(`${BASE_URL}${path}`, {
+    headers: { accept: "application/json", "x-sudo-auth": header }
+  });
+  const json = await r.json().catch(() => ({}));
+  return { status: r.status, body: json };
+}
+async function postJsonSigned(path, body, ownerCanonicalId, deviceId, devicePrivateKey) {
+  const header = signDeviceHeader("POST", path, body, ownerCanonicalId, deviceId, devicePrivateKey);
+  const r = await fetch(`${BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", "x-sudo-auth": header },
+    body: JSON.stringify(body)
+  });
+  const json = await r.json().catch(() => ({}));
+  return { status: r.status, body: json };
+}
+
 (async () => {
   const health = await getJson("/health").catch(() => ({ status: 0 }));
   if (health.status !== 200) {
@@ -332,7 +391,10 @@ async function getJson(path) {
   // ----------------------------------------------------------------
   // 4. B polls, verifies, decrypts both messages.
   // ----------------------------------------------------------------
-  const pollOne = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`);
+  const pollOne = await getJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`,
+    owner.canonicalId, deviceBId, deviceB.privateKey
+  );
   if (pollOne.status !== 200) fail(`B poll failed: ${pollOne.status}`);
   const sentEntry = pollOne.body.events.find((e) => e.signed_event.event_id === upsertSent.event_id);
   const recvEntry = pollOne.body.events.find((e) => e.signed_event.event_id === upsertReceived.event_id);
@@ -366,10 +428,11 @@ async function getJson(path) {
   // 5. ACK B through both, then post an UPDATE for the sent message
   //    (status=stored_by_relay → acked, with newer updated_at).
   // ----------------------------------------------------------------
-  await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
-    recipient_device_id: deviceBId,
-    last_server_seq: Math.max(sentEntry.server_seq, recvEntry.server_seq)
-  });
+  await postJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`,
+    { recipient_device_id: deviceBId, last_server_seq: Math.max(sentEntry.server_seq, recvEntry.server_seq) },
+    owner.canonicalId, deviceBId, deviceB.privateKey
+  );
 
   const updateAt = new Date(Date.parse(sentCreatedAt) + 60_000).toISOString();
   const updatedPayload = { ...sentPayload, status: "acked", updated_at: updateAt };
@@ -385,7 +448,10 @@ async function getJson(path) {
     signed_event: upsertUpdate
   });
   if (updateResp.status !== 201) fail(`A update failed: ${JSON.stringify(updateResp.body)}`);
-  const pollUpdate = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${recvEntry.server_seq}`);
+  const pollUpdate = await getJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${recvEntry.server_seq}`,
+    owner.canonicalId, deviceBId, deviceB.privateKey
+  );
   const updateEntry = pollUpdate.body.events.find((e) => e.signed_event.event_id === upsertUpdate.event_id);
   if (updateEntry === undefined) fail(`B did not receive the update`);
   const updateDecoded = JSON.parse(decryptSyncPayload(updateEntry.signed_event.encrypted_payload, symKey));
@@ -471,18 +537,28 @@ async function getJson(path) {
   if (afterRevokePost.status !== 201) fail(`A post-revoke message failed: ${JSON.stringify(afterRevokePost.body)}`);
   ok(`A posted message.upsert after revoking B (server_seq=${afterRevokePost.body.server_seq})`);
 
-  const revokedPoll = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`);
-  if (revokedPoll.status !== 403 || revokedPoll.body.error !== "recipient_not_authorized") {
+  // Phase 14 HIGH-6: the sig middleware rejects revoked-device sigs
+  // with 401 device_revoked before the route's recipient_not_authorized
+  // check would fire. Either gate is correct — both mean the revoked
+  // device is denied access.
+  const revokedPoll = await getJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`,
+    owner.canonicalId, deviceBId, deviceB.privateKey
+  );
+  if (revokedPoll.status !== 401 && revokedPoll.status !== 403) {
     fail(`revoked B was not refused: ${revokedPoll.status} ${JSON.stringify(revokedPoll.body)}`);
   }
-  ok(`server refuses revoked B's poll (403 recipient_not_authorized)`);
+  ok(`server refuses revoked B's poll (${revokedPoll.status} ${revokedPoll.body?.error})`);
 
-  const revokedAck = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
-    recipient_device_id: deviceBId,
-    last_server_seq: afterRevokePost.body.server_seq
-  });
-  if (revokedAck.status !== 403) fail(`revoked B's ack was not refused: ${revokedAck.status}`);
-  ok(`server refuses revoked B's ack (403)`);
+  const revokedAck = await postJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`,
+    { recipient_device_id: deviceBId, last_server_seq: afterRevokePost.body.server_seq },
+    owner.canonicalId, deviceBId, deviceB.privateKey
+  );
+  if (revokedAck.status !== 401 && revokedAck.status !== 403) {
+    fail(`revoked B's ack was not refused: ${revokedAck.status}`);
+  }
+  ok(`server refuses revoked B's ack (${revokedAck.status} ${revokedAck.body?.error})`);
 
   const bAsOrigin = buildSignedSyncEvent({
     ownerCanonicalId: owner.canonicalId,
@@ -503,7 +579,10 @@ async function getJson(path) {
   //    still-active device (A) and assert no plaintext message body,
   //    peer canonical_id, or conversation_id appears anywhere.
   // ----------------------------------------------------------------
-  const finalPoll = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceAId)}&since=0&limit=200`);
+  const finalPoll = await getJsonSigned(
+    `/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceAId)}&since=0&limit=200`,
+    owner.canonicalId, deviceAId, deviceA.privateKey
+  );
   if (finalPoll.status !== 200) fail(`A audit poll failed: ${finalPoll.status}`);
   const blob = JSON.stringify(finalPoll.body);
   const leaked = [];

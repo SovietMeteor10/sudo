@@ -63,6 +63,11 @@ async function postJson(path, body) {
   let j = null; try { j = await r.json(); } catch {}
   return { status: r.status, body: j };
 }
+// Phase 14 HIGH-6: /sync GET and /sync/ack POST now require a device signature.
+const { getJsonSignedDevice, postJsonSignedDevice } = require("./lib/request-auth-helpers.cjs");
+async function syncGet(path, signer) { return getJsonSignedDevice(BASE_URL, path, signer); }
+async function syncPost(path, body, signer) { return postJsonSignedDevice(BASE_URL, path, body, signer); }
+
 async function getJson(path) {
   const r = await fetch(`${BASE_URL}${path}`, { headers: { accept: "application/json" } });
   let j = null; try { j = await r.json(); } catch {}
@@ -195,7 +200,7 @@ function buildSyncEvent(opts) {
   else ok("watermark set: dev1.purged_before_sequence=1");
 
   // 3. GET /sync now exposes the watermark in the snapshot.
-  resp = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(dev2.deviceId)}&since=0&limit=50`);
+  resp = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(dev2.deviceId)}&since=0&limit=50`, { canonicalId: owner.canonicalId, deviceId: dev2.deviceId, privateKey: dev2.devicePrivateKey });
   if (resp.status !== 200) fail("get-sync", `${resp.status}`);
   const wmEntry = resp.body?.watermarks?.find((w) => w.origin_device_id === dev1.deviceId);
   if (!wmEntry || wmEntry.purged_before_sequence !== 1) {
@@ -290,16 +295,22 @@ function buildSyncEvent(opts) {
   resp = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync`, { signed_event: evt });
   if (resp.status !== 201) fail("regress-post", `expected 201, got ${resp.status}`);
   // Check snapshot still shows 100.
-  resp = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(dev1.deviceId)}&since=0&limit=50`);
+  resp = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(dev1.deviceId)}&since=0&limit=50`, { canonicalId: owner.canonicalId, deviceId: dev1.deviceId, privateKey: dev1.devicePrivateKey });
   const wm2 = resp.body?.watermarks?.find((w) => w.origin_device_id === dev2.deviceId);
   if (!wm2 || wm2.purged_before_sequence !== 100) {
     fail("never-regress", `expected dev2 watermark=100, got ${JSON.stringify(wm2)}`);
   } else ok("never-regress: smaller watermark does not roll back");
 
-  // 7. Dev diagnostics endpoint reports watermark + non-zero rejection count.
+  // 7. Dev diagnostics endpoint reports watermark + non-zero rejection
+  // count. /api/admin/* is gated to local-dev only (Phase 11.2
+  // diagnostics-hardening); in production this returns 404 and the
+  // diag check is skipped.
   resp = await getJson("/api/admin/tombstone-watermarks");
-  if (resp.status !== 200) fail("diag-status", `${resp.status}`);
-  else {
+  if (resp.status === 404) {
+    ok("diag: /api/admin/tombstone-watermarks dev-gated (404 in prod) — skipping diag assertions");
+  } else if (resp.status !== 200) {
+    fail("diag-status", `${resp.status}`);
+  } else {
     const list = resp.body?.watermarks ?? [];
     const found1 = list.find((w) => w.origin_device_id === dev1.deviceId);
     const found2 = list.find((w) => w.origin_device_id === dev2.deviceId);

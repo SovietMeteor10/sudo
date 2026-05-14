@@ -169,6 +169,11 @@ async function postJson(path, body) {
   return { status: response.status, body: json };
 }
 
+// Phase 14 HIGH-6: /sync GET and /sync/ack POST now require a device signature.
+const { getJsonSignedDevice, postJsonSignedDevice } = require("./lib/request-auth-helpers.cjs");
+async function syncGet(path, signer) { return getJsonSignedDevice(BASE_URL, path, signer); }
+async function syncPost(path, body, signer) { return postJsonSignedDevice(BASE_URL, path, body, signer); }
+
 async function getJson(path) {
   const response = await fetch(`${BASE_URL}${path}`, { headers: { accept: "application/json" } });
   const json = await response.json().catch(() => ({}));
@@ -280,7 +285,7 @@ async function getJson(path) {
   if (postC.status !== 201 || !postC.body.ok) fail(`A subscription.upsert post failed: ${JSON.stringify(postC.body)}`);
   ok(`A posted subscription.upsert for C (server_seq=${postC.body.server_seq})`);
 
-  const pollOne = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`);
+  const pollOne = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
   if (pollOne.status !== 200) fail(`B poll failed: ${pollOne.status}`);
   const cEntry = pollOne.body.events.find((e) => e.signed_event.event_id === upsertC.event_id);
   if (cEntry === undefined) fail(`B did not receive the C upsert`);
@@ -321,10 +326,10 @@ async function getJson(path) {
   ok(`server rejects sequence regression on the subscription slice`);
 
   // ACK B through this event so we can resume from there.
-  await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
+  await syncPost(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
     recipient_device_id: deviceBId,
     last_server_seq: cEntry.server_seq
-  });
+  }, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
 
   // ----------------------------------------------------------------
   // 4. A updates C's visibility flags (subscription.upsert with new
@@ -347,7 +352,7 @@ async function getJson(path) {
   });
   const updateResp = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync`, { signed_event: updateC });
   if (updateResp.status !== 201) fail(`A update failed: ${JSON.stringify(updateResp.body)}`);
-  const pollUpdate = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${cEntry.server_seq}`);
+  const pollUpdate = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${cEntry.server_seq}`, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
   const updateEntry = pollUpdate.body.events.find((e) => e.signed_event.event_id === updateC.event_id);
   if (updateEntry === undefined) fail(`B did not receive the updated subscription`);
   const updatedPayload = JSON.parse(decryptSyncPayload(updateEntry.signed_event.encrypted_payload, symKey));
@@ -355,10 +360,10 @@ async function getJson(path) {
     fail(`B decoded update payload missing flags: ${JSON.stringify(updatedPayload)}`);
   }
   ok(`B received updated subscription (include_public=false, include_close=true)`);
-  await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
+  await syncPost(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
     recipient_device_id: deviceBId,
     last_server_seq: updateEntry.server_seq
-  });
+  }, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
 
   // ----------------------------------------------------------------
   // 5. A unsubscribes from C → B receives subscription.delete.
@@ -373,7 +378,7 @@ async function getJson(path) {
   });
   const deleteResp = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync`, { signed_event: deleteC });
   if (deleteResp.status !== 201) fail(`A delete failed: ${JSON.stringify(deleteResp.body)}`);
-  const pollDelete = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${updateEntry.server_seq}`);
+  const pollDelete = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=${updateEntry.server_seq}`, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
   const deleteEntry = pollDelete.body.events.find((e) => e.signed_event.event_id === deleteC.event_id);
   if (deleteEntry === undefined) fail(`B did not receive subscription.delete`);
   const deletePayload = JSON.parse(decryptSyncPayload(deleteEntry.signed_event.encrypted_payload, symKey));
@@ -381,10 +386,10 @@ async function getJson(path) {
     fail(`B decoded delete payload mismatch: ${JSON.stringify(deletePayload)}`);
   }
   ok(`B received subscription.delete for C`);
-  await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
+  await syncPost(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
     recipient_device_id: deviceBId,
     last_server_seq: deleteEntry.server_seq
-  });
+  }, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
 
   // ----------------------------------------------------------------
   // 6. A revokes B with a signed revocation membership at seq 2.
@@ -427,18 +432,20 @@ async function getJson(path) {
   if (postD.status !== 201) fail(`A post-D failed: ${JSON.stringify(postD.body)}`);
   ok(`A posted subscription.upsert for D after revoking B (server_seq=${postD.body.server_seq})`);
 
-  const revokedPoll = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`);
-  if (revokedPoll.status !== 403 || revokedPoll.body.error !== "recipient_not_authorized") {
+  // Phase 14 HIGH-6: revoked-device sig fails at 401 device_revoked
+  // before the route-level recipient_not_authorized check fires.
+  const revokedPoll = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceBId)}&since=0`, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
+  if (revokedPoll.status !== 401 && revokedPoll.status !== 403) {
     fail(`revoked B was not refused: ${revokedPoll.status} ${JSON.stringify(revokedPoll.body)}`);
   }
-  ok(`server refuses revoked B's poll (403 recipient_not_authorized)`);
+  ok(`server refuses revoked B's poll (${revokedPoll.status} ${revokedPoll.body?.error})`);
 
-  const revokedAck = await postJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
+  const revokedAck = await syncPost(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync/ack`, {
     recipient_device_id: deviceBId,
     last_server_seq: postD.body.server_seq
-  });
-  if (revokedAck.status !== 403) fail(`revoked B's ack was not refused: ${revokedAck.status}`);
-  ok(`server refuses revoked B's ack (403)`);
+  }, { canonicalId: owner.canonicalId, deviceId: deviceBId, privateKey: deviceB.privateKey });
+  if (revokedAck.status !== 401 && revokedAck.status !== 403) fail(`revoked B's ack was not refused: ${revokedAck.status}`);
+  ok(`server refuses revoked B's ack (${revokedAck.status} ${revokedAck.body?.error})`);
 
   const bAsOrigin = buildSignedSyncEvent({
     ownerCanonicalId: owner.canonicalId,
@@ -459,7 +466,7 @@ async function getJson(path) {
   //    sync row visible through the listing (still-active device A
   //    pulls everything for an audit).
   // ----------------------------------------------------------------
-  const finalPoll = await getJson(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceAId)}&since=0&limit=200`);
+  const finalPoll = await syncGet(`/api/devices/${encodeURIComponent(owner.canonicalId)}/sync?device_id=${encodeURIComponent(deviceAId)}&since=0&limit=200`, { canonicalId: owner.canonicalId, deviceId: deviceAId, privateKey: deviceA.privateKey });
   if (finalPoll.status !== 200) fail(`A audit poll failed: ${finalPoll.status}`);
   const blob = JSON.stringify(finalPoll.body);
   if (blob.includes(authorC) || blob.includes(authorD)) {

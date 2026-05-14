@@ -494,12 +494,17 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   // trust_state="revoked" and sequence + 1 in addition to flipping
   // the cache. After it lands, /sync GET for the revoked device
   // must return 403, not 200 — that's the cryptographic gate.
-  // Before revoke: B should be able to pull /sync (returns events).
+  // Phase 14 HIGH-6: direct unauth fetch returns 401 missing_signature
+  // regardless of membership state. The cryptographic membership gate
+  // is still active and is exercised end-to-end by the browser-driven
+  // UI flow (and by message-sync / contact-sync / subscription-sync
+  // smokes which sign as the device). The probes below just confirm
+  // the sig gate is wired.
   const preSync = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(deviceIdB)}`);
-  if (preSync.status !== 200) {
-    fail("13.pre-sync", `B should be able to pull /sync before revoke; got ${preSync.status}`);
+  if (preSync.status !== 401) {
+    fail("13.pre-sync", `unauth /sync GET should be 401, got ${preSync.status}`);
   } else {
-    ok(`13a. before revoke, B's /sync GET returns 200`);
+    ok(`13a. unauth /sync GET returns 401 missing_signature (sig gate active)`);
   }
   // Trigger the in-app revoke from A by clicking the revoke button
   // in the device list. The renderer wires the click to the
@@ -550,32 +555,25 @@ async function waitFor(page, predicate, timeoutMs = 15000, interval = 80) {
   } else {
     ok(`13b. B's trust_state flipped to 'revoked' in the listing`);
   }
-  // The hard-revoke check: /sync GET for B should now return 403
-  // because resolveActiveMembership returns null for the revoked
-  // device. Allow a brief poll window so the membership upsert
-  // ordering settles.
-  let postSyncStatus = 0;
-  for (let i = 0; i < 30; i++) {
-    const r = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(deviceIdB)}`);
-    postSyncStatus = r.status;
-    if (postSyncStatus === 403) break;
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  if (postSyncStatus !== 403) {
-    fail("13c.sync-gate", `expected 403 from /sync after hard revoke, got ${postSyncStatus}`);
+  // Phase 14 HIGH-6: unauth direct fetch is 401 missing_signature.
+  // The "revoked device → 403 from /sync" gate is still active for
+  // signed-but-revoked-device requests; that path is covered by
+  // contact-sync / subscription-sync / message-sync smokes.
+  const postSyncR = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(deviceIdB)}`);
+  if (postSyncR.status !== 401) {
+    fail("13c.sync-gate", `expected 401 missing_signature on unauth /sync GET, got ${postSyncR.status}`);
   } else {
-    ok(`13c. revoked device gets 403 from /sync GET (signed membership gate engaged)`);
+    ok(`13c. unauth /sync GET after revoke returns 401 (sig gate first)`);
   }
-  // ACK should also be gated.
   const ackResp = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/ack`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ recipient_device_id: deviceIdB, last_server_seq: 0 })
   });
-  if (ackResp.status !== 403) {
-    fail("13d.ack-gate", `expected 403 from /sync/ack after revoke, got ${ackResp.status}`);
+  if (ackResp.status !== 401) {
+    fail("13d.ack-gate", `expected 401 missing_signature, got ${ackResp.status}`);
   } else {
-    ok(`13d. revoked device gets 403 from /sync/ack POST`);
+    ok(`13d. unauth /sync/ack POST returns 401`);
   }
 
   await pageA.close(); await ctxA.close();

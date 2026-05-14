@@ -12,7 +12,17 @@ import { deriveSyncSymKey } from "./sync.js";
 // re-encrypts the bundle in place. There is no migration path that
 // moves any private sync key off-device.
 const ACCOUNT_VERSION = 2;
-const ACCOUNT_ITERATIONS = 250000;
+// Phase 14 MED-1: PBKDF2 bumped to 600 000 to match the OWASP 2023
+// recommendation. Old (250 000-iter) bundles unlock fine and are
+// silently re-encrypted at the new iteration count on the next
+// successful unlock — the existing v1→v2 upgrade-on-unlock path
+// gained an iteration-count check.
+const ACCOUNT_ITERATIONS = 600000;
+// Below this floor we refuse to decrypt. Defends against a tampered
+// backup envelope whose iteration count was reduced to make brute
+// force cheaper. 100 000 is the lower bound OWASP allowed in 2018;
+// anything below this is presumed adversarial.
+const ACCOUNT_ITERATIONS_MIN = 100000;
 
 type StoredPrivateBundle = {
   identity: {
@@ -147,7 +157,7 @@ export async function unlockBrowserCryptoAccount(
   }
 
   const identityDocument = JSON.parse(record.identity_document_json) as IdentityDocument;
-  const bundle = await decryptAccountBundle(record.encrypted_bundle_json, passphrase);
+  const { bundle, iterations: bundleIterations } = await decryptAccountBundle(record.encrypted_bundle_json, passphrase);
 
   const identity = await importSigningKeyPair({
     type: bundle.identity.type,
@@ -210,7 +220,11 @@ export async function unlockBrowserCryptoAccount(
     messaging_key_type: messaging.type
   };
 
-  if (bundle.account_sync === undefined) {
+  // Re-encrypt on unlock if either (a) the bundle was a v1 (no
+  // account_sync) and needs to be promoted to v2, or (b) the stored
+  // KDF iteration count is below the current ACCOUNT_ITERATIONS
+  // (Phase 14 MED-1 silent upgrade from 250k → 600k).
+  if (bundle.account_sync === undefined || bundleIterations < ACCOUNT_ITERATIONS) {
     const upgraded = await encryptAccountRecord(identityDocument, unlockedAccount, passphrase);
     await saveCryptoAccount(upgraded);
   }
@@ -293,7 +307,10 @@ async function encryptAccountRecord(
   };
 }
 
-async function decryptAccountBundle(value: string, passphrase: string): Promise<StoredPrivateBundle> {
+async function decryptAccountBundle(
+  value: string,
+  passphrase: string
+): Promise<{ bundle: StoredPrivateBundle; iterations: number }> {
   const envelope = JSON.parse(value) as {
     type: string;
     version: number;
@@ -316,6 +333,18 @@ async function decryptAccountBundle(value: string, passphrase: string): Promise<
     throw new Error("invalid crypto account");
   }
 
+  // Phase 14 MED-1: reject any envelope whose iteration count is
+  // below the floor. Defends against a backup file that an attacker
+  // tampered with to weaken the KDF before brute-forcing the
+  // passphrase offline.
+  if (
+    typeof envelope.kdf.iterations !== "number"
+    || !Number.isFinite(envelope.kdf.iterations)
+    || envelope.kdf.iterations < ACCOUNT_ITERATIONS_MIN
+  ) {
+    throw new Error("crypto account kdf weakened");
+  }
+
   const key = await deriveBackupKey(passphrase, base64UrlToBytes(envelope.kdf.salt), envelope.kdf.iterations);
   const plaintext = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: toBufferSource(base64UrlToBytes(envelope.cipher.iv)) },
@@ -323,5 +352,8 @@ async function decryptAccountBundle(value: string, passphrase: string): Promise<
     toBufferSource(base64UrlToBytes(envelope.ciphertext))
   );
 
-  return JSON.parse(new TextDecoder().decode(plaintext)) as StoredPrivateBundle;
+  return {
+    bundle: JSON.parse(new TextDecoder().decode(plaintext)) as StoredPrivateBundle,
+    iterations: envelope.kdf.iterations
+  };
 }

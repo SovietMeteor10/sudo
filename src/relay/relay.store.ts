@@ -137,6 +137,15 @@ export function relayEnvelopeExists(messageId: string): boolean {
   return row !== undefined;
 }
 
+// Lookup the recipient canonical_id for a queued envelope. Used by
+// the ack route to authorize that the signed caller is actually the
+// envelope's recipient before allowing the destructive ack-write.
+export function getRelayEnvelopeRecipient(messageId: string): string | null {
+  type Row = { recipient_canonical_id: string };
+  const row = db.prepare("SELECT recipient_canonical_id FROM relay_envelopes WHERE message_id = ?").get(messageId) as Row | undefined;
+  return row?.recipient_canonical_id ?? null;
+}
+
 export function ackRelayEnvelope(messageId: string): boolean {
   const row = db.prepare("SELECT * FROM relay_envelopes WHERE message_id = ?").get(messageId) as RelayEnvelopeRow | undefined;
   if (!row) return false;

@@ -231,8 +231,19 @@ export async function teardownPushSubscription(): Promise<void> {
     const reg = await navigator.serviceWorker.getRegistration("/");
     const subscription = reg ? await reg.pushManager.getSubscription() : null;
     const meta = await getLocalDeviceMetadata();
-    if (subscription !== null && meta !== null) {
-      await deletePushSubscription({ device_id: meta.device_id, endpoint: subscription.endpoint });
+    // Phase 14 CRIT-5: server-side DELETE now requires identity sig
+    // matching owner_canonical_id. We resolve the owner from the
+    // currently-unlocked account if available; if not (account
+    // already locked during sign-out) we still unsubscribe at the
+    // browser and let the row age out via 410-detection on next push.
+    const { getUnlockedBrowserCryptoAccount } = await import("./crypto/key-storage.js");
+    const account = getUnlockedBrowserCryptoAccount();
+    if (subscription !== null && meta !== null && account !== null) {
+      await deletePushSubscription({
+        owner_canonical_id: account.canonical_id,
+        device_id: meta.device_id,
+        endpoint: subscription.endpoint
+      });
     }
     if (subscription !== null) {
       try { await subscription.unsubscribe(); } catch { /* ignore */ }

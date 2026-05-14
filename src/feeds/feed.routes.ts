@@ -11,6 +11,8 @@ import {
   listUserPostsForApi
 } from "./feed.service.js";
 import { FeedError, type CreateFeedPostInput } from "./feed.types.js";
+import { requireSignedRequest } from "../identity/request-auth.js";
+import { getFeedPost } from "./feed.store.js";
 
 export const feedRouter = Router();
 
@@ -62,18 +64,25 @@ feedRouter.get("/posts/:postId/replies", (request, response) => {
   }
 });
 
-feedRouter.delete("/posts/:postId", (request, response) => {
+// Phase 14 HIGH-2: feed-post deletion now requires the caller to
+// prove possession of the author's identity key via a per-request
+// signature. Previously the route trusted the body's
+// `requester_canonical_id` field and only checked equality against
+// the post's stored author_canonical_id — and author canonical_ids
+// are public via RSS / /api/feeds/users/:id, so anyone who knew a
+// post_id could delete it.
+feedRouter.delete("/posts/:postId", requireSignedRequest({ kind: "identity" }), (request, response) => {
   try {
-    // Phase 13.1: pull requester canonical id from either the JSON
-    // body (preferred, matches createFeedPost shape) or a query
-    // param (for fetch-without-body callers). The service-level
-    // check returns 404 when the requester isn't the author.
-    const body = (request.body ?? {}) as { requester_canonical_id?: unknown };
-    const queryRequester = typeof request.query.requester_canonical_id === "string" ? request.query.requester_canonical_id : "";
-    const requester = typeof body.requester_canonical_id === "string" && body.requester_canonical_id.length > 0
-      ? body.requester_canonical_id
-      : queryRequester;
-    response.json({ ok: true, post: deleteFeedPost(request.params.postId, requester) });
+    const post = getFeedPost(request.params.postId);
+    if (post === null) {
+      response.status(404).json({ ok: false, error: "post_not_found", message: "feed post not found" });
+      return;
+    }
+    if (post.author_canonical_id !== request.authenticatedCanonicalId) {
+      response.status(403).json({ ok: false, error: "not_author", message: "signer does not match post author" });
+      return;
+    }
+    response.json({ ok: true, post: deleteFeedPost(request.params.postId, request.authenticatedCanonicalId!) });
   } catch (error) {
     sendFeedError(response, error);
   }

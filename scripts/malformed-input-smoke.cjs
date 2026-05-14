@@ -62,68 +62,24 @@ function expectInvalidField(label, r, fieldName) {
 }
 
 async function pushSubscriptionRoutes() {
-  // owner_canonical_id missing -> field=owner_canonical_id
-  await expectInvalidField("push.subscribe:missing-owner",
-    await req("POST", "/api/push/subscriptions", { device_id: randDeviceId(), endpoint: "https://x.test/p", p256dh: "a", auth: "b" }),
-    "owner_canonical_id");
+  // Phase 14 CRIT-5: POST and DELETE /api/push/subscriptions are now
+  // signature-gated. An unauthenticated request gets 401
+  // missing_signature before field validation runs. The field-level
+  // error contract still exists in the handler (it just runs AFTER
+  // the sig check), so this smoke now only asserts that the sig gate
+  // is in place — granular field-error testing moved to
+  // security-request-auth-smoke.cjs / security-push-ssrf-smoke.cjs.
+  const subResp = await req("POST", "/api/push/subscriptions", {
+    device_id: randDeviceId(), endpoint: "https://x.test/p", p256dh: "a", auth: "b"
+  });
+  if (subResp.status !== 401 || subResp.body?.error !== "missing_signature") {
+    fail("push.subscribe:sig-gated", `expected 401 missing_signature on unauth POST, got ${subResp.status} ${JSON.stringify(subResp.body)}`);
+  } else ok(`push.subscribe sig-gated -> 401 missing_signature`);
 
-  // owner_canonical_id wrong format
-  await expectInvalidField("push.subscribe:bad-owner",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: "not-a-canonical-id",
-      device_id: randDeviceId(), endpoint: "https://x.test/p", p256dh: "a", auth: "b"
-    }), "owner_canonical_id");
-
-  // device_id wrong format (too short)
-  await expectInvalidField("push.subscribe:bad-device",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: randCanonicalId(),
-      device_id: "abc", endpoint: "https://x.test/p", p256dh: "a", auth: "b"
-    }), "device_id");
-
-  // endpoint not http(s)
-  await expectInvalidField("push.subscribe:bad-endpoint",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: randCanonicalId(),
-      device_id: randDeviceId(), endpoint: "ftp://evil.example/", p256dh: "a", auth: "b"
-    }), "endpoint");
-
-  // p256dh empty
-  await expectInvalidField("push.subscribe:empty-p256dh",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: randCanonicalId(),
-      device_id: randDeviceId(), endpoint: "https://x.test/p", p256dh: "", auth: "b"
-    }), "p256dh");
-
-  // wrong types
-  await expectInvalidField("push.subscribe:wrong-types",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: 123, device_id: 456, endpoint: ["array"], p256dh: { obj: 1 }, auth: null
-    }), "owner_canonical_id");
-
-  // oversized endpoint
-  await expectInvalidField("push.subscribe:oversized-endpoint",
-    await req("POST", "/api/push/subscriptions", {
-      owner_canonical_id: randCanonicalId(),
-      device_id: randDeviceId(),
-      endpoint: "https://x.test/" + "A".repeat(5000),
-      p256dh: "a", auth: "b"
-    }), "endpoint");
-
-  // DELETE: missing device_id
-  await expectInvalidField("push.unsubscribe:missing-device",
-    await req("DELETE", "/api/push/subscriptions", { endpoint: "https://x.test/p" }),
-    "device_id");
-
-  // DELETE: invalid device_id format
-  await expectInvalidField("push.unsubscribe:bad-device",
-    await req("DELETE", "/api/push/subscriptions", { device_id: "not-hex", endpoint: "https://x.test/p" }),
-    "device_id");
-
-  // DELETE: empty endpoint
-  await expectInvalidField("push.unsubscribe:empty-endpoint",
-    await req("DELETE", "/api/push/subscriptions", { device_id: randDeviceId(), endpoint: "" }),
-    "endpoint");
+  const delResp = await req("DELETE", "/api/push/subscriptions", { device_id: randDeviceId(), endpoint: "https://x.test/p" });
+  if (delResp.status !== 401 || delResp.body?.error !== "missing_signature") {
+    fail("push.unsubscribe:sig-gated", `expected 401 missing_signature on unauth DELETE, got ${delResp.status} ${JSON.stringify(delResp.body)}`);
+  } else ok(`push.unsubscribe sig-gated -> 401 missing_signature`);
 
   // test route validates recipient_canonical_id
   await expectInvalidField("push.test:bad-recipient",

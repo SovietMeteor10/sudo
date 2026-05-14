@@ -271,49 +271,37 @@ async function emitContactUpserts(page, owner, count) {
     ok(`7. after unblocking B, A's row returns to plain 'synced'`);
   }
 
-  // ===== Endpoint direct probes =====
+  // ===== Endpoint direct probes (unauth) =====
+  // Phase 14 HIGH-6: /sync/peer-progress now requires a device sig.
+  // Direct unauth probes from node return 401 missing_signature
+  // before any route-level check fires. Variant-by-variant access
+  // control (cross-owner / non-member caller / missing param) is
+  // covered by security-request-auth-smoke.cjs.
   const peerDeviceId = behindRow?.deviceId ?? "";
   const callerDeviceId = snap?.find((r) => /\(current\)$/.test(r.name))?.deviceId ?? "";
   if (peerDeviceId === "" || callerDeviceId === "") {
     fail("8.ids", `could not extract device ids: caller='${callerDeviceId}' peer='${peerDeviceId}'`);
   } else {
-    // Active caller + active peer → 200 + correct shape
+    // Active caller + active peer → 401 missing_signature on direct
+    // unauth fetch. (The UI path uses signedFetchAsDevice via
+    // src/web/client/api.ts and gets the real 200 + JSON body.)
     const r1 = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}&caller_device_id=${encodeURIComponent(callerDeviceId)}`);
-    const b1 = await r1.json().catch(() => ({}));
-    if (r1.status !== 200) {
-      fail("8a.shape-status", `expected 200, got ${r1.status} body=${JSON.stringify(b1)}`);
-    } else if (typeof b1.peer_recipient_cursor !== "number"
-        || typeof b1.our_last_origin_sequence !== "number"
-        || typeof b1.inbound_behind_by !== "number"
-        || typeof b1.fresh_as_of_ms !== "number") {
-      fail("8a.shape", `unexpected body shape: ${JSON.stringify(b1)}`);
+    if (r1.status !== 401) {
+      fail("8a.sig-gate", `expected 401 missing_signature on unauth direct fetch, got ${r1.status}`);
     } else {
-      ok(`8a. active caller + active peer → 200 with all four fields`);
+      ok(`8a. unauth direct fetch returns 401 (sig gate). UI path covered by Puppeteer assertions above.`);
     }
-
-    // Cross-owner: pretend owner is something else
+    // Cross-owner / non-member / missing-param: all return 401
+    // missing_signature now (the sig gate is the outer guard).
     const r2 = await fetch(`${BASE}/api/devices/${encodeURIComponent("sudo:ed25519:" + "0".repeat(64))}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}&caller_device_id=${encodeURIComponent(callerDeviceId)}`);
-    if (r2.status !== 404) {
-      fail("8b.cross-owner", `cross-owner read expected 404, got ${r2.status}`);
-    } else {
-      ok(`8b. cross-owner read returns 404`);
-    }
-
-    // Non-member caller: pass a junk caller_device_id
+    if (r2.status !== 401) fail("8b.cross-owner-unauth", `expected 401, got ${r2.status}`);
+    else ok(`8b. cross-owner unauth → 401`);
     const r3 = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}&caller_device_id=${encodeURIComponent("not-a-device")}`);
-    if (r3.status !== 404) {
-      fail("8c.non-member-caller", `non-member caller expected 404, got ${r3.status}`);
-    } else {
-      ok(`8c. non-member caller returns 404 (no existence leak)`);
-    }
-
-    // Missing param → 400
+    if (r3.status !== 401) fail("8c.junk-caller-unauth", `expected 401, got ${r3.status}`);
+    else ok(`8c. junk caller_device_id unauth → 401`);
     const r4 = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}`);
-    if (r4.status !== 400) {
-      fail("8d.missing-param", `missing caller_device_id expected 400, got ${r4.status}`);
-    } else {
-      ok(`8d. missing caller_device_id → 400`);
-    }
+    if (r4.status !== 401) fail("8d.missing-param-unauth", `expected 401, got ${r4.status}`);
+    else ok(`8d. missing caller_device_id unauth → 401`);
 
     // Revoke the caller and re-probe → 403
     // We do this last because it permanently revokes the current
@@ -346,28 +334,32 @@ async function emitContactUpserts(page, owner, count) {
     }, peerDeviceId);
     await new Promise((r) => setTimeout(r, 2000));
     const r5 = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}&caller_device_id=${encodeURIComponent(callerDeviceId)}`);
-    // Per the route's contract, a revoked peer (with an active
-    // caller) still returns 200 so the UI can keep showing the
-    // numbers. We assert that explicitly.
-    if (r5.status !== 200) {
-      fail("8e.revoked-peer-200", `active caller + revoked peer expected 200, got ${r5.status}`);
+    // Phase 14 HIGH-6: direct unauth fetch → 401 missing_signature.
+    // The "revoked peer + active caller → 200" contract still holds
+    // for signed requests, exercised by the UI assertions above.
+    if (r5.status !== 401) {
+      fail("8e.revoked-peer-unauth", `expected 401 missing_signature, got ${r5.status}`);
     } else {
-      ok(`8e. revoked peer + active caller → 200 (UI surfaces revoked separately)`);
+      ok(`8e. revoked-peer unauth direct fetch → 401`);
     }
   }
 
   // ===== No plaintext leak in response body =====
-  // We probe one more time and scan the JSON for known internal/
-  // plaintext terms. The shape is purely numeric; this is a defense
-  // assertion against future regressions.
+  // Phase 14 HIGH-6: unauth direct fetch returns 401 missing_signature.
+  // The leak check only applies to a successful (signed) response —
+  // which the UI assertions above already exercised. Skip on 401.
   const r6 = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync/peer-progress?device_id=${encodeURIComponent(peerDeviceId)}&caller_device_id=${encodeURIComponent(callerDeviceId)}`);
-  const raw = await r6.text();
-  const forbidden = ["ciphertext", "encrypted_payload", "signed_event_json", "signature", "@", `${handleA}`];
-  const leaked = forbidden.filter((term) => raw.includes(term));
-  if (leaked.length > 0) {
-    fail("9.body-leak", `peer-progress body leaks: ${leaked.join(", ")}; raw=${raw.slice(0, 240)}`);
+  if (r6.status === 401) {
+    ok(`9. body-leak check skipped — unauth direct fetch is 401 (signed response covered by UI flow above)`);
   } else {
-    ok(`9. response body contains no plaintext / internal terms`);
+    const raw = await r6.text();
+    const forbidden = ["ciphertext", "encrypted_payload", "signed_event_json", "signature", "@", `${handleA}`];
+    const leaked = forbidden.filter((term) => raw.includes(term));
+    if (leaked.length > 0) {
+      fail("9.body-leak", `peer-progress body leaks: ${leaked.join(", ")}; raw=${raw.slice(0, 240)}`);
+    } else {
+      ok(`9. response body contains no plaintext / internal terms`);
+    }
   }
 
   await browser.close();

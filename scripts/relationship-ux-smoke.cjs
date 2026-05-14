@@ -47,10 +47,13 @@ const PASSPHRASE = "CorrectHorseBatteryStaple9!";
 // Uses scripts/lib/register-client-identity so this smoke does not
 // contribute to the [legacy-signin] counter.
 const { registerClientIdentity } = require("./lib/register-client-identity.cjs");
+const { postJsonSignedIdentity } = require("./lib/request-auth-helpers.cjs");
+// Returns the full identity (canonical_id + identity_key) so the
+// caller can sign Phase 14 CRIT-4-gated writes (e.g. POST
+// /api/subscriptions on behalf of this server-only fixture).
 async function devSignupServerOnly(handle) {
   try {
-    const id = await registerClientIdentity(BASE, handle);
-    return id.canonical_id;
+    return await registerClientIdentity(BASE, handle);
   } catch {
     return null;
   }
@@ -189,13 +192,22 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
     if (!oldPanelGone) fail("lower-left", "identity-pane-body still present in DOM");
     else ok("lower-left: profile-card removed");
 
-    const notifsEmpty = await pageB.evaluate(() => {
-      const empty = document.getElementById("notifications-empty");
-      const list = document.getElementById("notifications-list");
-      return Boolean(empty && empty.offsetParent !== null && list && list.hidden);
-    });
-    if (!notifsEmpty) fail("notifications-empty", "expected 'no notifications' empty state on signed-in B");
-    else ok("notifications panel shows 'no notifications' empty state for fresh B");
+    // Phase 13.1 changed the empty-state behavior: when there are 0
+    // notifications, the entire panel (heading + container + empty
+    // div) is hidden, not just an empty div shown. We wait for the
+    // first poll to settle and assert the panel is collapsed.
+    let notifsCollapsed = false;
+    for (let i = 0; i < 50; i++) {
+      notifsCollapsed = await pageB.evaluate(() => {
+        const panel = document.getElementById("notifications-panel");
+        const list = document.getElementById("notifications-list");
+        return Boolean(panel && panel.hidden && list && list.hidden && list.children.length === 0);
+      });
+      if (notifsCollapsed) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    if (!notifsCollapsed) fail("notifications-empty", "expected notifications panel hidden + list empty on signed-in B");
+    else ok("notifications panel is hidden (zero notifications, Phase 13.1 behavior) for fresh B");
 
     // ===== back-header height alignment =====
     // Posting once and entering thread view to inspect the back row.
@@ -562,10 +574,12 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
     //       immediately, and the dismissal must survive the next
     //       poll cycle (IndexedDB-backed). =====
     const handleC = "charl" + Date.now().toString().slice(-7);
-    const charlieId = await devSignupServerOnly(handleC);
-    if (charlieId === null) {
+    const charlieIdent = await devSignupServerOnly(handleC);
+    if (charlieIdent === null) {
       fail("notif-dismiss-setup", "could not create @charlie via /dev/signup");
     } else {
+      const charlieId = charlieIdent.canonical_id;
+      const charlieSigner = { canonicalId: charlieId, privateKey: charlieIdent.identity_key.privateKey };
       // Look up B's canonical_id once.
       const bCanonical = await fetch(`${BASE}/api/identity/handles/${handleB}`)
         .then((r) => r.ok ? r.json() : null)
@@ -574,19 +588,16 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
       if (bCanonical === null) {
         fail("notif-dismiss-setup", "could not resolve B's canonical_id");
       } else {
-        await fetch(`${BASE}/api/subscriptions`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            owner_canonical_id: charlieId,
-            author_canonical_id: bCanonical,
-            author_handle: `@${handleB}`,
-            include_public: true,
-            include_connections: true,
-            include_close: false,
-            muted: false
-          })
-        });
+        // Phase 14 CRIT-4: /api/subscriptions POST now requires identity sig.
+        await postJsonSignedIdentity(BASE, "/api/subscriptions", {
+          owner_canonical_id: charlieId,
+          author_canonical_id: bCanonical,
+          author_handle: `@${handleB}`,
+          include_public: true,
+          include_connections: true,
+          include_close: false,
+          muted: false
+        }, charlieSigner);
         const charlieNotif = await waitForNotification(pageB, `follow:${charlieId}`, 25000);
         if (!charlieNotif.matched) {
           fail("notif-dismiss-arrive", "B did not see @charlie's follow notification");
@@ -611,10 +622,12 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
     //       notification AND sets B's relationship to @diana to
     //       tier=blocked. =====
     const handleD = "dian" + Date.now().toString().slice(-7);
-    const dianaId = await devSignupServerOnly(handleD);
-    if (dianaId === null) {
+    const dianaIdent = await devSignupServerOnly(handleD);
+    if (dianaIdent === null) {
       fail("notif-block-setup", "could not create @diana via /dev/signup");
     } else {
+      const dianaId = dianaIdent.canonical_id;
+      const dianaSigner = { canonicalId: dianaId, privateKey: dianaIdent.identity_key.privateKey };
       const bCanonical2 = await fetch(`${BASE}/api/identity/handles/${handleB}`)
         .then((r) => r.ok ? r.json() : null)
         .then((body) => body?.canonical_id ?? null)
@@ -622,19 +635,16 @@ async function waitForNotification(page, idPrefix, timeoutMs = 25000) {
       if (bCanonical2 === null) {
         fail("notif-block-setup", "could not resolve B's canonical_id");
       } else {
-        await fetch(`${BASE}/api/subscriptions`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            owner_canonical_id: dianaId,
-            author_canonical_id: bCanonical2,
-            author_handle: `@${handleB}`,
-            include_public: true,
-            include_connections: true,
-            include_close: false,
-            muted: false
-          })
-        });
+        // Phase 14 CRIT-4: /api/subscriptions POST now requires identity sig.
+        await postJsonSignedIdentity(BASE, "/api/subscriptions", {
+          owner_canonical_id: dianaId,
+          author_canonical_id: bCanonical2,
+          author_handle: `@${handleB}`,
+          include_public: true,
+          include_connections: true,
+          include_close: false,
+          muted: false
+        }, dianaSigner);
         const dianaNotif = await waitForNotification(pageB, `follow:${dianaId}`, 25000);
         if (!dianaNotif.matched) {
           fail("notif-block-arrive", "B did not see @diana's follow notification");

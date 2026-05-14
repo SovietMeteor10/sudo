@@ -3,6 +3,7 @@ import { DEFAULT_MESSAGE_TTL_UNKNOWN_HOURS } from "../../../protocol/constants.j
 import type { BrowserCryptoAccount } from "../crypto/key-storage.js";
 import { decryptPrivateMessage, encryptPrivateMessage, type BrowserEncryptedMessage } from "../crypto/messaging.js";
 import { signRelayEnvelope } from "../crypto/signing.js";
+import { signedFetchAsDevice } from "../crypto/request-auth.js";
 import { base64Url, base64UrlToBytes } from "./crypto.js";
 import { selectRelayForRecipient } from "../transport/relay-transport.js";
 import {
@@ -707,6 +708,12 @@ export async function retrieveRelayInboxAfterLocalSave(
     // Direct override for tests / single-sender flows.
     senderMessagingPublicKey?: string;
     senderMessagingKeyType?: "x25519" | "ecdh-p256";
+    // Phase 14 CRIT-2 / CRIT-3: device signature is mandatory on the
+    // GET inbox + every ack POST. Caller passes its own device_id; the
+    // signer is the currently-unlocked account's device_key. Without
+    // a deviceId the function falls back to no signing — kept only for
+    // local-dev smokes that exercise the function directly.
+    recipientDeviceId?: string;
   } = {}
 ): Promise<LocalMessage[]> {
   // Per-poll cache of sender-canonical → messaging key. The resolver
@@ -738,13 +745,28 @@ export async function retrieveRelayInboxAfterLocalSave(
       return null;
     }
   }
-  const response = await fetch(`/api/relay/inbox/${encodeURIComponent(recipientCanonicalId)}`, {
-    headers: { accept: "application/json" }
-  });
+  // Phase 14 CRIT-2 / CRIT-3 helpers. The signed-fetch path is used
+  // whenever the caller supplied recipientDeviceId; smokes that drive
+  // this function directly without a deviceId fall back to plain fetch
+  // (which the server will 401 in any non-dev configuration).
+  const inboxPath = `/api/relay/inbox/${encodeURIComponent(recipientCanonicalId)}`;
+  const response = typeof options.recipientDeviceId === "string"
+    ? await signedFetchAsDevice({ method: "GET", path: inboxPath, deviceId: options.recipientDeviceId })
+    : await fetch(inboxPath, { headers: { accept: "application/json" } });
   if (!response.ok) throw new Error(`relay inbox failed: ${response.status}`);
 
   const body = await response.json() as { envelopes?: RelayEnvelope[] };
   const envelopes = Array.isArray(body.envelopes) ? body.envelopes : [];
+
+  async function ackEnvelope(messageId: string): Promise<Response> {
+    const path = `/api/relay/envelopes/${encodeURIComponent(messageId)}/ack`;
+    if (typeof options.recipientDeviceId === "string") {
+      // No body — signedFetch will sign null and omit the wire body
+      // entirely, matching the server's empty-body digest normalization.
+      return signedFetchAsDevice({ method: "POST", path, deviceId: options.recipientDeviceId });
+    }
+    return fetch(path, { method: "POST", headers: { accept: "application/json" } });
+  }
 
   const saved: LocalMessage[] = [];
 
@@ -768,10 +790,7 @@ export async function retrieveRelayInboxAfterLocalSave(
         }
       } catch { /* malformed — drop, still ACK below */ }
       try {
-        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-          method: "POST",
-          headers: { accept: "application/json" }
-        });
+        await ackEnvelope(envelope.message_id);
       } catch { /* ACK retry on next poll */ }
       continue;
     }
@@ -794,10 +813,7 @@ export async function retrieveRelayInboxAfterLocalSave(
         }
       } catch { /* malformed — drop, still ACK below */ }
       try {
-        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-          method: "POST",
-          headers: { accept: "application/json" }
-        });
+        await ackEnvelope(envelope.message_id);
       } catch { /* ACK retry on next poll */ }
       continue;
     }
@@ -819,10 +835,7 @@ export async function retrieveRelayInboxAfterLocalSave(
         }
       } catch { /* malformed — drop, still ACK below */ }
       try {
-        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-          method: "POST",
-          headers: { accept: "application/json" }
-        });
+        await ackEnvelope(envelope.message_id);
       } catch { /* ACK retry on next poll */ }
       continue;
     }
@@ -863,10 +876,7 @@ export async function retrieveRelayInboxAfterLocalSave(
       }
       // Ack the server — we have the ciphertext locally now.
       try {
-        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-          method: "POST",
-          headers: { accept: "application/json" }
-        });
+        await ackEnvelope(envelope.message_id);
       } catch { /* ACK retry on next poll */ }
       // Broadcast the chat-list refresh so the conversation surfaces
       // a "unlock to read N messages" affordance even before decrypt.
@@ -919,10 +929,7 @@ export async function retrieveRelayInboxAfterLocalSave(
         });
       } catch { /* fall through to placeholder below */ }
       try {
-        await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-          method: "POST",
-          headers: { accept: "application/json" }
-        });
+        await ackEnvelope(envelope.message_id);
       } catch { /* ACK retry on next poll */ }
       continue;
     }
@@ -989,10 +996,7 @@ export async function retrieveRelayInboxAfterLocalSave(
     });
 
     try {
-      const ackResponse = await fetch(`/api/relay/envelopes/${encodeURIComponent(envelope.message_id)}/ack`, {
-        method: "POST",
-        headers: { accept: "application/json" }
-      });
+      const ackResponse = await ackEnvelope(envelope.message_id);
       if (ackResponse.ok) {
         await appendLocalEvent(ownerCanonicalId, {
           event_id: crypto.randomUUID(),

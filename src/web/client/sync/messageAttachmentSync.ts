@@ -23,6 +23,7 @@ import {
   upsertLocalMessageAttachmentMonotonic
 } from "../local/local-store.js";
 import type { LocalMessageAttachment } from "../local/local-types.js";
+import { signRelayEnvelope } from "../crypto/signing.js";
 
 export const ATTACHMENT_CIPHERTEXT_SCHEME = "sudo_attachment_v1";
 
@@ -181,8 +182,32 @@ export async function postAttachmentRelayEnvelope(input: {
     created_at: now.toISOString(),
     expires_at: expires.toISOString(),
     status: "queued_local" as const,
-    sender_signature: "dev-placeholder"
+    sender_signature: "dev-placeholder" as string
   };
+  // Phase 14 CRIT-1: production relay rejects dev-placeholder, so we
+  // must sign the canonical envelope body with the sender's identity
+  // key before POSTing. Mirrors the chat-send path in relay-local.ts.
+  try {
+    envelope.sender_signature = await signRelayEnvelope(
+      {
+        type: envelope.type,
+        protocol_version: envelope.protocol_version,
+        message_id: envelope.message_id,
+        sender_canonical_id: envelope.sender_canonical_id,
+        recipient_canonical_id: envelope.recipient_canonical_id,
+        sender_handle: envelope.sender_handle,
+        recipient_handle: envelope.recipient_handle,
+        ciphertext: envelope.ciphertext,
+        ciphertext_scheme: envelope.ciphertext_scheme,
+        created_at: envelope.created_at,
+        expires_at: envelope.expires_at
+      },
+      input.senderAccount.identity_key,
+      input.senderAccount.identity_key_type
+    );
+  } catch {
+    return { ok: false };
+  }
   try {
     const r = await fetch("/api/relay/envelopes", {
       method: "POST",

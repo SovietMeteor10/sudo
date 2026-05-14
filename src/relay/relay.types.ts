@@ -19,6 +19,7 @@ export type RelayPolicyError =
   | "relay_full"
   | "message_too_large"
   | "invalid_envelope"
+  | "missing_signature"
   | "duplicate_message"
   | "expired"
   | "owner_envelope_quota_exceeded";

@@ -747,13 +747,18 @@ function findPeer(rows) {
     return target instanceof HTMLElement ? (target.dataset.deviceId ?? null) : null;
   }, revocable.name);
   if (revokedDeviceId) {
+    // Phase 14 HIGH-6: unauth direct fetch is 401 missing_signature
+    // before the route's revoked-device 403 check fires. The
+    // "revoked device → 403" gate is exercised end-to-end by the
+    // sync slice smokes (contact/subscription/message-sync) which
+    // sign as the revoked device.
     const resp = await fetch(`${BASE}/api/devices/${encodeURIComponent(canonicalA)}/sync?device_id=${encodeURIComponent(revokedDeviceId)}&since=0&limit=1`, {
       headers: { accept: "application/json" }
     });
-    if (resp.status !== 403) {
-      fail("9h.server-403", `revoked /sync GET expected 403, got ${resp.status}`);
+    if (resp.status !== 401) {
+      fail("9h.server-401", `unauth direct /sync GET expected 401 missing_signature, got ${resp.status}`);
     } else {
-      ok(`9h. server returns 403 on /sync GET for revoked device`);
+      ok(`9h. unauth /sync GET returns 401 missing_signature (sig gate)`);
     }
   }
 

@@ -948,7 +948,28 @@ for (const button of authActionButtons) {
     if (action === "signup") openSignupDialog();
     else if (action === "restore") openRestoreDialog();
     else if (action === "link") openLinkDeviceDialog();
+    else if (action === "about") openAboutOverlay();
     else openSigninDialog();
+  });
+}
+
+// Phase 14B: about overlay on the landing page. The philosophy lives
+// inline in index.html; this just toggles the <dialog>.
+const aboutOverlay = document.getElementById("about-overlay");
+const aboutClose = document.getElementById("about-close");
+function openAboutOverlay(): void {
+  if (aboutOverlay instanceof HTMLDialogElement) {
+    if (!aboutOverlay.open) aboutOverlay.showModal();
+  }
+}
+function closeAboutOverlay(): void {
+  if (aboutOverlay instanceof HTMLDialogElement && aboutOverlay.open) aboutOverlay.close();
+}
+if (aboutClose !== null) aboutClose.addEventListener("click", closeAboutOverlay);
+if (aboutOverlay instanceof HTMLDialogElement) {
+  // Click on the backdrop (the dialog itself, not the panel) closes.
+  aboutOverlay.addEventListener("click", (event) => {
+    if (event.target === aboutOverlay) closeAboutOverlay();
   });
 }
 
@@ -1855,6 +1876,7 @@ async function pollInbox(): Promise<void> {
   try {
     const newMessages = await retrieveRelayInboxAfterLocalSave(inboxPollOwner, {
       recipientAccount: currentCryptoAccount,
+      recipientDeviceId: currentDeviceId ?? undefined,
       resolveSenderMessagingKey: async (canonicalId) => {
         try {
           const doc = await fetchIdentityProfile(canonicalId);
@@ -3980,9 +4002,14 @@ async function runLinkExistingAccount(): Promise<void> {
   }
 
   await saveTrustedDevice(trustedDevice);
-  // Best-effort: register on server (the existing post-signin path
-  // also does this; failure here doesn't block sign-in).
-  try { await registerTrustedDevice(trustedDevice); } catch { /* ignore */ }
+  // Best-effort idempotent re-register on the server. Phase 14 HIGH-5:
+  // signed_membership is mandatory; we reuse the membership we just
+  // signed for completeDevicePairing above so this stays a no-op when
+  // the pair flow already created the row, and works correctly when
+  // the post-signin path re-runs the registration with the same key.
+  if (membership !== null) {
+    try { await registerTrustedDevice(trustedDevice, membership); } catch { /* ignore */ }
+  }
 
   currentCryptoAccount = account;
   currentDeviceId = deviceId;
@@ -4583,10 +4610,13 @@ async function handleDeleteOwnPost(postId: string, button: HTMLButtonElement): P
   }
   button.disabled = true;
   try {
-    const r = await fetch(`/api/feeds/posts/${encodeURIComponent(postId)}`, {
+    // Phase 14 HIGH-2: identity-signed delete. The server now ignores
+    // requester_canonical_id in the body and verifies the signer
+    // matches the post's author_canonical_id directly.
+    const { signedFetchAsIdentity } = await import("./crypto/request-auth.js");
+    const r = await signedFetchAsIdentity({
       method: "DELETE",
-      headers: { "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ requester_canonical_id: currentIdentityDocument.canonical_id })
+      path: `/api/feeds/posts/${encodeURIComponent(postId)}`
     });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));

@@ -97,6 +97,11 @@
     "smoke:chat-ux": "node scripts/chat-ux-smoke.cjs",
     "smoke:directory-responsive": "node scripts/directory-responsive-smoke.cjs",
     "smoke:sync-rate-limit": "node scripts/sync-rate-limit-smoke.cjs",
+    "smoke:security-request-auth": "node scripts/security-request-auth-smoke.cjs",
+    "smoke:security-relay-and-inbox": "node scripts/security-relay-and-inbox-smoke.cjs",
+    "smoke:security-push-ssrf": "node scripts/security-push-ssrf-smoke.cjs",
+    "smoke:security-device-register-revoke": "node scripts/security-device-register-revoke-smoke.cjs",
+    "smoke:u-profile": "node scripts/u-profile-smoke.cjs",
     "backup:sqlite": "bash scripts/backup-sqlite.sh"
   },
   "dependencies": {
